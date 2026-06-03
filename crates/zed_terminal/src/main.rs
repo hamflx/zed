@@ -95,7 +95,8 @@ struct Cli {
             "list_profiles",
             "validate_startup_config",
             "validate_keymap",
-            "print_startup_config_schema"
+            "print_startup_config_schema",
+            "init_config"
         ]
     )]
     print_paths: bool,
@@ -106,6 +107,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "init_config",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -124,7 +126,8 @@ struct Cli {
         conflicts_with_all = [
             "validate_startup_config",
             "validate_keymap",
-            "print_startup_config_schema"
+            "print_startup_config_schema",
+            "init_config"
         ],
         help = "Include hidden startup profiles when listing profiles"
     )]
@@ -137,7 +140,8 @@ struct Cli {
             "list_profiles",
             "validate_startup_config",
             "validate_keymap",
-            "print_startup_config_schema"
+            "print_startup_config_schema",
+            "init_config"
         ]
     )]
     no_startup_config: bool,
@@ -149,6 +153,7 @@ struct Cli {
             "list_profiles",
             "validate_keymap",
             "print_startup_config_schema",
+            "init_config",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -168,6 +173,7 @@ struct Cli {
             "list_profiles",
             "validate_startup_config",
             "validate_keymap",
+            "init_config",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -181,12 +187,33 @@ struct Cli {
     print_startup_config_schema: bool,
 
     #[arg(
+        long = "init-config",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "validate_startup_config",
+            "print_startup_config_schema",
+            "validate_keymap",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Create missing standalone config files without opening a terminal window"
+    )]
+    init_config: bool,
+
+    #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
             "validate_startup_config",
             "print_startup_config_schema",
+            "init_config",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -257,6 +284,9 @@ enum TerminalCliCommand {
         startup_config: TerminalStartupConfig,
     },
     PrintStartupConfigSchema {
+        path_options: TerminalPathOptions,
+    },
+    InitConfig {
         path_options: TerminalPathOptions,
     },
     ValidateKeymap {
@@ -397,6 +427,24 @@ struct TerminalStartupConfigValidation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigInitialization {
+    files: Vec<TerminalConfigFileInitialization>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigFileInitialization {
+    label: &'static str,
+    path: PathBuf,
+    status: TerminalConfigFileInitializationStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalConfigFileInitializationStatus {
+    Created,
+    Existing,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalKeymapValidation {
     default_binding_count: usize,
     user_binding_count: usize,
@@ -418,6 +466,7 @@ impl TerminalCliCommand {
             || cli.no_startup_config
             || cli.validate_keymap
             || cli.print_startup_config_schema
+            || cli.init_config
         {
             TerminalStartupConfig::default()
         } else {
@@ -467,6 +516,10 @@ impl TerminalCliCommand {
             return Ok(Self::PrintStartupConfigSchema { path_options });
         }
 
+        if cli.init_config {
+            return Ok(Self::InitConfig { path_options });
+        }
+
         if cli.validate_keymap {
             return Ok(Self::ValidateKeymap { path_options });
         }
@@ -484,6 +537,7 @@ impl TerminalCliCommand {
             Self::ListProfiles { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
+            Self::InitConfig { path_options } => path_options,
             Self::ValidateKeymap { path_options } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
@@ -1062,6 +1116,12 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::InitConfig { .. } => {
+            if let Err(error) = print_config_initialization() {
+                eprintln!("failed to initialize terminal config files: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::ValidateKeymap { .. } => run_keymap_validation(),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
@@ -1178,6 +1238,114 @@ fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Re
 fn print_startup_config_schema() -> Result<()> {
     print!("{}", format_startup_config_schema()?);
     Ok(())
+}
+
+fn print_config_initialization() -> Result<()> {
+    let initialization = initialize_terminal_config_files()?;
+    print!("{}", format_config_initialization(&initialization));
+    Ok(())
+}
+
+fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
+    initialize_terminal_config_files_at(TerminalConfigFilePaths {
+        settings_file: paths::settings_file().clone(),
+        global_settings_file: paths::global_settings_file().clone(),
+        keymap_file: paths::keymap_file().clone(),
+        startup_config_file: active_terminal_startup_config_file(),
+    })
+}
+
+struct TerminalConfigFilePaths {
+    settings_file: PathBuf,
+    global_settings_file: PathBuf,
+    keymap_file: PathBuf,
+    startup_config_file: PathBuf,
+}
+
+fn initialize_terminal_config_files_at(
+    file_paths: TerminalConfigFilePaths,
+) -> Result<TerminalConfigInitialization> {
+    Ok(TerminalConfigInitialization {
+        files: vec![
+            initialize_terminal_config_file(
+                "settings_file",
+                file_paths.settings_file,
+                settings::initial_user_settings_content().as_ref(),
+            )?,
+            initialize_terminal_config_file(
+                "global_settings_file",
+                file_paths.global_settings_file,
+                "{}\n",
+            )?,
+            initialize_terminal_config_file(
+                "keymap_file",
+                file_paths.keymap_file,
+                settings::initial_keymap_content().as_ref(),
+            )?,
+            initialize_terminal_config_file(
+                "startup_config_file",
+                file_paths.startup_config_file,
+                initial_terminal_startup_config_content(),
+            )?,
+        ],
+    })
+}
+
+fn initialize_terminal_config_file(
+    label: &'static str,
+    path: PathBuf,
+    content: &str,
+) -> Result<TerminalConfigFileInitialization> {
+    match std_fs::metadata(&path) {
+        Ok(metadata) => {
+            if metadata.is_file() {
+                return Ok(TerminalConfigFileInitialization {
+                    label,
+                    path,
+                    status: TerminalConfigFileInitializationStatus::Existing,
+                });
+            }
+            bail!("{} exists but is not a file", path.display());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to inspect {}", path.display()));
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    match std_fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(content.as_bytes())
+                .with_context(|| format!("failed to write {}", path.display()))?;
+            Ok(TerminalConfigFileInitialization {
+                label,
+                path,
+                status: TerminalConfigFileInitializationStatus::Created,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = std_fs::metadata(&path)
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            if !metadata.is_file() {
+                bail!("{} exists but is not a file", path.display());
+            }
+            Ok(TerminalConfigFileInitialization {
+                label,
+                path,
+                status: TerminalConfigFileInitializationStatus::Existing,
+            })
+        }
+        Err(error) => Err(error).with_context(|| format!("failed to create {}", path.display())),
+    }
 }
 
 fn validate_keymaps(cx: &mut App) -> Result<TerminalKeymapValidation> {
@@ -1326,6 +1494,31 @@ fn format_startup_config_schema() -> Result<String> {
         .context("failed to serialize terminal startup config schema")?;
     output.push('\n');
     Ok(output)
+}
+
+fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    for file in &initialization.files {
+        writeln!(
+            &mut output,
+            "{}: {} {}",
+            file.label,
+            file.status.as_str(),
+            file.path.display()
+        )
+        .expect("writing to string should not fail");
+    }
+    output
+}
+
+impl TerminalConfigFileInitializationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Existing => "existing",
+        }
+    }
 }
 
 fn format_keymap_validation(keymap_file: &Path, validation: &TerminalKeymapValidation) -> String {
@@ -2029,46 +2222,14 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
 }
 
 fn ensure_config_files(fs: &Arc<dyn fs::Fs>, cx: &App) -> Result<()> {
-    let settings_path = paths::settings_file();
-    if let Some(parent) = settings_path.parent() {
-        std_fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create config dir {parent:?}"))?;
-    }
-
-    if !settings_path.exists() {
-        std_fs::write(
-            settings_path,
-            settings::initial_user_settings_content().as_ref(),
-        )
-        .with_context(|| format!("failed to create settings file {settings_path:?}"))?;
-    }
-
-    let global_settings_path = paths::global_settings_file();
-    if !global_settings_path.exists() {
-        std_fs::write(global_settings_path, "{}\n").with_context(|| {
-            format!("failed to create global settings file {global_settings_path:?}")
-        })?;
-    }
-
-    let keymap_path = paths::keymap_file();
-    if !keymap_path.exists() {
-        std_fs::write(keymap_path, settings::initial_keymap_content().as_ref())
-            .with_context(|| format!("failed to create keymap file {keymap_path:?}"))?;
-    }
-
-    let startup_config_path = active_terminal_startup_config_file();
-    if !startup_config_path.exists() {
-        std_fs::write(
-            &startup_config_path,
-            initial_terminal_startup_config_content(),
-        )
-        .with_context(|| format!("failed to create startup config file {startup_config_path:?}"))?;
-    }
+    initialize_terminal_config_files()?;
 
     // Prime the abstract filesystem for platforms that use a non-std backend.
+    let settings_path = paths::settings_file();
     if let Err(error) = cx.foreground_executor().block_on(fs.load(settings_path)) {
         log::warn!("failed to prime settings file {settings_path:?}: {error:?}");
     }
+    let keymap_path = paths::keymap_file();
     if let Err(error) = cx.foreground_executor().block_on(fs.load(keymap_path)) {
         log::warn!("failed to prime keymap file {keymap_path:?}: {error:?}");
     }
@@ -2114,23 +2275,12 @@ fn open_directory(path: &Path, label: &str, cx: &mut App) {
 }
 
 fn ensure_settings_file() -> bool {
-    if let Some(parent) = paths::settings_file().parent()
-        && let Err(error) = std_fs::create_dir_all(parent)
-    {
-        log::warn!("failed to create settings directory {parent:?}: {error:?}");
-        return false;
-    }
-
-    if !paths::settings_file().exists()
-        && let Err(error) = std_fs::write(
-            paths::settings_file(),
-            settings::initial_user_settings_content().as_ref(),
-        )
-    {
-        log::warn!(
-            "failed to create settings file {:?}: {error:?}",
-            paths::settings_file()
-        );
+    if let Err(error) = initialize_terminal_config_file(
+        "settings_file",
+        paths::settings_file().clone(),
+        settings::initial_user_settings_content().as_ref(),
+    ) {
+        log::warn!("failed to ensure settings file: {error:?}");
         return false;
     }
 
@@ -2139,23 +2289,12 @@ fn ensure_settings_file() -> bool {
 
 fn ensure_startup_config_file() -> bool {
     let startup_config_file = active_terminal_startup_config_file();
-    if let Some(parent) = startup_config_file.parent()
-        && let Err(error) = std_fs::create_dir_all(parent)
-    {
-        log::warn!("failed to create startup config directory {parent:?}: {error:?}");
-        return false;
-    }
-
-    if !startup_config_file.exists()
-        && let Err(error) = std_fs::write(
-            &startup_config_file,
-            initial_terminal_startup_config_content(),
-        )
-    {
-        log::warn!(
-            "failed to create startup config file {:?}: {error:?}",
-            startup_config_file
-        );
+    if let Err(error) = initialize_terminal_config_file(
+        "startup_config_file",
+        startup_config_file,
+        initial_terminal_startup_config_content(),
+    ) {
+        log::warn!("failed to ensure startup config file: {error:?}");
         return false;
     }
 
@@ -2163,23 +2302,12 @@ fn ensure_startup_config_file() -> bool {
 }
 
 fn ensure_keymap_file() -> bool {
-    if let Some(parent) = paths::keymap_file().parent()
-        && let Err(error) = std_fs::create_dir_all(parent)
-    {
-        log::warn!("failed to create keymap directory {parent:?}: {error:?}");
-        return false;
-    }
-
-    if !paths::keymap_file().exists()
-        && let Err(error) = std_fs::write(
-            paths::keymap_file(),
-            settings::initial_keymap_content().as_ref(),
-        )
-    {
-        log::warn!(
-            "failed to create keymap file {:?}: {error:?}",
-            paths::keymap_file()
-        );
+    if let Err(error) = initialize_terminal_config_file(
+        "keymap_file",
+        paths::keymap_file().clone(),
+        settings::initial_keymap_content().as_ref(),
+    ) {
+        log::warn!("failed to ensure keymap file: {error:?}");
         return false;
     }
 
@@ -2727,6 +2855,101 @@ mod tests {
     }
 
     #[test]
+    fn formats_config_initialization() {
+        let output = format_config_initialization(&TerminalConfigInitialization {
+            files: vec![
+                TerminalConfigFileInitialization {
+                    label: "settings_file",
+                    path: PathBuf::from("settings.json"),
+                    status: TerminalConfigFileInitializationStatus::Created,
+                },
+                TerminalConfigFileInitialization {
+                    label: "keymap_file",
+                    path: PathBuf::from("keymap.json"),
+                    status: TerminalConfigFileInitializationStatus::Existing,
+                },
+            ],
+        });
+
+        assert_eq!(
+            output,
+            "status: ok\nsettings_file: created settings.json\nkeymap_file: existing keymap.json\n"
+        );
+    }
+
+    #[test]
+    fn initializes_missing_config_files_without_overwriting_existing_files() {
+        let root_dir = temp_test_dir();
+        let config_dir = root_dir.join("config");
+        let settings_file = config_dir.join("settings.json");
+        let global_settings_file = config_dir.join("global_settings.json");
+        let keymap_file = config_dir.join("keymap.json");
+        let startup_config_file = config_dir.join("terminal.json");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(&keymap_file, "custom keymap\n").expect("failed to write keymap");
+
+        let initialization = initialize_terminal_config_files_at(TerminalConfigFilePaths {
+            settings_file: settings_file.clone(),
+            global_settings_file: global_settings_file.clone(),
+            keymap_file: keymap_file.clone(),
+            startup_config_file: startup_config_file.clone(),
+        })
+        .expect("config files should initialize");
+
+        assert_eq!(
+            initialization
+                .files
+                .iter()
+                .map(|file| (file.label, file.status))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "settings_file",
+                    TerminalConfigFileInitializationStatus::Created
+                ),
+                (
+                    "global_settings_file",
+                    TerminalConfigFileInitializationStatus::Created
+                ),
+                (
+                    "keymap_file",
+                    TerminalConfigFileInitializationStatus::Existing
+                ),
+                (
+                    "startup_config_file",
+                    TerminalConfigFileInitializationStatus::Created
+                ),
+            ]
+        );
+        assert!(settings_file.exists());
+        assert!(global_settings_file.exists());
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file).expect("failed to read keymap"),
+            "custom keymap\n"
+        );
+        let startup_config: TerminalStartupConfig = settings::parse_json_with_comments(
+            &std_fs::read_to_string(&startup_config_file).expect("failed to read startup config"),
+        )
+        .expect("startup config should parse");
+        assert_eq!(startup_config, TerminalStartupConfig::default());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn initialize_config_file_rejects_directory_targets() {
+        let root_dir = temp_test_dir();
+        let directory_target = root_dir.join("settings.json");
+        std_fs::create_dir_all(&directory_target).expect("failed to create directory target");
+
+        let error = initialize_terminal_config_file("settings_file", directory_target, "{}\n")
+            .expect_err("directory target should fail");
+        assert!(format!("{error:#}").contains("exists but is not a file"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let output = format_keymap_validation(
             Path::new("keymap.json"),
@@ -2801,6 +3024,32 @@ mod tests {
     }
 
     #[test]
+    fn init_config_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--init-config",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("config initialization should not load terminal.json");
+
+        assert!(matches!(command, TerminalCliCommand::InitConfig { .. }));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -2812,6 +3061,47 @@ mod tests {
             .expect("keymap validation should not resolve startup layout");
 
         assert!(matches!(command, TerminalCliCommand::ValidateKeymap { .. }));
+    }
+
+    #[test]
+    fn init_config_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from(["zed-terminal", "--init-config", "--profile", "work"])
+            .expect_err("profile selection should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--init-config", "-d", dir.to_str().unwrap()])
+                .expect_err("startup directory should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--init-config",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--init-config", "--", "cmd"])
+            .expect_err("startup command should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--init-config"])
+            .expect_err("path inspection should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profiles",
+            "--all-profiles",
+            "--init-config",
+        ])
+        .expect_err("hidden profile listing should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]
