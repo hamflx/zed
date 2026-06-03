@@ -22,6 +22,9 @@ use project::Project;
 use reqwest_client::ReqwestClient;
 use session::{AppSession, Session};
 use settings::Settings;
+use task::{
+    HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
+};
 use terminal_view::{default_working_directory, terminal_panel::TerminalPanel};
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::load_user_theme;
@@ -63,22 +66,86 @@ struct Cli {
 
     #[arg(value_name = "DIRECTORY", value_hint = ValueHint::DirPath)]
     directory: Option<PathBuf>,
+
+    #[arg(
+        value_name = "COMMAND",
+        value_hint = ValueHint::CommandWithArguments,
+        last = true,
+        num_args = 1..,
+        allow_hyphen_values = true
+    )]
+    command: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct LaunchOptions {
     working_directory: Option<PathBuf>,
+    command: Option<LaunchCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LaunchCommand {
+    program: String,
+    args: Vec<String>,
 }
 
 impl LaunchOptions {
     fn from_cli(cli: Cli) -> Result<Self> {
+        let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
 
-        Ok(Self { working_directory })
+        Ok(Self {
+            working_directory,
+            command,
+        })
+    }
+}
+
+impl LaunchCommand {
+    fn from_args(args: Vec<String>) -> Option<Self> {
+        let mut args = args.into_iter();
+        let program = args.next()?;
+        Some(Self {
+            program,
+            args: args.collect(),
+        })
+    }
+
+    fn into_spawn_task(self, cwd: Option<PathBuf>) -> SpawnInTerminal {
+        let label = self.display_label();
+
+        SpawnInTerminal {
+            id: TaskId(format!("zed-terminal:{label}")),
+            full_label: label.clone(),
+            label: label.clone(),
+            command: Some(self.program),
+            args: self.args,
+            command_label: label,
+            cwd,
+            use_new_terminal: true,
+            allow_concurrent_runs: true,
+            reveal: RevealStrategy::Always,
+            reveal_target: RevealTarget::Center,
+            hide: HideStrategy::Never,
+            shell: Shell::System,
+            show_summary: true,
+            show_command: true,
+            show_rerun: false,
+            save: SaveStrategy::None,
+            ..SpawnInTerminal::default()
+        }
+    }
+
+    fn display_label(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .map(format_command_part)
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -281,6 +348,7 @@ fn open_terminal_window(
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let bounds = Bounds::centered(None, window_size, cx);
     let initial_working_directory = launch_options.working_directory;
+    let initial_command = launch_options.command;
 
     cx.open_window(
         WindowOptions {
@@ -352,9 +420,17 @@ fn open_terminal_window(
             .detach();
 
             let terminal_working_directory = initial_working_directory.clone();
+            let terminal_command = initial_command.clone();
             workspace.update(cx, |workspace, cx| {
                 TerminalPanel::add_center_terminal(workspace, window, cx, |project, cx| {
-                    project.create_terminal_shell(terminal_working_directory, cx)
+                    if let Some(command) = terminal_command {
+                        project.create_terminal_task(
+                            command.into_spawn_task(terminal_working_directory),
+                            cx,
+                        )
+                    } else {
+                        project.create_terminal_shell(terminal_working_directory, cx)
+                    }
                 })
                 .detach_and_log_err(cx);
             });
@@ -396,6 +472,14 @@ fn resolve_working_directory(input: &Path) -> Result<PathBuf> {
 
 fn expand_tilde(path: &Path) -> PathBuf {
     PathBuf::from(shellexpand::tilde(&path.to_string_lossy()).into_owned())
+}
+
+fn format_command_part(part: &str) -> String {
+    if part.is_empty() || part.chars().any(char::is_whitespace) {
+        format!("\"{}\"", part.replace('"', "\\\""))
+    } else {
+        part.to_string()
+    }
 }
 
 fn set_terminal_window_title(window: &mut Window, cx: &mut App) {
@@ -619,6 +703,107 @@ mod tests {
             options.working_directory.as_deref(),
             Some(dunce::canonicalize(&dir).unwrap().as_path())
         );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_startup_command_after_separator() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--", "echo", "hello"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.working_directory, None);
+        assert_eq!(
+            options.command,
+            Some(LaunchCommand {
+                program: "echo".into(),
+                args: vec!["hello".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_directory_and_startup_command() {
+        let dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            dir.to_str().unwrap(),
+            "--",
+            "pwsh",
+            "-NoLogo",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        assert_eq!(
+            options.command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_flag_directory_and_startup_command() {
+        let dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "-d",
+            dir.to_str().unwrap(),
+            "--",
+            "cargo",
+            "--version",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        assert_eq!(
+            options.command,
+            Some(LaunchCommand {
+                program: "cargo".into(),
+                args: vec!["--version".into()],
+            })
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn maps_launch_command_to_spawn_task() {
+        let dir = temp_test_dir();
+        let command = LaunchCommand {
+            program: "cmd".into(),
+            args: vec!["/C".into(), "echo hello".into()],
+        };
+
+        let task = command.into_spawn_task(Some(dir.clone()));
+
+        assert_eq!(task.id, TaskId("zed-terminal:cmd /C \"echo hello\"".into()));
+        assert_eq!(task.full_label, "cmd /C \"echo hello\"");
+        assert_eq!(task.label, "cmd /C \"echo hello\"");
+        assert_eq!(task.command, Some("cmd".into()));
+        assert_eq!(task.args, vec!["/C", "echo hello"]);
+        assert_eq!(task.command_label, "cmd /C \"echo hello\"");
+        assert_eq!(task.cwd.as_deref(), Some(dir.as_path()));
+        assert!(task.use_new_terminal);
+        assert!(task.allow_concurrent_runs);
+        assert_eq!(task.reveal, RevealStrategy::Always);
+        assert_eq!(task.reveal_target, RevealTarget::Center);
+        assert_eq!(task.hide, HideStrategy::Never);
+        assert_eq!(task.shell, Shell::System);
+        assert!(task.show_summary);
+        assert!(task.show_command);
+        assert!(!task.show_rerun);
+        assert_eq!(task.save, SaveStrategy::None);
         std_fs::remove_dir_all(dir).ok();
     }
 

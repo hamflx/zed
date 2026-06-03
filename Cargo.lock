@@ -23191,6 +23191,7 @@ dependencies = [
  "session",
  "settings",
  "shellexpand",
+ "task",
  "terminal_view",
  "theme",
  "theme_settings",
