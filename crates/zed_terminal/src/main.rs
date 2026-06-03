@@ -20,6 +20,7 @@ use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
 use project::Project;
 use reqwest_client::ReqwestClient;
+use serde::Deserialize;
 use session::{AppSession, Session};
 use settings::{KeybindSource, KeymapFile, KeymapFileLoadResult, Settings};
 use task::{
@@ -35,6 +36,7 @@ actions!(
     zed_terminal,
     [
         OpenSettingsFile,
+        OpenStartupConfigFile,
         OpenKeymapFile,
         OpenConfigDirectory,
         OpenLogsDirectory,
@@ -48,6 +50,7 @@ const APP_TITLE: &str = TERMINAL_APP_NAME;
 const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
+const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -75,6 +78,9 @@ struct Cli {
 
     #[arg(long = "paths")]
     print_paths: bool,
+
+    #[arg(long = "no-startup-config")]
+    no_startup_config: bool,
 
     #[arg(
         short = 'd',
@@ -144,26 +150,94 @@ struct LaunchCommand {
     args: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TerminalStartupConfig {
+    #[serde(default)]
+    working_directory: Option<PathBuf>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    tabs: Vec<TerminalStartupTabConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TerminalStartupTabConfig {
+    #[serde(default)]
+    working_directory: Option<PathBuf>,
+    #[serde(default)]
+    command: Option<String>,
+}
+
 impl LaunchOptions {
+    #[cfg(test)]
     fn from_cli(cli: Cli) -> Result<Self> {
+        Self::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+    }
+
+    fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
             TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
                 .context("failed to resolve terminal paths")?;
+        let startup_config = if cli.print_paths || cli.no_startup_config {
+            TerminalStartupConfig::default()
+        } else {
+            TerminalStartupConfig::load(&terminal_startup_config_file(&path_options.config_dir))?
+        };
+
+        Self::from_cli_parts(cli, startup_config, path_options)
+    }
+
+    #[cfg(test)]
+    fn from_cli_and_startup_config(
+        cli: Cli,
+        startup_config: TerminalStartupConfig,
+    ) -> Result<Self> {
+        let path_options =
+            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
+                .context("failed to resolve terminal paths")?;
+
+        Self::from_cli_parts(cli, startup_config, path_options)
+    }
+
+    fn from_cli_parts(
+        cli: Cli,
+        startup_config: TerminalStartupConfig,
+        path_options: TerminalPathOptions,
+    ) -> Result<Self> {
         let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
-        let additional_tabs = LaunchTab::additional_from_cli(&cli.new_tabs, &cli.new_tab_commands)?;
+        let startup_config = if cli.print_paths || cli.no_startup_config {
+            TerminalStartupConfig::default()
+        } else {
+            startup_config
+        };
+        let mut initial_tab = startup_config
+            .initial_tab()
+            .context("failed to resolve configured initial startup tab")?;
+        if let Some(working_directory) = working_directory {
+            initial_tab.working_directory = Some(working_directory);
+        }
+        if let Some(command) = command {
+            initial_tab.command = Some(command);
+        }
+        let mut additional_tabs = startup_config
+            .additional_tabs()
+            .context("failed to resolve configured startup tabs")?;
+        additional_tabs.extend(LaunchTab::additional_from_cli(
+            &cli.new_tabs,
+            &cli.new_tab_commands,
+        )?);
 
         Ok(Self {
             path_options,
             print_paths: cli.print_paths,
-            initial_tab: LaunchTab {
-                working_directory,
-                command,
-            },
+            initial_tab,
             additional_tabs,
         })
     }
@@ -228,6 +302,26 @@ impl LaunchTab {
 
         Ok(tabs)
     }
+
+    fn from_config(
+        working_directory: Option<&Path>,
+        command: Option<&str>,
+        label: impl std::fmt::Display,
+    ) -> Result<Self> {
+        let working_directory = working_directory
+            .map(resolve_working_directory)
+            .transpose()
+            .with_context(|| format!("failed to resolve working directory for {label}"))?;
+        let command = command
+            .map(LaunchCommand::from_command_line)
+            .transpose()
+            .with_context(|| format!("failed to parse command for {label}"))?;
+
+        Ok(Self {
+            working_directory,
+            command,
+        })
+    }
 }
 
 impl LaunchCommand {
@@ -280,8 +374,44 @@ impl LaunchCommand {
     }
 }
 
+impl TerminalStartupConfig {
+    fn load(path: &Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+
+        let content = std_fs::read_to_string(path).with_context(|| {
+            format!("failed to read terminal startup config {}", path.display())
+        })?;
+        settings::parse_json_with_comments(&content)
+            .with_context(|| format!("failed to parse terminal startup config {}", path.display()))
+    }
+
+    fn initial_tab(&self) -> Result<LaunchTab> {
+        LaunchTab::from_config(
+            self.working_directory.as_deref(),
+            self.command.as_deref(),
+            "initial startup tab",
+        )
+    }
+
+    fn additional_tabs(&self) -> Result<Vec<LaunchTab>> {
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| {
+                LaunchTab::from_config(
+                    tab.working_directory.as_deref(),
+                    tab.command.as_deref(),
+                    format!("startup tab {}", index + 2),
+                )
+            })
+            .collect()
+    }
+}
+
 fn main() {
-    let launch_options = match LaunchOptions::from_cli(Cli::parse()) {
+    let launch_options = match LaunchOptions::from_cli_and_config_file(Cli::parse()) {
         Ok(launch_options) => launch_options,
         Err(error) => {
             eprintln!("failed to launch zed terminal: {error:#}");
@@ -350,6 +480,10 @@ fn print_terminal_paths() {
     println!("logs_dir: {}", paths::logs_dir().display());
     println!("settings_file: {}", paths::settings_file().display());
     println!(
+        "startup_config_file: {}",
+        active_terminal_startup_config_file().display()
+    );
+    println!(
         "global_settings_file: {}",
         paths::global_settings_file().display()
     );
@@ -367,6 +501,14 @@ fn terminal_old_log_file() -> &'static PathBuf {
         .get_or_init(|| paths::logs_dir().join(format!("{TERMINAL_APP_NAME}.log.old")))
 }
 
+fn terminal_startup_config_file(config_dir: &Path) -> PathBuf {
+    config_dir.join(TERMINAL_STARTUP_CONFIG_FILE)
+}
+
+fn active_terminal_startup_config_file() -> PathBuf {
+    terminal_startup_config_file(paths::config_dir())
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -374,6 +516,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &zed_actions::Quit, cx| cx.quit());
     cx.on_action(open_settings_file);
+    cx.on_action(open_startup_config_file);
     cx.on_action(open_keymap_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_logs_directory);
@@ -549,6 +692,7 @@ fn set_app_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(vec![
             MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+            MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
             MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
             MenuItem::action("Open Config Directory", OpenConfigDirectory),
             MenuItem::action("Open Logs Directory", OpenLogsDirectory),
@@ -896,6 +1040,15 @@ fn ensure_config_files(fs: &Arc<dyn fs::Fs>, cx: &App) -> Result<()> {
             .with_context(|| format!("failed to create keymap file {keymap_path:?}"))?;
     }
 
+    let startup_config_path = active_terminal_startup_config_file();
+    if !startup_config_path.exists() {
+        std_fs::write(
+            &startup_config_path,
+            initial_terminal_startup_config_content(),
+        )
+        .with_context(|| format!("failed to create startup config file {startup_config_path:?}"))?;
+    }
+
     // Prime the abstract filesystem for platforms that use a non-std backend.
     if let Err(error) = cx.foreground_executor().block_on(fs.load(settings_path)) {
         log::warn!("failed to prime settings file {settings_path:?}: {error:?}");
@@ -911,6 +1064,13 @@ fn open_settings_file(_: &OpenSettingsFile, cx: &mut App) {
         return;
     }
     cx.open_with_system(paths::settings_file());
+}
+
+fn open_startup_config_file(_: &OpenStartupConfigFile, cx: &mut App) {
+    if !ensure_startup_config_file() {
+        return;
+    }
+    cx.open_with_system(&active_terminal_startup_config_file());
 }
 
 fn open_keymap_file(_: &OpenKeymapFile, cx: &mut App) {
@@ -961,6 +1121,31 @@ fn ensure_settings_file() -> bool {
     true
 }
 
+fn ensure_startup_config_file() -> bool {
+    let startup_config_file = active_terminal_startup_config_file();
+    if let Some(parent) = startup_config_file.parent()
+        && let Err(error) = std_fs::create_dir_all(parent)
+    {
+        log::warn!("failed to create startup config directory {parent:?}: {error:?}");
+        return false;
+    }
+
+    if !startup_config_file.exists()
+        && let Err(error) = std_fs::write(
+            &startup_config_file,
+            initial_terminal_startup_config_content(),
+        )
+    {
+        log::warn!(
+            "failed to create startup config file {:?}: {error:?}",
+            startup_config_file
+        );
+        return false;
+    }
+
+    true
+}
+
 fn ensure_keymap_file() -> bool {
     if let Some(parent) = paths::keymap_file().parent()
         && let Err(error) = std_fs::create_dir_all(parent)
@@ -985,6 +1170,17 @@ fn ensure_keymap_file() -> bool {
     true
 }
 
+fn initial_terminal_startup_config_content() -> &'static str {
+    r#"// Zed Terminal startup layout.
+// Command strings use the same shell-like quoting rules as --new-tab-command.
+{
+  "working_directory": null,
+  "command": null,
+  "tabs": []
+}
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -998,6 +1194,13 @@ mod tests {
     fn assert_initial_working_directory(options: &LaunchOptions, dir: &Path) {
         assert_eq!(
             options.initial_tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(dir).unwrap().as_path())
+        );
+    }
+
+    fn assert_tab_working_directory(tab: &LaunchTab, dir: &Path) {
+        assert_eq!(
+            tab.working_directory.as_deref(),
             Some(dunce::canonicalize(dir).unwrap().as_path())
         );
     }
@@ -1047,6 +1250,220 @@ mod tests {
     fn parses_terminal_keymap_asset() {
         settings::KeymapFile::parse(include_str!("../../../assets/keymaps/zed-terminal.json"))
             .expect("terminal keymap asset should parse");
+    }
+
+    #[test]
+    fn parses_initial_terminal_startup_config_content() {
+        let config: TerminalStartupConfig =
+            settings::parse_json_with_comments(initial_terminal_startup_config_content())
+                .expect("initial terminal startup config should parse");
+
+        assert_eq!(config, TerminalStartupConfig::default());
+    }
+
+    #[test]
+    fn applies_configured_startup_tabs() {
+        let initial_dir = temp_test_dir();
+        let second_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            working_directory: Some(initial_dir.clone()),
+            command: Some("cmd /C \"echo configured\"".into()),
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(second_dir.clone()),
+                command: Some("pwsh -NoLogo".into()),
+            }],
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &initial_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo configured".into()],
+            })
+        );
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_tab_working_directory(&options.additional_tabs[0], &second_dir);
+        assert_eq!(
+            options.additional_tabs[0].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(second_dir).ok();
+    }
+
+    #[test]
+    fn cli_overrides_configured_initial_startup_tab() {
+        let configured_dir = temp_test_dir();
+        let cli_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            working_directory: Some(configured_dir.clone()),
+            command: Some("cmd /C configured".into()),
+            tabs: Vec::new(),
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "-d",
+            cli_dir.to_str().unwrap(),
+            "--",
+            "pwsh",
+            "-NoLogo",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &cli_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+        assert!(options.additional_tabs.is_empty());
+
+        std_fs::remove_dir_all(configured_dir).ok();
+        std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn cli_appends_tabs_after_configured_startup_tabs() {
+        let configured_dir = temp_test_dir();
+        let cli_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            working_directory: None,
+            command: None,
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(configured_dir.clone()),
+                command: None,
+            }],
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            cli_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C \"echo appended\"",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 3);
+        assert_tab_working_directory(&options.additional_tabs[0], &configured_dir);
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_tab_working_directory(&options.additional_tabs[1], &cli_dir);
+        assert_eq!(options.additional_tabs[1].command, None);
+        assert_eq!(options.additional_tabs[2].working_directory, None);
+        assert_eq!(
+            options.additional_tabs[2].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo appended".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(configured_dir).ok();
+        std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn no_startup_config_ignores_configured_startup_tabs() {
+        let configured_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            working_directory: Some(configured_dir.clone()),
+            command: Some("cmd /C configured".into()),
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(configured_dir.clone()),
+                command: Some("cmd /C tab".into()),
+            }],
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--no-startup-config"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.working_directory, None);
+        assert_eq!(options.initial_tab.command, None);
+        assert!(options.additional_tabs.is_empty());
+
+        std_fs::remove_dir_all(configured_dir).ok();
+    }
+
+    #[test]
+    fn loads_startup_config_from_config_file() {
+        let data_dir = temp_test_dir();
+        let configured_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            format!(
+                r#"{{
+                    // JSON-with-comments should match Zed settings ergonomics.
+                    "working_directory": "{}",
+                    "command": "cmd /C configured"
+                }}"#,
+                configured_dir.display().to_string().replace('\\', "\\\\")
+            ),
+        )
+        .expect("failed to write startup config");
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options =
+            LaunchOptions::from_cli_and_config_file(cli).expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &configured_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "configured".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(data_dir).ok();
+        std_fs::remove_dir_all(configured_dir).ok();
+    }
+
+    #[test]
+    fn rejects_unknown_startup_config_fields() {
+        let error =
+            settings::parse_json_with_comments::<TerminalStartupConfig>(r#"{"profile": "bad"}"#)
+                .expect_err("unknown startup config field should be rejected");
+
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn rejects_empty_configured_startup_command() {
+        let config = TerminalStartupConfig {
+            working_directory: None,
+            command: Some("".into()),
+            tabs: Vec::new(),
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect_err("empty startup command should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to resolve configured initial startup tab")
+        );
     }
 
     #[test]

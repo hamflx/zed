@@ -23189,6 +23189,7 @@ dependencies = [
  "project",
  "release_channel",
  "reqwest_client",
+ "serde",
  "session",
  "settings",
  "shellexpand",
