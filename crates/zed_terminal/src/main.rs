@@ -13,7 +13,7 @@ use client::{Client, UserStore};
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, SharedString,
+    App, AppContext as _, Bounds, Context, KeyBinding, Menu, MenuItem, SharedString,
     SystemWindowTabController, TaskExt, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
@@ -92,6 +92,14 @@ struct Cli {
     directory: Option<PathBuf>,
 
     #[arg(
+        long = "new-tab",
+        visible_alias = "tab",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath
+    )]
+    new_tabs: Vec<PathBuf>,
+
+    #[arg(
         value_name = "COMMAND",
         value_hint = ValueHint::CommandWithArguments,
         last = true,
@@ -105,14 +113,20 @@ struct Cli {
 struct LaunchOptions {
     path_options: TerminalPathOptions,
     print_paths: bool,
-    working_directory: Option<PathBuf>,
-    command: Option<LaunchCommand>,
+    initial_tab: LaunchTab,
+    additional_tabs: Vec<LaunchTab>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalPathOptions {
     data_dir: PathBuf,
     config_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LaunchTab {
+    working_directory: Option<PathBuf>,
+    command: Option<LaunchCommand>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,13 +146,34 @@ impl LaunchOptions {
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
+        let additional_tabs = cli
+            .new_tabs
+            .iter()
+            .map(|directory| resolve_working_directory(directory).map(LaunchTab::shell))
+            .collect::<Result<Vec<_>>>()?;
 
         Ok(Self {
             path_options,
             print_paths: cli.print_paths,
-            working_directory,
-            command,
+            initial_tab: LaunchTab {
+                working_directory,
+                command,
+            },
+            additional_tabs,
         })
+    }
+
+    fn startup_working_directories(&self) -> Vec<PathBuf> {
+        let mut directories = Vec::new();
+        for tab in std::iter::once(&self.initial_tab).chain(self.additional_tabs.iter()) {
+            let Some(working_directory) = tab.working_directory.as_ref() else {
+                continue;
+            };
+            if !directories.contains(working_directory) {
+                directories.push(working_directory.clone());
+            }
+        }
+        directories
     }
 }
 
@@ -159,6 +194,15 @@ impl TerminalPathOptions {
             data_dir,
             config_dir,
         })
+    }
+}
+
+impl LaunchTab {
+    fn shell(working_directory: PathBuf) -> Self {
+        Self {
+            working_directory: Some(working_directory),
+            command: None,
+        }
     }
 }
 
@@ -512,8 +556,10 @@ fn open_terminal_window(
 ) -> Result<()> {
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let bounds = Bounds::centered(None, window_size, cx);
-    let initial_working_directory = launch_options.working_directory;
-    let initial_command = launch_options.command;
+    let startup_working_directories = launch_options.startup_working_directories();
+    let new_terminal_working_directory = launch_options.initial_tab.working_directory.clone();
+    let initial_tab = launch_options.initial_tab;
+    let additional_tabs = launch_options.additional_tabs;
 
     cx.open_window(
         WindowOptions {
@@ -539,7 +585,7 @@ fn open_terminal_window(
                 },
                 cx,
             );
-            if let Some(working_directory) = initial_working_directory.clone() {
+            for working_directory in startup_working_directories.clone() {
                 project.update(cx, |project, cx| {
                     project
                         .find_or_create_worktree(&working_directory, true, cx)
@@ -547,7 +593,6 @@ fn open_terminal_window(
                 });
             }
 
-            let new_terminal_working_directory = initial_working_directory.clone();
             let workspace = cx.new(|cx| {
                 let mut workspace =
                     Workspace::new(None, project.clone(), app_state.clone(), window, cx);
@@ -584,20 +629,13 @@ fn open_terminal_window(
             )
             .detach();
 
-            let terminal_working_directory = initial_working_directory.clone();
-            let terminal_command = initial_command.clone();
+            let initial_tab = initial_tab.clone();
+            let additional_tabs = additional_tabs.clone();
             workspace.update(cx, |workspace, cx| {
-                TerminalPanel::add_center_terminal(workspace, window, cx, |project, cx| {
-                    if let Some(command) = terminal_command {
-                        project.create_terminal_task(
-                            command.into_spawn_task(terminal_working_directory),
-                            cx,
-                        )
-                    } else {
-                        project.create_terminal_shell(terminal_working_directory, cx)
-                    }
-                })
-                .detach_and_log_err(cx);
+                add_launch_tab(workspace, window, cx, initial_tab);
+                for tab in additional_tabs {
+                    add_launch_tab(workspace, window, cx, tab);
+                }
             });
 
             window.defer(cx, set_terminal_window_title);
@@ -607,6 +645,24 @@ fn open_terminal_window(
     .context("failed to open terminal window")?;
 
     Ok(())
+}
+
+fn add_launch_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    tab: LaunchTab,
+) {
+    let working_directory = tab.working_directory;
+    let command = tab.command;
+    TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
+        if let Some(command) = command {
+            project.create_terminal_task(command.into_spawn_task(working_directory), cx)
+        } else {
+            project.create_terminal_shell(working_directory, cx)
+        }
+    })
+    .detach_and_log_err(cx);
 }
 
 fn default_terminal_config_dir() -> Result<PathBuf> {
@@ -909,6 +965,13 @@ mod tests {
         path
     }
 
+    fn assert_initial_working_directory(options: &LaunchOptions, dir: &Path) {
+        assert_eq!(
+            options.initial_tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(dir).unwrap().as_path())
+        );
+    }
+
     #[test]
     fn parses_path_options() {
         let data_dir = temp_test_dir();
@@ -964,7 +1027,7 @@ mod tests {
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
         assert_eq!(
-            options.working_directory.as_deref(),
+            options.initial_tab.working_directory.as_deref(),
             Some(dunce::canonicalize(&dir).unwrap().as_path())
         );
         std_fs::remove_dir_all(dir).ok();
@@ -977,10 +1040,7 @@ mod tests {
             .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
-        assert_eq!(
-            options.working_directory.as_deref(),
-            Some(dunce::canonicalize(&dir).unwrap().as_path())
-        );
+        assert_initial_working_directory(&options, &dir);
         std_fs::remove_dir_all(dir).ok();
     }
 
@@ -992,10 +1052,7 @@ mod tests {
                 .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
-        assert_eq!(
-            options.working_directory.as_deref(),
-            Some(dunce::canonicalize(&dir).unwrap().as_path())
-        );
+        assert_initial_working_directory(&options, &dir);
         std_fs::remove_dir_all(dir).ok();
     }
 
@@ -1006,11 +1063,69 @@ mod tests {
             .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
-        assert_eq!(
-            options.working_directory.as_deref(),
-            Some(dunce::canonicalize(&dir).unwrap().as_path())
-        );
+        assert_initial_working_directory(&options, &dir);
         std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_additional_startup_tabs() {
+        let initial_dir = temp_test_dir();
+        let second_dir = temp_test_dir();
+        let third_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "-d",
+            initial_dir.to_str().unwrap(),
+            "--new-tab",
+            second_dir.to_str().unwrap(),
+            "--tab",
+            third_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &initial_dir);
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_eq!(
+            options.additional_tabs[0].working_directory.as_deref(),
+            Some(dunce::canonicalize(&second_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            options.additional_tabs[1].working_directory.as_deref(),
+            Some(dunce::canonicalize(&third_dir).unwrap().as_path())
+        );
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_eq!(options.additional_tabs[1].command, None);
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(second_dir).ok();
+        std_fs::remove_dir_all(third_dir).ok();
+    }
+
+    #[test]
+    fn collects_unique_startup_working_directories() {
+        let initial_dir = temp_test_dir();
+        let second_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            initial_dir.to_str().unwrap(),
+            "--new-tab",
+            second_dir.to_str().unwrap(),
+            "--new-tab",
+            initial_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.startup_working_directories(),
+            vec![
+                dunce::canonicalize(&initial_dir).unwrap(),
+                dunce::canonicalize(&second_dir).unwrap()
+            ]
+        );
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(second_dir).ok();
     }
 
     #[test]
@@ -1019,9 +1134,9 @@ mod tests {
             .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
-        assert_eq!(options.working_directory, None);
+        assert_eq!(options.initial_tab.working_directory, None);
         assert_eq!(
-            options.command,
+            options.initial_tab.command,
             Some(LaunchCommand {
                 program: "echo".into(),
                 args: vec!["hello".into()],
@@ -1042,12 +1157,9 @@ mod tests {
         .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
+        assert_initial_working_directory(&options, &dir);
         assert_eq!(
-            options.working_directory.as_deref(),
-            Some(dunce::canonicalize(&dir).unwrap().as_path())
-        );
-        assert_eq!(
-            options.command,
+            options.initial_tab.command,
             Some(LaunchCommand {
                 program: "pwsh".into(),
                 args: vec!["-NoLogo".into()],
@@ -1070,12 +1182,9 @@ mod tests {
         .expect("failed to parse cli args");
         let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
 
+        assert_initial_working_directory(&options, &dir);
         assert_eq!(
-            options.working_directory.as_deref(),
-            Some(dunce::canonicalize(&dir).unwrap().as_path())
-        );
-        assert_eq!(
-            options.command,
+            options.initial_tab.command,
             Some(LaunchCommand {
                 program: "cargo".into(),
                 args: vec!["--version".into()],
