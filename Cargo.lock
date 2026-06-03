@@ -23190,6 +23190,7 @@ dependencies = [
  "project",
  "release_channel",
  "reqwest_client",
+ "schemars 1.0.4",
  "serde",
  "session",
  "settings",

@@ -36,6 +36,7 @@ paths.workspace = true
 project.workspace = true
 release_channel.workspace = true
 reqwest_client.workspace = true
+schemars.workspace = true
 session.workspace = true
 serde.workspace = true
 settings.workspace = true

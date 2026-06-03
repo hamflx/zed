@@ -17,13 +17,14 @@ use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    App, AppContext as _, Bounds, Context, KeyBinding, Menu, MenuItem, SharedString,
+    Action, App, AppContext as _, Bounds, Context, KeyBinding, Menu, MenuItem, SharedString,
     SystemWindowTabController, TaskExt, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
 use project::Project;
 use reqwest_client::ReqwestClient;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use session::{AppSession, Session};
 use settings::{KeybindSource, KeymapFile, KeymapFileLoadResult, Settings};
@@ -47,6 +48,13 @@ actions!(
         NewTerminalTab
     ]
 );
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct NewTerminalTabWithProfile {
+    profile: String,
+}
 
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
@@ -284,6 +292,12 @@ struct TerminalStartupProfileSummary {
     hidden: bool,
     is_default: bool,
     tab_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileMenuEntry {
+    profile: String,
+    label: String,
 }
 
 impl TerminalCliCommand {
@@ -753,6 +767,25 @@ impl TerminalStartupConfig {
             })
             .collect()
     }
+
+    fn profile_menu_entries(&self) -> Vec<TerminalStartupProfileMenuEntry> {
+        self.profile_summaries(false)
+            .into_iter()
+            .map(|profile| TerminalStartupProfileMenuEntry {
+                label: profile_menu_label(&profile),
+                profile: profile.name,
+            })
+            .collect()
+    }
+
+    fn profile_initial_tab(&self, profile: &str) -> Result<LaunchTab> {
+        let profile = profile.trim();
+        if profile.is_empty() {
+            bail!("startup profile name is empty");
+        }
+
+        self.initial_tab(Some(profile))
+    }
 }
 
 struct TerminalStartupLayout<'a> {
@@ -945,6 +978,33 @@ fn format_startup_profiles(
     output
 }
 
+fn profile_menu_label(profile: &TerminalStartupProfileSummary) -> String {
+    let mut label = profile.display_name.clone();
+    if profile.display_name != profile.name {
+        write!(&mut label, " ({})", profile.name).expect("writing to string should not fail");
+    }
+    if profile.is_default {
+        label.push_str(" - Default");
+    }
+    label
+}
+
+fn startup_profile_menu_entries() -> Vec<TerminalStartupProfileMenuEntry> {
+    match TerminalStartupConfig::load(&active_terminal_startup_config_file()) {
+        Ok(startup_config) => startup_config.profile_menu_entries(),
+        Err(error) => {
+            log::warn!("failed to load startup profile menu: {error:#}");
+            Vec::new()
+        }
+    }
+}
+
+fn launch_tab_for_profile(profile: &str) -> Result<LaunchTab> {
+    TerminalStartupConfig::load(&active_terminal_startup_config_file())?
+        .profile_initial_tab(profile)
+        .with_context(|| format!("failed to resolve startup profile {profile:?}"))
+}
+
 fn terminal_log_file() -> &'static PathBuf {
     TERMINAL_LOG_FILE.get_or_init(|| paths::logs_dir().join(format!("{TERMINAL_APP_NAME}.log")))
 }
@@ -999,6 +1059,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     ensure_config_files(&fs, cx)?;
     settings::init(cx);
     watch_settings_files(fs.clone(), cx);
+    watch_startup_config_file(fs.clone(), cx);
     bind_keys(fs.clone(), cx)?;
     Assets
         .load_fonts(cx)
@@ -1142,6 +1203,33 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
 }
 
 fn set_app_menus(cx: &mut App) {
+    let mut shell_items = vec![MenuItem::action("New Tab", NewTerminalTab)];
+    let profile_entries = startup_profile_menu_entries();
+    if !profile_entries.is_empty() {
+        shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
+            profile_entries.into_iter().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    NewTerminalTabWithProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+    }
+    shell_items.extend([
+        MenuItem::action(
+            "Close Tab",
+            workspace::CloseActiveItem {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
+        MenuItem::separator(),
+        MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
+        MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
+    ]);
+
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(vec![
             MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
@@ -1152,19 +1240,7 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Quit", zed_actions::Quit),
         ]),
-        Menu::new("Shell").items(vec![
-            MenuItem::action("New Tab", NewTerminalTab),
-            MenuItem::action(
-                "Close Tab",
-                workspace::CloseActiveItem {
-                    close_pinned: false,
-                    save_intent: None,
-                },
-            ),
-            MenuItem::separator(),
-            MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
-            MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
-        ]),
+        Menu::new("Shell").items(shell_items),
         Menu::new("Pane").items(vec![
             MenuItem::action("Split Right", workspace::SplitRight::default()),
             MenuItem::action("Split Down", workspace::SplitDown::default()),
@@ -1247,6 +1323,29 @@ fn open_terminal_window(
                     )
                     .detach_and_log_err(cx);
                 });
+                let profile_project = project.clone();
+                workspace.register_action(
+                    move |workspace, action: &NewTerminalTabWithProfile, window, cx| {
+                        match launch_tab_for_profile(&action.profile) {
+                            Ok(tab) => {
+                                if let Some(working_directory) = tab.working_directory.clone() {
+                                    profile_project.update(cx, |project, cx| {
+                                        project
+                                            .find_or_create_worktree(&working_directory, true, cx)
+                                            .detach_and_log_err(cx);
+                                    });
+                                }
+                                add_launch_tab(workspace, window, cx, tab);
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to create terminal tab for profile {:?}: {error:#}",
+                                    action.profile
+                                );
+                            }
+                        }
+                    },
+                );
                 workspace
             });
             let window_handle = window.window_handle();
@@ -1437,6 +1536,21 @@ fn watch_settings_files(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             }
         });
     });
+}
+
+fn watch_startup_config_file(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    let (mut startup_config_rx, startup_config_watcher) = settings::watch_config_file(
+        cx.background_executor(),
+        fs,
+        active_terminal_startup_config_file(),
+    );
+    cx.spawn(async move |cx| {
+        let _startup_config_watcher = startup_config_watcher;
+        while startup_config_rx.next().await.is_some() {
+            cx.update(set_app_menus);
+        }
+    })
+    .detach();
 }
 
 fn load_user_themes_in_background(fs: Arc<dyn fs::Fs>, cx: &mut App) {
@@ -1831,6 +1945,145 @@ mod tests {
                 ("work".into(), "Work Shell".into(), false),
             ]
         );
+    }
+
+    #[test]
+    fn profile_menu_entries_use_visible_profiles() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "secret".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Secret".into()),
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Work Shell".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        assert_eq!(
+            config.profile_menu_entries(),
+            vec![TerminalStartupProfileMenuEntry {
+                profile: "work".into(),
+                label: "Work Shell (work) - Default".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn profile_initial_tab_resolves_selected_profile_only() {
+        let initial_dir = temp_test_dir();
+        let extra_tab_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                command: Some("cmd /C work".into()),
+                title: Some("Work".into()),
+                env: test_env(&[("ZED_TERMINAL_PROFILE", "work")]),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(extra_tab_dir.clone()),
+                    command: Some("cmd /C logs".into()),
+                    title: Some("Logs".into()),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let tab = config
+            .profile_initial_tab("work")
+            .expect("profile initial tab should resolve");
+
+        assert_tab_working_directory(&tab, &initial_dir);
+        assert_ne!(
+            tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&extra_tab_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "work".into()],
+            })
+        );
+        assert_eq!(tab.env, test_env(&[("ZED_TERMINAL_PROFILE", "work")]));
+        assert_eq!(tab.title.as_deref(), Some("Work"));
+        assert_eq!(tab.shell, None);
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(extra_tab_dir).ok();
+    }
+
+    #[test]
+    fn profile_initial_tab_allows_hidden_profiles_for_direct_actions() {
+        let secret_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "secret".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                working_directory: Some(secret_dir.clone()),
+                title: Some("Secret".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        assert_eq!(config.profile_menu_entries(), Vec::new());
+
+        let tab = config
+            .profile_initial_tab("secret")
+            .expect("hidden profiles should still be directly invokable");
+
+        assert_tab_working_directory(&tab, &secret_dir);
+        assert_eq!(tab.title.as_deref(), Some("Secret"));
+
+        std_fs::remove_dir_all(secret_dir).ok();
+    }
+
+    #[test]
+    fn parses_new_terminal_tab_with_profile_action_input() {
+        let action = <NewTerminalTabWithProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("profile action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalTabWithProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &NewTerminalTabWithProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <NewTerminalTabWithProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown profile action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
     }
 
     #[test]
