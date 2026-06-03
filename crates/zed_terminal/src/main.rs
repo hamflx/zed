@@ -100,6 +100,15 @@ struct Cli {
     new_tabs: Vec<PathBuf>,
 
     #[arg(
+        long = "new-tab-command",
+        visible_alias = "tab-command",
+        value_name = "COMMAND",
+        value_hint = ValueHint::CommandString,
+        allow_hyphen_values = true
+    )]
+    new_tab_commands: Vec<String>,
+
+    #[arg(
         value_name = "COMMAND",
         value_hint = ValueHint::CommandWithArguments,
         last = true,
@@ -146,11 +155,7 @@ impl LaunchOptions {
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
-        let additional_tabs = cli
-            .new_tabs
-            .iter()
-            .map(|directory| resolve_working_directory(directory).map(LaunchTab::shell))
-            .collect::<Result<Vec<_>>>()?;
+        let additional_tabs = LaunchTab::additional_from_cli(&cli.new_tabs, &cli.new_tab_commands)?;
 
         Ok(Self {
             path_options,
@@ -198,11 +203,30 @@ impl TerminalPathOptions {
 }
 
 impl LaunchTab {
-    fn shell(working_directory: PathBuf) -> Self {
-        Self {
-            working_directory: Some(working_directory),
-            command: None,
+    fn additional_from_cli(directories: &[PathBuf], commands: &[String]) -> Result<Vec<Self>> {
+        let mut tabs = Vec::with_capacity(directories.len() + commands.len());
+
+        for directory in directories {
+            tabs.push(Self {
+                working_directory: Some(resolve_working_directory(directory).with_context(
+                    || format!("failed to resolve startup tab {}", tabs.len() + 2),
+                )?),
+                command: None,
+            });
         }
+
+        for command in commands {
+            tabs.push(Self {
+                working_directory: None,
+                command: Some(
+                    LaunchCommand::from_command_line(command).with_context(|| {
+                        format!("failed to parse startup tab {}", tabs.len() + 2)
+                    })?,
+                ),
+            });
+        }
+
+        Ok(tabs)
     }
 }
 
@@ -214,6 +238,12 @@ impl LaunchCommand {
             program,
             args: args.collect(),
         })
+    }
+
+    fn from_command_line(command_line: &str) -> Result<Self> {
+        let args = shlex::split(command_line)
+            .with_context(|| format!("could not parse command line: {command_line:?}"))?;
+        Self::from_args(args).with_context(|| "command line is empty")
     }
 
     fn into_spawn_task(self, cwd: Option<PathBuf>) -> SpawnInTerminal {
@@ -1100,6 +1130,95 @@ mod tests {
         std_fs::remove_dir_all(initial_dir).ok();
         std_fs::remove_dir_all(second_dir).ok();
         std_fs::remove_dir_all(third_dir).ok();
+    }
+
+    #[test]
+    fn parses_additional_startup_tab_commands() {
+        let first_dir = temp_test_dir();
+        let second_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            first_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C \"echo one\"",
+            "--tab",
+            second_dir.to_str().unwrap(),
+            "--tab-command",
+            "pwsh -NoLogo",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 4);
+        assert_eq!(
+            options.additional_tabs[0].working_directory.as_deref(),
+            Some(dunce::canonicalize(&first_dir).unwrap().as_path())
+        );
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_eq!(
+            options.additional_tabs[1].working_directory.as_deref(),
+            Some(dunce::canonicalize(&second_dir).unwrap().as_path())
+        );
+        assert_eq!(options.additional_tabs[1].command, None);
+        assert_eq!(options.additional_tabs[2].working_directory, None);
+        assert_eq!(
+            options.additional_tabs[2].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo one".into()],
+            })
+        );
+        assert_eq!(options.additional_tabs[3].working_directory, None);
+        assert_eq!(
+            options.additional_tabs[3].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(first_dir).ok();
+        std_fs::remove_dir_all(second_dir).ok();
+    }
+
+    #[test]
+    fn parses_command_only_additional_startup_tab() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", "cargo --version"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.additional_tabs,
+            vec![LaunchTab {
+                working_directory: None,
+                command: Some(LaunchCommand {
+                    program: "cargo".into(),
+                    args: vec!["--version".into()],
+                }),
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_additional_startup_tab_command() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", ""])
+            .expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli(cli).expect_err("empty command should be rejected");
+
+        assert!(error.to_string().contains("failed to parse startup tab 2"));
+    }
+
+    #[test]
+    fn rejects_unclosed_additional_startup_tab_command_quote() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", "\"unterminated"])
+            .expect("failed to parse cli args");
+
+        let error =
+            LaunchOptions::from_cli(cli).expect_err("unterminated quote should be rejected");
+
+        assert!(error.to_string().contains("failed to parse startup tab 2"));
     }
 
     #[test]
