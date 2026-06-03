@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs as std_fs,
     path::{Path, PathBuf},
     process,
@@ -79,8 +80,11 @@ struct Cli {
     #[arg(long = "paths")]
     print_paths: bool,
 
-    #[arg(long = "no-startup-config")]
+    #[arg(long = "no-startup-config", conflicts_with = "profile")]
     no_startup_config: bool,
+
+    #[arg(long = "profile", value_name = "NAME")]
+    profile: Option<String>,
 
     #[arg(
         short = 'd',
@@ -159,6 +163,21 @@ struct TerminalStartupConfig {
     command: Option<String>,
     #[serde(default)]
     tabs: Vec<TerminalStartupTabConfig>,
+    #[serde(default)]
+    default_profile: Option<String>,
+    #[serde(default)]
+    profiles: BTreeMap<String, TerminalStartupProfileConfig>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TerminalStartupProfileConfig {
+    #[serde(default)]
+    working_directory: Option<PathBuf>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    tabs: Vec<TerminalStartupTabConfig>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -217,8 +236,13 @@ impl LaunchOptions {
         } else {
             startup_config
         };
+        let profile = if cli.print_paths || cli.no_startup_config {
+            None
+        } else {
+            cli.profile.as_deref()
+        };
         let mut initial_tab = startup_config
-            .initial_tab()
+            .initial_tab(profile)
             .context("failed to resolve configured initial startup tab")?;
         if let Some(working_directory) = working_directory {
             initial_tab.working_directory = Some(working_directory);
@@ -227,7 +251,7 @@ impl LaunchOptions {
             initial_tab.command = Some(command);
         }
         let mut additional_tabs = startup_config
-            .additional_tabs()
+            .additional_tabs(profile)
             .context("failed to resolve configured startup tabs")?;
         additional_tabs.extend(LaunchTab::additional_from_cli(
             &cli.new_tabs,
@@ -387,27 +411,73 @@ impl TerminalStartupConfig {
             .with_context(|| format!("failed to parse terminal startup config {}", path.display()))
     }
 
-    fn initial_tab(&self) -> Result<LaunchTab> {
+    fn selected_layout(
+        &self,
+        requested_profile: Option<&str>,
+    ) -> Result<TerminalStartupLayout<'_>> {
+        let Some(profile_name) = requested_profile.or(self.default_profile.as_deref()) else {
+            return Ok(TerminalStartupLayout {
+                working_directory: self.working_directory.as_deref(),
+                command: self.command.as_deref(),
+                tabs: &self.tabs,
+                label: "root startup layout".into(),
+            });
+        };
+
+        if profile_name.is_empty() {
+            bail!("startup profile name is empty");
+        }
+
+        let profile = self.profiles.get(profile_name).with_context(|| {
+            if self.profiles.is_empty() {
+                format!("startup profile not found: {profile_name}")
+            } else {
+                format!(
+                    "startup profile not found: {profile_name}. Available profiles: {}",
+                    self.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            }
+        })?;
+
+        Ok(TerminalStartupLayout {
+            working_directory: profile.working_directory.as_deref(),
+            command: profile.command.as_deref(),
+            tabs: &profile.tabs,
+            label: format!("startup profile {profile_name:?}"),
+        })
+    }
+
+    fn initial_tab(&self, requested_profile: Option<&str>) -> Result<LaunchTab> {
+        let layout = self.selected_layout(requested_profile)?;
         LaunchTab::from_config(
-            self.working_directory.as_deref(),
-            self.command.as_deref(),
-            "initial startup tab",
+            layout.working_directory,
+            layout.command,
+            format!("initial tab for {}", layout.label),
         )
     }
 
-    fn additional_tabs(&self) -> Result<Vec<LaunchTab>> {
-        self.tabs
+    fn additional_tabs(&self, requested_profile: Option<&str>) -> Result<Vec<LaunchTab>> {
+        let layout = self.selected_layout(requested_profile)?;
+        layout
+            .tabs
             .iter()
             .enumerate()
             .map(|(index, tab)| {
                 LaunchTab::from_config(
                     tab.working_directory.as_deref(),
                     tab.command.as_deref(),
-                    format!("startup tab {}", index + 2),
+                    format!("tab {} for {}", index + 2, layout.label),
                 )
             })
             .collect()
     }
+}
+
+struct TerminalStartupLayout<'a> {
+    working_directory: Option<&'a Path>,
+    command: Option<&'a str>,
+    tabs: &'a [TerminalStartupTabConfig],
+    label: String,
 }
 
 fn main() {
@@ -1176,7 +1246,9 @@ fn initial_terminal_startup_config_content() -> &'static str {
 {
   "working_directory": null,
   "command": null,
-  "tabs": []
+  "tabs": [],
+  "default_profile": null,
+  "profiles": {}
 }
 "#
 }
@@ -1272,6 +1344,7 @@ mod tests {
                 working_directory: Some(second_dir.clone()),
                 command: Some("pwsh -NoLogo".into()),
             }],
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
         let options = LaunchOptions::from_cli_and_startup_config(cli, config)
@@ -1307,6 +1380,7 @@ mod tests {
             working_directory: Some(configured_dir.clone()),
             command: Some("cmd /C configured".into()),
             tabs: Vec::new(),
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -1345,6 +1419,7 @@ mod tests {
                 working_directory: Some(configured_dir.clone()),
                 command: None,
             }],
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -1385,6 +1460,7 @@ mod tests {
                 working_directory: Some(configured_dir.clone()),
                 command: Some("cmd /C tab".into()),
             }],
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from(["zed-terminal", "--no-startup-config"])
             .expect("failed to parse cli args");
@@ -1396,6 +1472,15 @@ mod tests {
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
+    }
+
+    #[test]
+    fn rejects_profile_with_no_startup_config() {
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--profile", "work", "--no-startup-config"])
+                .expect_err("profile and no-startup-config should conflict");
+
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
@@ -1439,6 +1524,201 @@ mod tests {
     }
 
     #[test]
+    fn applies_default_startup_profile() {
+        let profile_dir = temp_test_dir();
+        let profile_tab_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(profile_dir.clone()),
+                command: Some("cmd /C \"echo profile\"".into()),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(profile_tab_dir.clone()),
+                    command: Some("pwsh -NoLogo".into()),
+                }],
+            },
+        );
+        let config = TerminalStartupConfig {
+            working_directory: None,
+            command: None,
+            tabs: Vec::new(),
+            default_profile: Some("work".into()),
+            profiles,
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &profile_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo profile".into()],
+            })
+        );
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_tab_working_directory(&options.additional_tabs[0], &profile_tab_dir);
+        assert_eq!(
+            options.additional_tabs[0].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(profile_dir).ok();
+        std_fs::remove_dir_all(profile_tab_dir).ok();
+    }
+
+    #[test]
+    fn cli_selects_startup_profile() {
+        let root_dir = temp_test_dir();
+        let work_dir = temp_test_dir();
+        let admin_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(work_dir.clone()),
+                command: Some("cmd /C work".into()),
+                tabs: Vec::new(),
+            },
+        );
+        profiles.insert(
+            "admin".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(admin_dir.clone()),
+                command: Some("cmd /C admin".into()),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: None,
+                    command: Some("pwsh -NoLogo".into()),
+                }],
+            },
+        );
+        let config = TerminalStartupConfig {
+            working_directory: Some(root_dir.clone()),
+            command: Some("cmd /C root".into()),
+            tabs: Vec::new(),
+            default_profile: Some("work".into()),
+            profiles,
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--profile", "admin"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &admin_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "admin".into()],
+            })
+        );
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(
+            options.additional_tabs[0].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+        std_fs::remove_dir_all(work_dir).ok();
+        std_fs::remove_dir_all(admin_dir).ok();
+    }
+
+    #[test]
+    fn cli_overrides_selected_startup_profile_initial_tab() {
+        let profile_dir = temp_test_dir();
+        let cli_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(profile_dir.clone()),
+                command: Some("cmd /C profile".into()),
+                tabs: Vec::new(),
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "-d",
+            cli_dir.to_str().unwrap(),
+            "--",
+            "pwsh",
+            "-NoLogo",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_initial_working_directory(&options, &cli_dir);
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(profile_dir).ok();
+        std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn rejects_missing_startup_profile() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: None,
+                command: None,
+                tabs: Vec::new(),
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--profile", "missing"])
+            .expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect_err("missing profile should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("startup profile not found: missing"));
+        assert!(message.contains("Available profiles: work"));
+    }
+
+    #[test]
+    fn paths_mode_ignores_requested_startup_profile() {
+        let config = TerminalStartupConfig {
+            default_profile: Some("missing".into()),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--paths", "--profile", "missing"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("paths mode should not resolve startup profiles");
+
+        assert!(options.print_paths);
+        assert_eq!(options.initial_tab.working_directory, None);
+        assert_eq!(options.initial_tab.command, None);
+        assert!(options.additional_tabs.is_empty());
+    }
+
+    #[test]
     fn rejects_unknown_startup_config_fields() {
         let error =
             settings::parse_json_with_comments::<TerminalStartupConfig>(r#"{"profile": "bad"}"#)
@@ -1453,6 +1733,7 @@ mod tests {
             working_directory: None,
             command: Some("".into()),
             tabs: Vec::new(),
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
 
