@@ -1198,13 +1198,18 @@ impl TerminalBuilder {
         //Event loop
         self.terminal.event_loop_task = cx.spawn(async move |terminal, cx| {
             while let Some(event) = self.events_rx.next().await {
-                terminal.update(cx, |terminal, cx| {
-                    //Process the first event immediately for lowered latency
-                    terminal.process_pty_event(event, cx);
-                })?;
+                let mut pending_wakeup =
+                    matches!(event, PtyEvent::Event(TerminalBackendEvent::Wakeup));
+                if !pending_wakeup {
+                    terminal.update(cx, |terminal, cx| {
+                        //Process the first event immediately for lowered latency
+                        terminal.process_pty_event(event, cx);
+                    })?;
+                }
 
                 'outer: loop {
                     let mut events = Vec::new();
+                    let mut wakeup = std::mem::take(&mut pending_wakeup);
 
                     #[cfg(any(test, feature = "test-support"))]
                     let mut timer = cx.background_executor().simulate_random_delay().fuse();
@@ -1214,7 +1219,6 @@ impl TerminalBuilder {
                         .timer(std::time::Duration::from_millis(4))
                         .fuse();
 
-                    let mut wakeup = false;
                     loop {
                         futures::select_biased! {
                             _ = timer => break,
