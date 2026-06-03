@@ -303,6 +303,20 @@ impl TerminalView {
         }
     }
 
+    pub fn new_with_custom_title(
+        terminal: Entity<Terminal>,
+        workspace: WeakEntity<Workspace>,
+        workspace_id: Option<WorkspaceId>,
+        project: WeakEntity<Project>,
+        custom_title: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::new(terminal, workspace, workspace_id, project, window, cx);
+        view.custom_title = custom_title.filter(|title| !title.trim().is_empty());
+        view
+    }
+
     /// Enable 'embedded' mode where the terminal displays the full content with an optional limit of lines.
     pub fn set_embedded_mode(
         &mut self,
@@ -2858,6 +2872,38 @@ mod tests {
 
         terminal_view.update(cx, |view, _cx| {
             assert!(view.custom_title().is_none());
+        });
+    }
+
+    #[gpui::test]
+    async fn test_new_with_custom_title(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+
+        let (project, workspace) = init_test(cx).await;
+
+        let terminal = project
+            .update(cx, |project, cx| project.create_terminal_shell(None, cx))
+            .await
+            .unwrap();
+
+        let terminal_view = cx
+            .add_window(|window, cx| {
+                TerminalView::new_with_custom_title(
+                    terminal,
+                    workspace.downgrade(),
+                    None,
+                    project.downgrade(),
+                    Some("frontend".to_string()),
+                    window,
+                    cx,
+                )
+            })
+            .root(cx)
+            .unwrap();
+
+        terminal_view.update(cx, |view, cx| {
+            assert_eq!(view.custom_title(), Some("frontend"));
+            assert_eq!(view.tab_content_text(0, cx).as_ref(), "frontend");
         });
     }
 

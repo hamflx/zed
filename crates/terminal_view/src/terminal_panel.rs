@@ -759,6 +759,20 @@ impl TerminalPanel {
         ) -> Task<Result<Entity<Terminal>>>
         + 'static,
     ) -> Task<Result<WeakEntity<Terminal>>> {
+        Self::add_center_terminal_with_custom_title(workspace, window, cx, None, create_terminal)
+    }
+
+    pub fn add_center_terminal_with_custom_title(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+        custom_title: Option<String>,
+        create_terminal: impl FnOnce(
+            &mut Project,
+            &mut Context<Project>,
+        ) -> Task<Result<Entity<Terminal>>>
+        + 'static,
+    ) -> Task<Result<WeakEntity<Terminal>>> {
         if !is_enabled_in_workspace(workspace, cx) {
             return Task::ready(Err(anyhow!(
                 "terminal not yet supported for remote projects"
@@ -770,11 +784,12 @@ impl TerminalPanel {
 
             workspace.update_in(cx, |workspace, window, cx| {
                 let terminal_view = cx.new(|cx| {
-                    TerminalView::new(
+                    TerminalView::new_with_custom_title(
                         terminal.clone(),
                         workspace.weak_handle(),
                         workspace.database_id(),
                         workspace.project().downgrade(),
+                        custom_title,
                         window,
                         cx,
                     )

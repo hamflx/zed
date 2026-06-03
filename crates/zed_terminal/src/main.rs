@@ -148,6 +148,7 @@ struct LaunchTab {
     working_directory: Option<PathBuf>,
     command: Option<LaunchCommand>,
     env: HashMap<String, String>,
+    title: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,6 +164,8 @@ struct TerminalStartupConfig {
     working_directory: Option<PathBuf>,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
@@ -181,6 +184,8 @@ struct TerminalStartupProfileConfig {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
     tabs: Vec<TerminalStartupTabConfig>,
@@ -193,6 +198,8 @@ struct TerminalStartupTabConfig {
     working_directory: Option<PathBuf>,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
     #[serde(default)]
     env: HashMap<String, String>,
 }
@@ -328,6 +335,7 @@ impl LaunchTab {
                 )?),
                 command: None,
                 env: HashMap::default(),
+                title: None,
             });
         }
 
@@ -340,6 +348,7 @@ impl LaunchTab {
                     })?,
                 ),
                 env: inherited_env.clone(),
+                title: None,
             });
         }
 
@@ -351,6 +360,7 @@ impl LaunchTab {
         command: Option<&str>,
         inherited_env: &HashMap<String, String>,
         tab_env: &HashMap<String, String>,
+        title: Option<&str>,
         label: impl std::fmt::Display,
     ) -> Result<Self> {
         let working_directory = working_directory
@@ -376,6 +386,7 @@ impl LaunchTab {
             working_directory,
             command,
             env,
+            title: normalize_terminal_title(title),
         })
     }
 }
@@ -456,6 +467,7 @@ impl TerminalStartupConfig {
             return Ok(TerminalStartupLayout {
                 working_directory: self.working_directory.as_deref(),
                 command: self.command.as_deref(),
+                title: self.title.as_deref(),
                 env: &self.env,
                 tabs: &self.tabs,
                 label: "root startup layout".into(),
@@ -480,6 +492,7 @@ impl TerminalStartupConfig {
         Ok(TerminalStartupLayout {
             working_directory: profile.working_directory.as_deref(),
             command: profile.command.as_deref(),
+            title: profile.title.as_deref(),
             env: &profile.env,
             tabs: &profile.tabs,
             label: format!("startup profile {profile_name:?}"),
@@ -493,6 +506,7 @@ impl TerminalStartupConfig {
             layout.command,
             layout.env,
             &HashMap::default(),
+            layout.title,
             format!("initial tab for {}", layout.label),
         )
     }
@@ -513,6 +527,7 @@ impl TerminalStartupConfig {
                     tab.command.as_deref(),
                     layout.env,
                     &tab.env,
+                    tab.title.as_deref(),
                     format!("tab {} for {}", index + 2, layout.label),
                 )
             })
@@ -523,6 +538,7 @@ impl TerminalStartupConfig {
 struct TerminalStartupLayout<'a> {
     working_directory: Option<&'a Path>,
     command: Option<&'a str>,
+    title: Option<&'a str>,
     env: &'a HashMap<String, String>,
     tabs: &'a [TerminalStartupTabConfig],
     label: String,
@@ -948,13 +964,20 @@ fn add_launch_tab(
     let working_directory = tab.working_directory;
     let command = tab.command;
     let env = tab.env;
-    TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
-        if let Some(command) = command {
-            project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
-        } else {
-            project.create_terminal_shell(working_directory, cx)
-        }
-    })
+    let title = tab.title;
+    TerminalPanel::add_center_terminal_with_custom_title(
+        workspace,
+        window,
+        cx,
+        title,
+        move |project, cx| {
+            if let Some(command) = command {
+                project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
+            } else {
+                project.create_terminal_shell(working_directory, cx)
+            }
+        },
+    )
     .detach_and_log_err(cx);
 }
 
@@ -1040,6 +1063,13 @@ fn format_command_part(part: &str) -> String {
     } else {
         part.to_string()
     }
+}
+
+fn normalize_terminal_title(title: Option<&str>) -> Option<String> {
+    title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_string)
 }
 
 fn set_terminal_window_title(window: &mut Window, cx: &mut App) {
@@ -1296,6 +1326,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
 {
   "working_directory": null,
   "command": null,
+  "title": null,
   "env": {},
   "tabs": [],
   "default_profile": null,
@@ -1399,9 +1430,11 @@ mod tests {
         let config = TerminalStartupConfig {
             working_directory: Some(initial_dir.clone()),
             command: Some("cmd /C \"echo configured\"".into()),
+            title: Some("Configured".into()),
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(second_dir.clone()),
                 command: Some("pwsh -NoLogo".into()),
+                title: Some("PowerShell".into()),
                 ..TerminalStartupTabConfig::default()
             }],
             ..TerminalStartupConfig::default()
@@ -1418,6 +1451,7 @@ mod tests {
                 args: vec!["/C".into(), "echo configured".into()],
             })
         );
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Configured"));
         assert_eq!(options.additional_tabs.len(), 1);
         assert_tab_working_directory(&options.additional_tabs[0], &second_dir);
         assert_eq!(
@@ -1426,6 +1460,10 @@ mod tests {
                 program: "pwsh".into(),
                 args: vec!["-NoLogo".into()],
             })
+        );
+        assert_eq!(
+            options.additional_tabs[0].title.as_deref(),
+            Some("PowerShell")
         );
 
         std_fs::remove_dir_all(initial_dir).ok();
@@ -1439,6 +1477,7 @@ mod tests {
         let config = TerminalStartupConfig {
             working_directory: Some(configured_dir.clone()),
             command: Some("cmd /C configured".into()),
+            title: Some("Configured".into()),
             tabs: Vec::new(),
             ..TerminalStartupConfig::default()
         };
@@ -1462,6 +1501,7 @@ mod tests {
                 args: vec!["-NoLogo".into()],
             })
         );
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Configured"));
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
@@ -1512,14 +1552,37 @@ mod tests {
     }
 
     #[test]
+    fn applies_startup_titles_to_shell_tabs() {
+        let config = TerminalStartupConfig {
+            title: Some("Shell".into()),
+            tabs: vec![TerminalStartupTabConfig {
+                title: Some("Logs".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.command, None);
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Shell"));
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_eq!(options.additional_tabs[0].title.as_deref(), Some("Logs"));
+    }
+
+    #[test]
     fn no_startup_config_ignores_configured_startup_tabs() {
         let configured_dir = temp_test_dir();
         let config = TerminalStartupConfig {
             working_directory: Some(configured_dir.clone()),
             command: Some("cmd /C configured".into()),
+            title: Some("Configured".into()),
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(configured_dir.clone()),
                 command: Some("cmd /C tab".into()),
+                title: Some("Tab".into()),
                 ..TerminalStartupTabConfig::default()
             }],
             ..TerminalStartupConfig::default()
@@ -1531,6 +1594,7 @@ mod tests {
 
         assert_eq!(options.initial_tab.working_directory, None);
         assert_eq!(options.initial_tab.command, None);
+        assert_eq!(options.initial_tab.title, None);
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
@@ -1609,6 +1673,27 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_blank_startup_titles() {
+        let config = TerminalStartupConfig {
+            title: Some("   ".into()),
+            command: Some("cmd /C configured".into()),
+            tabs: vec![TerminalStartupTabConfig {
+                title: Some("\t".into()),
+                command: Some("cmd /C tab".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.title, None);
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.additional_tabs[0].title, None);
+    }
+
+    #[test]
     fn profile_env_is_inherited_by_profile_command_tabs() {
         let profile_env = test_env(&[("ZED_TERMINAL_PROFILE", "work"), ("COMMON", "profile")]);
         let mut profiles = BTreeMap::new();
@@ -1616,9 +1701,11 @@ mod tests {
             "work".into(),
             TerminalStartupProfileConfig {
                 command: Some("cmd /C profile".into()),
+                title: Some("Work".into()),
                 env: profile_env.clone(),
                 tabs: vec![TerminalStartupTabConfig {
                     command: Some("pwsh -NoLogo".into()),
+                    title: Some("Profile Tab".into()),
                     ..TerminalStartupTabConfig::default()
                 }],
                 ..TerminalStartupProfileConfig::default()
@@ -1634,8 +1721,13 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(options.initial_tab.env, profile_env);
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Work"));
         assert_eq!(options.additional_tabs.len(), 1);
         assert_eq!(options.additional_tabs[0].env, options.initial_tab.env);
+        assert_eq!(
+            options.additional_tabs[0].title.as_deref(),
+            Some("Profile Tab")
+        );
     }
 
     #[test]
@@ -1669,6 +1761,7 @@ mod tests {
             "work".into(),
             TerminalStartupProfileConfig {
                 env: profile_env.clone(),
+                title: Some("Work".into()),
                 ..TerminalStartupProfileConfig::default()
             },
         );
@@ -1697,6 +1790,7 @@ mod tests {
             })
         );
         assert_eq!(options.initial_tab.env, profile_env);
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Work"));
     }
 
     #[test]
@@ -1707,6 +1801,7 @@ mod tests {
             "work".into(),
             TerminalStartupProfileConfig {
                 env: profile_env.clone(),
+                title: Some("Work".into()),
                 ..TerminalStartupProfileConfig::default()
             },
         );
@@ -1726,7 +1821,9 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Work"));
         assert_eq!(options.additional_tabs[0].env, profile_env);
+        assert_eq!(options.additional_tabs[0].title, None);
     }
 
     #[test]
@@ -1745,9 +1842,11 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(options.initial_tab.env, HashMap::default());
+        assert_eq!(options.initial_tab.title, None);
         assert_eq!(options.additional_tabs.len(), 1);
         assert_eq!(options.additional_tabs[0].command, None);
         assert_eq!(options.additional_tabs[0].env, HashMap::default());
+        assert_eq!(options.additional_tabs[0].title, None);
     }
 
     #[test]
@@ -2150,6 +2249,7 @@ mod tests {
                     args: vec!["--version".into()],
                 }),
                 env: HashMap::default(),
+                title: None,
             }]
         );
     }
