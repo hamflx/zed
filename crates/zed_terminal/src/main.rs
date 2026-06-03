@@ -88,12 +88,16 @@ struct Cli {
     )]
     config_dir: Option<PathBuf>,
 
-    #[arg(long = "paths", conflicts_with = "list_profiles")]
+    #[arg(
+        long = "paths",
+        conflicts_with_all = ["list_profiles", "validate_startup_config"]
+    )]
     print_paths: bool,
 
     #[arg(
         long = "list-profiles",
         conflicts_with_all = [
+            "validate_startup_config",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -109,15 +113,33 @@ struct Cli {
     #[arg(
         long = "all-profiles",
         requires = "list_profiles",
+        conflicts_with = "validate_startup_config",
         help = "Include hidden startup profiles when listing profiles"
     )]
     all_profiles: bool,
 
     #[arg(
         long = "no-startup-config",
-        conflicts_with_all = ["profile", "list_profiles"]
+        conflicts_with_all = ["profile", "list_profiles", "validate_startup_config"]
     )]
     no_startup_config: bool,
+
+    #[arg(
+        long = "validate-startup-config",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Validate terminal.json without opening a terminal window"
+    )]
+    validate_startup_config: bool,
 
     #[arg(long = "profile", value_name = "NAME")]
     profile: Option<String>,
@@ -171,6 +193,10 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
         include_hidden: bool,
+    },
+    ValidateStartupConfig {
+        path_options: TerminalPathOptions,
+        startup_config: TerminalStartupConfig,
     },
     Launch(LaunchOptions),
 }
@@ -300,6 +326,12 @@ struct TerminalStartupProfileMenuEntry {
     label: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalStartupConfigValidation {
+    layout_count: usize,
+    tab_count: usize,
+}
+
 impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
@@ -343,6 +375,13 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.validate_startup_config {
+            return Ok(Self::ValidateStartupConfig {
+                path_options,
+                startup_config,
+            });
+        }
+
         Ok(Self::Launch(LaunchOptions::from_cli_parts(
             cli,
             startup_config,
@@ -354,6 +393,7 @@ impl TerminalCliCommand {
         match self {
             Self::PrintPaths(path_options) => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
+            Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
     }
@@ -649,6 +689,102 @@ impl TerminalStartupConfig {
             .with_context(|| format!("failed to parse terminal startup config {}", path.display()))
     }
 
+    fn validate(&self) -> Result<TerminalStartupConfigValidation> {
+        if let Some(default_profile) = self.default_profile.as_deref() {
+            self.validate_profile_reference("default_profile", default_profile)?;
+        }
+
+        let mut validation = Self::validate_layout(&TerminalStartupLayout {
+            working_directory: self.working_directory.as_deref(),
+            command: self.command.as_deref(),
+            title: self.title.as_deref(),
+            shell: self.shell.as_ref(),
+            env: &self.env,
+            tabs: &self.tabs,
+            label: "root startup layout".into(),
+        })?;
+
+        for (name, profile) in &self.profiles {
+            if name.trim().is_empty() {
+                bail!("startup profile name is empty");
+            }
+
+            let profile_validation = Self::validate_layout(&TerminalStartupLayout {
+                working_directory: profile.working_directory.as_deref(),
+                command: profile.command.as_deref(),
+                title: profile.title.as_deref(),
+                shell: profile.shell.as_ref(),
+                env: &profile.env,
+                tabs: &profile.tabs,
+                label: format!("startup profile {name:?}"),
+            })
+            .with_context(|| format!("failed to validate startup profile {name:?}"))?;
+
+            validation.layout_count += profile_validation.layout_count;
+            validation.tab_count += profile_validation.tab_count;
+        }
+
+        Ok(validation)
+    }
+
+    fn validate_profile_reference(&self, field: &str, profile_name: &str) -> Result<()> {
+        if profile_name.trim().is_empty() {
+            bail!("{field} is empty");
+        }
+
+        if !self.profiles.contains_key(profile_name) {
+            if self.profiles.is_empty() {
+                bail!("{field} references missing startup profile: {profile_name}");
+            } else {
+                bail!(
+                    "{field} references missing startup profile: {profile_name}. Available profiles: {}",
+                    self.profile_names().join(", ")
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_layout(
+        layout: &TerminalStartupLayout<'_>,
+    ) -> Result<TerminalStartupConfigValidation> {
+        let shell = layout
+            .shell
+            .map(TerminalStartupShellConfig::to_shell)
+            .transpose()
+            .with_context(|| format!("failed to resolve shell for {}", layout.label))?;
+
+        LaunchTab::from_config(
+            layout.working_directory,
+            layout.command,
+            layout.env,
+            &HashMap::default(),
+            layout.title,
+            shell.as_ref(),
+            None,
+            format!("initial tab for {}", layout.label),
+        )?;
+
+        for (index, tab) in layout.tabs.iter().enumerate() {
+            LaunchTab::from_config(
+                tab.working_directory.as_deref(),
+                tab.command.as_deref(),
+                layout.env,
+                &tab.env,
+                tab.title.as_deref(),
+                shell.as_ref(),
+                tab.shell.as_ref(),
+                format!("tab {} for {}", index + 2, layout.label),
+            )?;
+        }
+
+        Ok(TerminalStartupConfigValidation {
+            layout_count: 1,
+            tab_count: 1 + layout.tabs.len(),
+        })
+    }
+
     fn selected_layout(
         &self,
         requested_profile: Option<&str>,
@@ -675,7 +811,7 @@ impl TerminalStartupConfig {
             } else {
                 format!(
                     "startup profile not found: {profile_name}. Available profiles: {}",
-                    self.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
+                    self.profile_names().join(", ")
                 )
             }
         })?;
@@ -786,6 +922,10 @@ impl TerminalStartupConfig {
 
         self.initial_tab(Some(profile))
     }
+
+    fn profile_names(&self) -> Vec<String> {
+        self.profiles.keys().cloned().collect()
+    }
 }
 
 struct TerminalStartupLayout<'a> {
@@ -819,6 +959,12 @@ fn main() {
             include_hidden,
             ..
         } => print_startup_profiles(&startup_config, include_hidden),
+        TerminalCliCommand::ValidateStartupConfig { startup_config, .. } => {
+            if let Err(error) = print_startup_config_validation(&startup_config) {
+                eprintln!("failed to validate terminal startup config: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
 }
@@ -898,6 +1044,15 @@ fn print_startup_profiles(startup_config: &TerminalStartupConfig, include_hidden
     );
 }
 
+fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Result<()> {
+    let validation = startup_config.validate()?;
+    print!(
+        "{}",
+        format_startup_config_validation(&active_terminal_startup_config_file(), &validation)
+    );
+    Ok(())
+}
+
 fn format_startup_profiles(
     startup_config: &TerminalStartupConfig,
     startup_config_file: &Path,
@@ -975,6 +1130,25 @@ fn format_startup_profiles(
             .expect("writing to string should not fail");
     }
 
+    output
+}
+
+fn format_startup_config_validation(
+    startup_config_file: &Path,
+    validation: &TerminalStartupConfigValidation,
+) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "layouts: {}", validation.layout_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", validation.tab_count)
+        .expect("writing to string should not fail");
     output
 }
 
@@ -2130,6 +2304,190 @@ mod tests {
 
         assert!(all.contains("- secret (hidden)"));
         assert!(all.contains("  display_name: Secret"));
+    }
+
+    #[test]
+    fn validates_startup_config_layouts() {
+        let root_dir = temp_test_dir();
+        let root_tab_dir = temp_test_dir();
+        let profile_dir = temp_test_dir();
+        let profile_tab_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(profile_dir.clone()),
+                shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(profile_tab_dir.clone()),
+                    command: Some("cmd /C profile-tab".into()),
+                    env: test_env(&[("ZED_TERMINAL_PROFILE", "work")]),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            working_directory: Some(root_dir.clone()),
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(root_tab_dir.clone()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        assert_eq!(
+            config
+                .validate()
+                .expect("startup config should validate successfully"),
+            TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            }
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+        std_fs::remove_dir_all(root_tab_dir).ok();
+        std_fs::remove_dir_all(profile_dir).ok();
+        std_fs::remove_dir_all(profile_tab_dir).ok();
+    }
+
+    #[test]
+    fn validate_startup_config_rejects_missing_default_profile() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert("work".into(), TerminalStartupProfileConfig::default());
+        let config = TerminalStartupConfig {
+            default_profile: Some("missing".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let error = config
+            .validate()
+            .expect_err("missing default profile should fail validation");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("default_profile references missing startup profile: missing"));
+        assert!(message.contains("Available profiles: work"));
+    }
+
+    #[test]
+    fn validate_startup_config_checks_hidden_profiles() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "secret".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                tabs: vec![TerminalStartupTabConfig {
+                    env: test_env(&[("SECRET", "1")]),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let error = config
+            .validate()
+            .expect_err("hidden profile tab errors should fail validation");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to validate startup profile \"secret\""));
+        assert!(message.contains("environment variables require a command"));
+        assert!(message.contains("tab 2 for startup profile \"secret\""));
+    }
+
+    #[test]
+    fn formats_startup_config_validation() {
+        let output = format_startup_config_validation(
+            Path::new("terminal.json"),
+            &TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            },
+        );
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nlayouts: 2\ntabs: 4\n"
+        );
+    }
+
+    #[test]
+    fn validate_startup_config_mode_does_not_launch() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--validate-startup-config"])
+            .expect("failed to parse cli args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("failed to build cli command");
+
+        let TerminalCliCommand::ValidateStartupConfig { startup_config, .. } = command else {
+            panic!("expected startup config validation mode");
+        };
+
+        assert_eq!(
+            startup_config
+                .validate()
+                .expect("default startup config should validate"),
+            TerminalStartupConfigValidation {
+                layout_count: 1,
+                tab_count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn validate_startup_config_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-startup-config", "--", "cmd"])
+            .expect_err("startup command should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--validate-startup-config"])
+            .expect_err("path inspection should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]
