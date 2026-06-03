@@ -23197,6 +23197,7 @@ dependencies = [
  "shellexpand",
  "shlex",
  "task",
+ "terminal",
  "terminal_view",
  "theme",
  "theme_settings",

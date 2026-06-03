@@ -1415,6 +1415,26 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Quit", zed_actions::Quit),
         ]),
         Menu::new("Shell").items(shell_items),
+        Menu::new("Terminal").items(vec![
+            MenuItem::action("Copy", terminal::Copy),
+            MenuItem::action("Paste", terminal::Paste),
+            MenuItem::action("Paste Text", terminal::PasteText),
+            MenuItem::action("Select All", editor::actions::SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Clear", terminal::Clear),
+            MenuItem::action("Toggle Vi Mode", terminal::ToggleViMode),
+            MenuItem::action("Show Character Palette", terminal::ShowCharacterPalette),
+            MenuItem::separator(),
+            MenuItem::action("Scroll Line Up", terminal::ScrollLineUp),
+            MenuItem::action("Scroll Line Down", terminal::ScrollLineDown),
+            MenuItem::action("Scroll Page Up", terminal::ScrollPageUp),
+            MenuItem::action("Scroll Page Down", terminal::ScrollPageDown),
+            MenuItem::action("Scroll To Top", terminal::ScrollToTop),
+            MenuItem::action("Scroll To Bottom", terminal::ScrollToBottom),
+            MenuItem::separator(),
+            MenuItem::action("Rerun Task", terminal_view::RerunTask),
+            MenuItem::action("Rename Terminal", terminal_view::RenameTerminal),
+        ]),
         Menu::new("Pane").items(vec![
             MenuItem::action("Split Right", workspace::SplitRight::default()),
             MenuItem::action("Split Down", workspace::SplitDown::default()),
@@ -1976,6 +1996,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn temp_test_dir() -> PathBuf {
         let path = env::temp_dir().join(format!("zed-terminal-test-{}", uuid::Uuid::new_v4()));
@@ -2062,6 +2083,54 @@ mod tests {
     fn parses_terminal_keymap_asset() {
         settings::KeymapFile::parse(include_str!("../../../assets/keymaps/zed-terminal.json"))
             .expect("terminal keymap asset should parse");
+    }
+
+    #[test]
+    fn terminal_keymap_actions_are_registered() {
+        let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
+            include_str!("../../../assets/keymaps/zed-terminal.json"),
+        )
+        .expect("terminal keymap asset should parse as json");
+        let mut keymap_action_names = BTreeSet::new();
+        collect_action_names(&keymap, &mut keymap_action_names);
+
+        let registered_action_names = gpui::generate_list_of_all_registered_actions()
+            .map(|action| action.name)
+            .collect::<BTreeSet<_>>();
+        let missing_action_names = keymap_action_names
+            .iter()
+            .filter(|action_name| !registered_action_names.contains(action_name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert!(
+            missing_action_names.is_empty(),
+            "terminal keymap references unregistered actions: {missing_action_names:?}"
+        );
+    }
+
+    fn collect_action_names(
+        value: &gpui::private::serde_json::Value,
+        action_names: &mut BTreeSet<String>,
+    ) {
+        match value {
+            gpui::private::serde_json::Value::String(value) => {
+                if value.contains("::") {
+                    action_names.insert(value.clone());
+                }
+            }
+            gpui::private::serde_json::Value::Array(values) => {
+                for value in values {
+                    collect_action_names(value, action_names);
+                }
+            }
+            gpui::private::serde_json::Value::Object(entries) => {
+                for value in entries.values() {
+                    collect_action_names(value, action_names);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[test]
