@@ -1,4 +1,4 @@
-use std::{fs as std_fs, sync::Arc, time::Duration};
+use std::{fs as std_fs, path::Path, sync::Arc, time::Duration};
 
 use anyhow::{Context as _, Result};
 use assets::Assets;
@@ -21,7 +21,10 @@ use theme_settings::load_user_theme;
 use workspace::WorkspaceSettings;
 use workspace::{AppState, Event as WorkspaceEvent, Workspace, WorkspaceStore};
 
-actions!(zed_terminal, [OpenSettingsFile]);
+actions!(
+    zed_terminal,
+    [OpenSettingsFile, OpenConfigDirectory, OpenLogsDirectory]
+);
 
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
@@ -46,6 +49,8 @@ fn init(cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &zed_actions::Quit, cx| cx.quit());
     cx.on_action(open_settings_file);
+    cx.on_action(open_config_directory);
+    cx.on_action(open_logs_directory);
     cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
         cx.dispatch_action(&OpenSettingsFile);
     });
@@ -175,7 +180,9 @@ fn bind_keys(cx: &mut App) {
 fn set_app_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(vec![
-            MenuItem::action("Settings File", zed_actions::OpenSettingsFile),
+            MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+            MenuItem::action("Open Config Directory", OpenConfigDirectory),
+            MenuItem::action("Open Logs Directory", OpenLogsDirectory),
             MenuItem::separator(),
             MenuItem::action("Quit", zed_actions::Quit),
         ]),
@@ -407,4 +414,21 @@ fn open_settings_file(_: &OpenSettingsFile, cx: &mut App) {
     }
 
     cx.open_with_system(paths::settings_file());
+}
+
+fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
+    open_directory(paths::config_dir(), "config", cx);
+}
+
+fn open_logs_directory(_: &OpenLogsDirectory, cx: &mut App) {
+    open_directory(paths::logs_dir(), "logs", cx);
+}
+
+fn open_directory(path: &Path, label: &str, cx: &mut App) {
+    if let Err(error) = std_fs::create_dir_all(path) {
+        log::warn!("failed to create {label} directory {path:?}: {error:?}");
+        return;
+    }
+
+    cx.open_with_system(path);
 }
