@@ -1,7 +1,14 @@
-use std::{fs as std_fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    env, fs as std_fs,
+    path::{Path, PathBuf},
+    process,
+    sync::Arc,
+    time::Duration,
+};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use assets::Assets;
+use clap::{Parser, ValueHint};
 use client::{Client, UserStore};
 use fs::RealFs;
 use futures::StreamExt;
@@ -15,7 +22,7 @@ use project::Project;
 use reqwest_client::ReqwestClient;
 use session::{AppSession, Session};
 use settings::Settings;
-use terminal_view::terminal_panel::TerminalPanel;
+use terminal_view::{default_working_directory, terminal_panel::TerminalPanel};
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::load_user_theme;
 use workspace::WorkspaceSettings;
@@ -23,26 +30,81 @@ use workspace::{AppState, Event as WorkspaceEvent, Workspace, WorkspaceStore};
 
 actions!(
     zed_terminal,
-    [OpenSettingsFile, OpenConfigDirectory, OpenLogsDirectory]
+    [
+        OpenSettingsFile,
+        OpenConfigDirectory,
+        OpenLogsDirectory,
+        NewTerminalTab
+    ]
 );
 
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const APP_TITLE: &str = "Zed Terminal";
 
+#[derive(Clone, Debug, Parser)]
+#[command(
+    name = "zed-terminal",
+    version,
+    about = "Launch the standalone Zed terminal."
+)]
+struct Cli {
+    #[arg(
+        short = 'd',
+        long = "working-directory",
+        visible_alias = "cwd",
+        visible_alias = "starting-directory",
+        visible_alias = "startingDirectory",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath,
+        conflicts_with = "directory"
+    )]
+    working_directory: Option<PathBuf>,
+
+    #[arg(value_name = "DIRECTORY", value_hint = ValueHint::DirPath)]
+    directory: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LaunchOptions {
+    working_directory: Option<PathBuf>,
+}
+
+impl LaunchOptions {
+    fn from_cli(cli: Cli) -> Result<Self> {
+        let working_directory = cli
+            .working_directory
+            .or(cli.directory)
+            .map(|directory| resolve_working_directory(&directory))
+            .transpose()?;
+
+        Ok(Self { working_directory })
+    }
+}
+
 fn main() {
     zlog::init();
     env_logger::try_init().ok();
 
-    gpui_platform::application().with_assets(Assets).run(|cx| {
-        if let Err(error) = init(cx) {
-            eprintln!("failed to start zed terminal: {error:#}");
-            cx.quit();
+    let launch_options = match LaunchOptions::from_cli(Cli::parse()) {
+        Ok(launch_options) => launch_options,
+        Err(error) => {
+            eprintln!("failed to launch zed terminal: {error:#}");
+            process::exit(2);
         }
-    });
+    };
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            if let Err(error) = init(launch_options.clone(), cx) {
+                eprintln!("failed to start zed terminal: {error:#}");
+                cx.quit();
+            }
+        });
 }
 
-fn init(cx: &mut App) -> Result<()> {
+fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
     zed_actions::init();
@@ -116,7 +178,7 @@ fn init(cx: &mut App) -> Result<()> {
     editor::init(cx);
     terminal_view::init(cx);
 
-    open_terminal_window(app_state, cx)?;
+    open_terminal_window(app_state, launch_options, cx)?;
     cx.activate(true);
     Ok(())
 }
@@ -157,7 +219,7 @@ fn bind_keys(cx: &mut App) {
 
     cx.bind_keys([
         KeyBinding::new("ctrl-j", NoAction, Some("Terminal")),
-        KeyBinding::new("ctrl-shift-t", workspace::NewTerminal::default(), None),
+        KeyBinding::new("ctrl-shift-t", NewTerminalTab, None),
         KeyBinding::new(
             "ctrl-shift-w",
             workspace::CloseActiveItem {
@@ -188,7 +250,7 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Quit", zed_actions::Quit),
         ]),
         Menu::new("Shell").items(vec![
-            MenuItem::action("New Tab", workspace::NewTerminal::default()),
+            MenuItem::action("New Tab", NewTerminalTab),
             MenuItem::action(
                 "Close Tab",
                 workspace::CloseActiveItem {
@@ -211,9 +273,14 @@ fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
     WindowOptions::default()
 }
 
-fn open_terminal_window(app_state: Arc<AppState>, cx: &mut App) -> Result<()> {
+fn open_terminal_window(
+    app_state: Arc<AppState>,
+    launch_options: LaunchOptions,
+    cx: &mut App,
+) -> Result<()> {
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let bounds = Bounds::centered(None, window_size, cx);
+    let initial_working_directory = launch_options.working_directory;
 
     cx.open_window(
         WindowOptions {
@@ -239,9 +306,32 @@ fn open_terminal_window(app_state: Arc<AppState>, cx: &mut App) -> Result<()> {
                 },
                 cx,
             );
+            if let Some(working_directory) = initial_working_directory.clone() {
+                project.update(cx, |project, cx| {
+                    project
+                        .find_or_create_worktree(&working_directory, true, cx)
+                        .detach_and_log_err(cx);
+                });
+            }
 
-            let workspace =
-                cx.new(|cx| Workspace::new(None, project.clone(), app_state.clone(), window, cx));
+            let new_terminal_working_directory = initial_working_directory.clone();
+            let workspace = cx.new(|cx| {
+                let mut workspace =
+                    Workspace::new(None, project.clone(), app_state.clone(), window, cx);
+                workspace.register_action(move |workspace, _: &NewTerminalTab, window, cx| {
+                    let working_directory = new_terminal_working_directory
+                        .clone()
+                        .or_else(|| default_working_directory(workspace, cx));
+                    TerminalPanel::add_center_terminal(
+                        workspace,
+                        window,
+                        cx,
+                        move |project, cx| project.create_terminal_shell(working_directory, cx),
+                    )
+                    .detach_and_log_err(cx);
+                });
+                workspace
+            });
             let window_handle = window.window_handle();
             cx.subscribe(
                 &workspace,
@@ -261,9 +351,10 @@ fn open_terminal_window(app_state: Arc<AppState>, cx: &mut App) -> Result<()> {
             )
             .detach();
 
+            let terminal_working_directory = initial_working_directory.clone();
             workspace.update(cx, |workspace, cx| {
                 TerminalPanel::add_center_terminal(workspace, window, cx, |project, cx| {
-                    project.create_terminal_shell(None, cx)
+                    project.create_terminal_shell(terminal_working_directory, cx)
                 })
                 .detach_and_log_err(cx);
             });
@@ -275,6 +366,36 @@ fn open_terminal_window(app_state: Arc<AppState>, cx: &mut App) -> Result<()> {
     .context("failed to open terminal window")?;
 
     Ok(())
+}
+
+fn resolve_working_directory(input: &Path) -> Result<PathBuf> {
+    let expanded = expand_tilde(input);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        env::current_dir()
+            .context("failed to read the current directory")?
+            .join(expanded)
+    };
+    let canonical = dunce::canonicalize(&absolute).with_context(|| {
+        format!(
+            "failed to resolve working directory {}",
+            input.to_string_lossy()
+        )
+    })?;
+
+    if !canonical.is_dir() {
+        bail!(
+            "working directory is not a directory: {}",
+            canonical.display()
+        );
+    }
+
+    Ok(canonical)
+}
+
+fn expand_tilde(path: &Path) -> PathBuf {
+    PathBuf::from(shellexpand::tilde(&path.to_string_lossy()).into_owned())
 }
 
 fn set_terminal_window_title(window: &mut Window, cx: &mut App) {
@@ -432,4 +553,88 @@ fn open_directory(path: &Path, label: &str, cx: &mut App) {
     }
 
     cx.open_with_system(path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_test_dir() -> PathBuf {
+        let path = env::temp_dir().join(format!("zed-terminal-test-{}", uuid::Uuid::new_v4()));
+        std_fs::create_dir_all(&path).expect("failed to create temp test directory");
+        path
+    }
+
+    #[test]
+    fn parses_short_working_directory_flag() {
+        let dir = temp_test_dir();
+        let cli = Cli::try_parse_from(["zed-terminal", "-d", dir.to_str().unwrap()])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_cwd_alias() {
+        let dir = temp_test_dir();
+        let cli = Cli::try_parse_from(["zed-terminal", "--cwd", dir.to_str().unwrap()])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_windows_terminal_starting_directory_alias() {
+        let dir = temp_test_dir();
+        let cli =
+            Cli::try_parse_from(["zed-terminal", "--startingDirectory", dir.to_str().unwrap()])
+                .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn parses_positional_working_directory() {
+        let dir = temp_test_dir();
+        let cli = Cli::try_parse_from(["zed-terminal", dir.to_str().unwrap()])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(
+            options.working_directory.as_deref(),
+            Some(dunce::canonicalize(&dir).unwrap().as_path())
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn rejects_non_directory_working_directory() {
+        let dir = temp_test_dir();
+        let file = dir.join("file.txt");
+        std_fs::write(&file, "").expect("failed to write temp test file");
+
+        let error = resolve_working_directory(&file).expect_err("file path should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("working directory is not a directory")
+        );
+        std_fs::remove_dir_all(dir).ok();
+    }
 }
