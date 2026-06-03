@@ -228,6 +228,240 @@ pub(crate) fn to_esc_str(
     None
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn to_win32_input_sequence(keystroke: &Keystroke) -> Option<String> {
+    let key = Win32Key::from_keystroke(keystroke)?;
+    let unicode_char = key.unicode_char(keystroke)?;
+    let control_key_state = control_key_state(keystroke, key.enhanced);
+
+    Some(format!(
+        "\x1b[{};{};{};1;{};1_",
+        key.virtual_key, key.scan_code, unicode_char, control_key_state
+    ))
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+struct Win32Key {
+    virtual_key: u16,
+    scan_code: u16,
+    enhanced: bool,
+    unshifted: Option<char>,
+    shifted: Option<char>,
+}
+
+#[cfg(target_os = "windows")]
+impl Win32Key {
+    fn from_keystroke(keystroke: &Keystroke) -> Option<Self> {
+        match keystroke.key.as_str() {
+            "backspace" | "back" => Some(Self::named(0x08, 0x0e, Some('\x08'))),
+            "tab" => Some(Self::named(0x09, 0x0f, Some('\t'))),
+            "enter" => Some(Self::named(0x0d, 0x1c, Some('\r'))),
+            "escape" => Some(Self::named(0x1b, 0x01, Some('\x1b'))),
+            "space" => Some(Self::named(0x20, 0x39, Some(' '))),
+            "pageup" => Some(Self::enhanced(0x21, 0x49)),
+            "pagedown" => Some(Self::enhanced(0x22, 0x51)),
+            "end" => Some(Self::enhanced(0x23, 0x4f)),
+            "home" => Some(Self::enhanced(0x24, 0x47)),
+            "left" => Some(Self::enhanced(0x25, 0x4b)),
+            "up" => Some(Self::enhanced(0x26, 0x48)),
+            "right" => Some(Self::enhanced(0x27, 0x4d)),
+            "down" => Some(Self::enhanced(0x28, 0x50)),
+            "insert" => Some(Self::enhanced(0x2d, 0x52)),
+            "delete" => Some(Self::enhanced(0x2e, 0x53)),
+            "f1" => Some(Self::function_key(1, 0x3b)),
+            "f2" => Some(Self::function_key(2, 0x3c)),
+            "f3" => Some(Self::function_key(3, 0x3d)),
+            "f4" => Some(Self::function_key(4, 0x3e)),
+            "f5" => Some(Self::function_key(5, 0x3f)),
+            "f6" => Some(Self::function_key(6, 0x40)),
+            "f7" => Some(Self::function_key(7, 0x41)),
+            "f8" => Some(Self::function_key(8, 0x42)),
+            "f9" => Some(Self::function_key(9, 0x43)),
+            "f10" => Some(Self::function_key(10, 0x44)),
+            "f11" => Some(Self::function_key(11, 0x57)),
+            "f12" => Some(Self::function_key(12, 0x58)),
+            _ => keystroke
+                .key
+                .chars()
+                .next()
+                .filter(|_| keystroke.key.chars().count() == 1)
+                .and_then(Self::from_char),
+        }
+    }
+
+    fn named(virtual_key: u16, scan_code: u16, unshifted: Option<char>) -> Self {
+        Self {
+            virtual_key,
+            scan_code,
+            enhanced: false,
+            unshifted,
+            shifted: unshifted,
+        }
+    }
+
+    fn enhanced(virtual_key: u16, scan_code: u16) -> Self {
+        Self {
+            virtual_key,
+            scan_code,
+            enhanced: true,
+            unshifted: None,
+            shifted: None,
+        }
+    }
+
+    fn function_key(number: u16, scan_code: u16) -> Self {
+        Self::named(0x70 + number - 1, scan_code, None)
+    }
+
+    fn printable(virtual_key: u16, scan_code: u16, unshifted: char, shifted: char) -> Self {
+        Self {
+            virtual_key,
+            scan_code,
+            enhanced: false,
+            unshifted: Some(unshifted),
+            shifted: Some(shifted),
+        }
+    }
+
+    fn from_char(character: char) -> Option<Self> {
+        let lower = character.to_ascii_lowercase();
+        match lower {
+            'a' => Some(Self::printable(0x41, 0x1e, 'a', 'A')),
+            'b' => Some(Self::printable(0x42, 0x30, 'b', 'B')),
+            'c' => Some(Self::printable(0x43, 0x2e, 'c', 'C')),
+            'd' => Some(Self::printable(0x44, 0x20, 'd', 'D')),
+            'e' => Some(Self::printable(0x45, 0x12, 'e', 'E')),
+            'f' => Some(Self::printable(0x46, 0x21, 'f', 'F')),
+            'g' => Some(Self::printable(0x47, 0x22, 'g', 'G')),
+            'h' => Some(Self::printable(0x48, 0x23, 'h', 'H')),
+            'i' => Some(Self::printable(0x49, 0x17, 'i', 'I')),
+            'j' => Some(Self::printable(0x4a, 0x24, 'j', 'J')),
+            'k' => Some(Self::printable(0x4b, 0x25, 'k', 'K')),
+            'l' => Some(Self::printable(0x4c, 0x26, 'l', 'L')),
+            'm' => Some(Self::printable(0x4d, 0x32, 'm', 'M')),
+            'n' => Some(Self::printable(0x4e, 0x31, 'n', 'N')),
+            'o' => Some(Self::printable(0x4f, 0x18, 'o', 'O')),
+            'p' => Some(Self::printable(0x50, 0x19, 'p', 'P')),
+            'q' => Some(Self::printable(0x51, 0x10, 'q', 'Q')),
+            'r' => Some(Self::printable(0x52, 0x13, 'r', 'R')),
+            's' => Some(Self::printable(0x53, 0x1f, 's', 'S')),
+            't' => Some(Self::printable(0x54, 0x14, 't', 'T')),
+            'u' => Some(Self::printable(0x55, 0x16, 'u', 'U')),
+            'v' => Some(Self::printable(0x56, 0x2f, 'v', 'V')),
+            'w' => Some(Self::printable(0x57, 0x11, 'w', 'W')),
+            'x' => Some(Self::printable(0x58, 0x2d, 'x', 'X')),
+            'y' => Some(Self::printable(0x59, 0x15, 'y', 'Y')),
+            'z' => Some(Self::printable(0x5a, 0x2c, 'z', 'Z')),
+            '0' | ')' => Some(Self::printable(0x30, 0x0b, '0', ')')),
+            '1' | '!' => Some(Self::printable(0x31, 0x02, '1', '!')),
+            '2' | '@' => Some(Self::printable(0x32, 0x03, '2', '@')),
+            '3' | '#' => Some(Self::printable(0x33, 0x04, '3', '#')),
+            '4' | '$' => Some(Self::printable(0x34, 0x05, '4', '$')),
+            '5' | '%' => Some(Self::printable(0x35, 0x06, '5', '%')),
+            '6' | '^' => Some(Self::printable(0x36, 0x07, '6', '^')),
+            '7' | '&' => Some(Self::printable(0x37, 0x08, '7', '&')),
+            '8' | '*' => Some(Self::printable(0x38, 0x09, '8', '*')),
+            '9' | '(' => Some(Self::printable(0x39, 0x0a, '9', '(')),
+            '-' | '_' => Some(Self::printable(0xbd, 0x0c, '-', '_')),
+            '=' | '+' => Some(Self::printable(0xbb, 0x0d, '=', '+')),
+            '[' | '{' => Some(Self::printable(0xdb, 0x1a, '[', '{')),
+            ']' | '}' => Some(Self::printable(0xdd, 0x1b, ']', '}')),
+            '\\' | '|' => Some(Self::printable(0xdc, 0x2b, '\\', '|')),
+            ';' | ':' => Some(Self::printable(0xba, 0x27, ';', ':')),
+            '\'' | '"' => Some(Self::printable(0xde, 0x28, '\'', '"')),
+            '`' | '~' => Some(Self::printable(0xc0, 0x29, '`', '~')),
+            ',' | '<' => Some(Self::printable(0xbc, 0x33, ',', '<')),
+            '.' | '>' => Some(Self::printable(0xbe, 0x34, '.', '>')),
+            '/' | '?' => Some(Self::printable(0xbf, 0x35, '/', '?')),
+            _ => None,
+        }
+    }
+
+    fn unicode_char(self, keystroke: &Keystroke) -> Option<u16> {
+        if keystroke.modifiers.control {
+            if let Some(control_char) = control_char(keystroke.key.as_str()) {
+                return Some(control_char);
+            }
+        }
+
+        if let Some(key_char) = keystroke
+            .key_char
+            .as_deref()
+            .and_then(single_utf16_code_unit)
+        {
+            return Some(key_char);
+        }
+
+        let character = if keystroke.modifiers.shift {
+            self.shifted
+        } else {
+            self.unshifted
+        };
+
+        character.map(|character| character as u16).or(Some(0))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn control_key_state(keystroke: &Keystroke, enhanced: bool) -> u16 {
+    const LEFT_ALT_PRESSED: u16 = 0x0002;
+    const LEFT_CTRL_PRESSED: u16 = 0x0008;
+    const SHIFT_PRESSED: u16 = 0x0010;
+    const ENHANCED_KEY: u16 = 0x0100;
+
+    let mut state = 0;
+    if keystroke.modifiers.alt {
+        state |= LEFT_ALT_PRESSED;
+    }
+    if keystroke.modifiers.control {
+        state |= LEFT_CTRL_PRESSED;
+    }
+    if keystroke.modifiers.shift {
+        state |= SHIFT_PRESSED;
+    }
+    if enhanced {
+        state |= ENHANCED_KEY;
+    }
+    state
+}
+
+#[cfg(target_os = "windows")]
+fn control_char(key: &str) -> Option<u16> {
+    match key {
+        "@" | "space" => Some(0),
+        "[" | "escape" => Some(27),
+        "\\" => Some(28),
+        "]" => Some(29),
+        "^" => Some(30),
+        "_" => Some(31),
+        "?" | "delete" => Some(127),
+        "backspace" | "back" => Some(8),
+        "tab" => Some(9),
+        "enter" => Some(13),
+        key if key.len() == 1 => {
+            let character = key.as_bytes()[0].to_ascii_lowercase();
+            if character.is_ascii_lowercase() {
+                Some((character - b'a' + 1) as u16)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn single_utf16_code_unit(text: &str) -> Option<u16> {
+    let mut units = text.encode_utf16();
+    let unit = units.next()?;
+    if units.next().is_some() {
+        None
+    } else {
+        Some(unit)
+    }
+}
+
 ///   Code     Modifiers
 /// ---------+---------------------------
 ///    2     | Shift
@@ -355,6 +589,24 @@ mod test {
                 false
             ),
             Some("\x0a".into())
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_win32_input_ctrl_j() {
+        assert_eq!(
+            to_win32_input_sequence(&Keystroke::parse("ctrl-j").unwrap()),
+            Some("\x1b[74;36;10;1;8;1_".into())
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_win32_input_shift_enter() {
+        assert_eq!(
+            to_win32_input_sequence(&Keystroke::parse("shift-enter").unwrap()),
+            Some("\x1b[13;28;13;1;16;1_".into())
         );
     }
 

@@ -70,6 +70,8 @@ use crate::alacritty::{
 };
 use crate::mappings::colors::to_vte_rgb;
 use crate::mappings::keys::to_esc_str;
+#[cfg(target_os = "windows")]
+use crate::mappings::keys::to_win32_input_sequence;
 
 #[derive(Clone, Copy, Debug)]
 enum Scroll {
@@ -938,6 +940,8 @@ impl TerminalBuilder {
             event_loop_task: Task::ready(Ok(())),
             background_executor: background_executor.clone(),
             path_style,
+            #[cfg(target_os = "windows")]
+            win32_input_mode: false,
             #[cfg(any(test, feature = "test-support"))]
             input_log: Vec::new(),
         };
@@ -1161,6 +1165,8 @@ impl TerminalBuilder {
                 event_loop_task: Task::ready(Ok(())),
                 background_executor,
                 path_style,
+                #[cfg(target_os = "windows")]
+                win32_input_mode: true,
                 #[cfg(any(test, feature = "test-support"))]
                 input_log: Vec::new(),
             };
@@ -1324,6 +1330,8 @@ pub struct Terminal {
     event_loop_task: Task<Result<(), anyhow::Error>>,
     background_executor: BackgroundExecutor,
     path_style: PathStyle,
+    #[cfg(target_os = "windows")]
+    win32_input_mode: bool,
     #[cfg(any(test, feature = "test-support"))]
     input_log: Vec<Vec<u8>>,
 }
@@ -1979,6 +1987,14 @@ impl Terminal {
         }
 
         // Keep default terminal behavior
+        #[cfg(target_os = "windows")]
+        if self.win32_input_mode {
+            if let Some(input_sequence) = to_win32_input_sequence(keystroke) {
+                self.input(input_sequence.into_bytes());
+                return true;
+            }
+        }
+
         let esc = to_esc_str(keystroke, self.last_content.mode, option_as_meta);
         if let Some(esc) = esc {
             match esc {
@@ -3345,6 +3361,27 @@ mod tests {
             let (r, g, b) = rgb_for_index(i);
             assert_eq!(i, 16 + 36 * r + 6 * g + b);
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[gpui::test]
+    async fn test_windows_pty_uses_win32_input_for_ctrl_j(cx: &mut TestAppContext) {
+        let mut terminal = TerminalBuilder::new_display_only(
+            SettingsCursorShape::Block,
+            AlternateScroll::On,
+            None,
+            0,
+            &cx.background_executor,
+            PathStyle::local(),
+        )
+        .terminal;
+        terminal.win32_input_mode = true;
+
+        assert!(terminal.try_keystroke(&Keystroke::parse("ctrl-j").unwrap(), false));
+        assert_eq!(
+            terminal.take_input_log(),
+            vec![b"\x1b[74;36;10;1;8;1_".to_vec()]
+        );
     }
 
     #[gpui::test]
