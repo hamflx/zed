@@ -23164,6 +23164,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "zed_terminal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "client",
+ "component",
+ "db",
+ "editor",
+ "env_logger 0.11.8",
+ "fs",
+ "futures 0.3.32",
+ "gpui",
+ "gpui_platform",
+ "language",
+ "log",
+ "menu",
+ "node_runtime",
+ "paths",
+ "project",
+ "release_channel",
+ "reqwest_client",
+ "session",
+ "settings",
+ "terminal_view",
+ "theme",
+ "theme_settings",
+ "ui",
+ "uuid",
+ "workspace",
+ "zed_actions",
+ "zlog",
+]
+
+[[package]]
 name = "zed_test_extension"
 version = "0.1.0"
 dependencies = [
