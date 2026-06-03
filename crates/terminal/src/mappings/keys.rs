@@ -347,6 +347,18 @@ mod test {
     }
 
     #[test]
+    fn test_ctrl_j_line_ending() {
+        assert_eq!(
+            to_esc_str(
+                &Keystroke::parse("ctrl-j").unwrap(),
+                Modes::APP_CURSOR,
+                false
+            ),
+            Some("\x0a".into())
+        );
+    }
+
+    #[test]
     fn alt_is_meta() {
         let ascii_printable = ' '..='~';
         for character in ascii_printable {

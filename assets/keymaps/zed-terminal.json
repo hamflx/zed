@@ -1,0 +1,61 @@
+// Zed Terminal keymap
+[
+  {
+    "bindings": {
+      "ctrl-shift-t": "zed_terminal::NewTerminalTab",
+      "ctrl-shift-w": "pane::CloseActiveItem",
+      "ctrl-tab": "pane::ActivateNextItem",
+      "ctrl-shift-tab": "pane::ActivatePreviousItem",
+      "ctrl-shift-5": "pane::SplitRight",
+      "alt-shift-plus": "pane::SplitDown",
+      "ctrl-,": "zed::OpenSettingsFile",
+    },
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-alt-space": "terminal::ShowCharacterPalette",
+      "ctrl-insert": "terminal::Copy",
+      "ctrl-shift-c": "terminal::Copy",
+      "shift-insert": "terminal::Paste",
+      "ctrl-shift-v": "terminal::Paste",
+      "ctrl-alt-v": "terminal::PasteText",
+      "ctrl-shift-l": "terminal::Clear",
+      "shift-pageup": "terminal::ScrollPageUp",
+      "shift-pagedown": "terminal::ScrollPageDown",
+      "shift-up": "terminal::ScrollLineUp",
+      "shift-down": "terminal::ScrollLineDown",
+      "shift-home": "terminal::ScrollToTop",
+      "shift-end": "terminal::ScrollToBottom",
+      "ctrl-shift-space": "terminal::ToggleViMode",
+      "ctrl-shift-r": "terminal::RerunTask",
+      "ctrl-alt-r": "terminal::RerunTask",
+      "alt-t": "terminal::RerunTask",
+    },
+  },
+  {
+    "context": "os == windows && Terminal",
+    "bindings": {
+      "ctrl-v": "terminal::Paste",
+    },
+  },
+  {
+    "context": "os == macos && Terminal",
+    "bindings": {
+      "cmd-c": "terminal::Copy",
+      "cmd-v": "terminal::Paste",
+      "ctrl-cmd-v": "terminal::PasteText",
+      "cmd-k": "terminal::Clear",
+      "cmd-up": "terminal::ScrollPageUp",
+      "cmd-down": "terminal::ScrollPageDown",
+      "cmd-home": "terminal::ScrollToTop",
+      "cmd-end": "terminal::ScrollToBottom",
+    },
+  },
+  {
+    "context": "Terminal && selection",
+    "bindings": {
+      "ctrl-c": "terminal::Copy",
+    },
+  },
+]

@@ -2,7 +2,7 @@ use std::{
     env, fs as std_fs,
     path::{Path, PathBuf},
     process,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
@@ -13,7 +13,7 @@ use client::{Client, UserStore};
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, NoAction, SharedString,
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, SharedString,
     SystemWindowTabController, TaskExt, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
@@ -21,7 +21,7 @@ use node_runtime::NodeRuntime;
 use project::Project;
 use reqwest_client::ReqwestClient;
 use session::{AppSession, Session};
-use settings::Settings;
+use settings::{KeybindSource, KeymapFile, KeymapFileLoadResult, Settings};
 use task::{
     HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
 };
@@ -35,6 +35,7 @@ actions!(
     zed_terminal,
     [
         OpenSettingsFile,
+        OpenKeymapFile,
         OpenConfigDirectory,
         OpenLogsDirectory,
         NewTerminalTab
@@ -43,7 +44,13 @@ actions!(
 
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
-const APP_TITLE: &str = "Zed Terminal";
+const APP_TITLE: &str = TERMINAL_APP_NAME;
+const TERMINAL_APP_NAME: &str = "Zed Terminal";
+const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
+const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
+
+static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
+static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Clone, Debug, Parser)]
 #[command(
@@ -52,6 +59,23 @@ const APP_TITLE: &str = "Zed Terminal";
     about = "Launch the standalone Zed terminal."
 )]
 struct Cli {
+    #[arg(
+        long = "user-data-dir",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath
+    )]
+    user_data_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "config-dir",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath
+    )]
+    config_dir: Option<PathBuf>,
+
+    #[arg(long = "paths")]
+    print_paths: bool,
+
     #[arg(
         short = 'd',
         long = "working-directory",
@@ -77,10 +101,18 @@ struct Cli {
     command: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct LaunchOptions {
+    path_options: TerminalPathOptions,
+    print_paths: bool,
     working_directory: Option<PathBuf>,
     command: Option<LaunchCommand>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalPathOptions {
+    data_dir: PathBuf,
+    config_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,6 +123,9 @@ struct LaunchCommand {
 
 impl LaunchOptions {
     fn from_cli(cli: Cli) -> Result<Self> {
+        let path_options =
+            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
+                .context("failed to resolve terminal paths")?;
         let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
@@ -99,8 +134,30 @@ impl LaunchOptions {
             .transpose()?;
 
         Ok(Self {
+            path_options,
+            print_paths: cli.print_paths,
             working_directory,
             command,
+        })
+    }
+}
+
+impl TerminalPathOptions {
+    fn from_cli(user_data_dir: Option<&Path>, config_dir: Option<&Path>) -> Result<Self> {
+        let data_dir = user_data_dir
+            .map(expand_tilde)
+            .transpose()?
+            .unwrap_or(default_terminal_data_dir()?);
+
+        let config_dir = match config_dir {
+            Some(config_dir) => expand_tilde(config_dir)?,
+            None if user_data_dir.is_some() => data_dir.join("config"),
+            None => default_terminal_config_dir()?,
+        };
+
+        Ok(Self {
+            data_dir,
+            config_dir,
         })
     }
 }
@@ -150,9 +207,6 @@ impl LaunchCommand {
 }
 
 fn main() {
-    zlog::init();
-    env_logger::try_init().ok();
-
     let launch_options = match LaunchOptions::from_cli(Cli::parse()) {
         Ok(launch_options) => launch_options,
         Err(error) => {
@@ -160,6 +214,18 @@ fn main() {
             process::exit(2);
         }
     };
+
+    if let Err(error) = install_terminal_paths(&launch_options.path_options) {
+        eprintln!("failed to launch zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    if launch_options.print_paths {
+        print_terminal_paths();
+        return;
+    }
+
+    init_terminal_logging();
 
     gpui_platform::application()
         .with_assets(Assets)
@@ -171,6 +237,62 @@ fn main() {
         });
 }
 
+fn install_terminal_paths(path_options: &TerminalPathOptions) -> Result<()> {
+    paths::try_set_custom_data_dir_path(&path_options.data_dir).with_context(|| {
+        format!(
+            "failed to initialize data directory {}",
+            path_options.data_dir.display()
+        )
+    })?;
+    paths::try_set_custom_config_dir_path(&path_options.config_dir).with_context(|| {
+        format!(
+            "failed to initialize config directory {}",
+            path_options.config_dir.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn init_terminal_logging() {
+    zlog::init();
+    env_logger::try_init().ok();
+
+    if let Err(error) = std_fs::create_dir_all(paths::logs_dir()) {
+        eprintln!("Could not create log directory: {error}... Defaulting to stderr");
+        zlog::init_output_stderr();
+        return;
+    }
+
+    if let Err(error) = zlog::init_output_file(terminal_log_file(), Some(terminal_old_log_file())) {
+        eprintln!("Could not open log file: {error}... Defaulting to stderr");
+        zlog::init_output_stderr();
+    }
+}
+
+fn print_terminal_paths() {
+    println!("config_dir: {}", paths::config_dir().display());
+    println!("data_dir: {}", paths::data_dir().display());
+    println!("logs_dir: {}", paths::logs_dir().display());
+    println!("settings_file: {}", paths::settings_file().display());
+    println!(
+        "global_settings_file: {}",
+        paths::global_settings_file().display()
+    );
+    println!("keymap_file: {}", paths::keymap_file().display());
+    println!("themes_dir: {}", paths::themes_dir().display());
+    println!("log_file: {}", terminal_log_file().display());
+}
+
+fn terminal_log_file() -> &'static PathBuf {
+    TERMINAL_LOG_FILE.get_or_init(|| paths::logs_dir().join(format!("{TERMINAL_APP_NAME}.log")))
+}
+
+fn terminal_old_log_file() -> &'static PathBuf {
+    TERMINAL_OLD_LOG_FILE
+        .get_or_init(|| paths::logs_dir().join(format!("{TERMINAL_APP_NAME}.log.old")))
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -178,6 +300,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &zed_actions::Quit, cx| cx.quit());
     cx.on_action(open_settings_file);
+    cx.on_action(open_keymap_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_logs_directory);
     cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
@@ -186,8 +309,10 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(|_: &zed_actions::OpenSettings, cx| {
         cx.dispatch_action(&OpenSettingsFile);
     });
+    cx.on_action(|_: &zed_actions::OpenKeymapFile, cx| {
+        cx.dispatch_action(&OpenKeymapFile);
+    });
 
-    bind_keys(cx);
     set_app_menus(cx);
 
     let version = release_channel::AppVersion::load(env!("CARGO_PKG_VERSION"), None, None);
@@ -202,9 +327,9 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     <dyn fs::Fs>::set_global(fs.clone(), cx);
 
     ensure_config_files(&fs, cx)?;
-
     settings::init(cx);
     watch_settings_files(fs.clone(), cx);
+    bind_keys(fs.clone(), cx)?;
     Assets
         .load_fonts(cx)
         .context("failed to load Zed embedded fonts")?;
@@ -278,39 +403,79 @@ fn apply_rendering_settings(cx: &mut App) {
     );
 }
 
-fn bind_keys(cx: &mut App) {
+fn bind_keys(fs: Arc<dyn fs::Fs>, cx: &mut App) -> Result<()> {
+    reload_keymaps(Vec::new(), cx)?;
+
+    let user_keymap_content = cx
+        .foreground_executor()
+        .block_on(KeymapFile::load_keymap_file(&fs))
+        .context("failed to load terminal keymap file")?;
+    load_user_keymap(&user_keymap_content, cx)?;
+
+    let (mut user_keymap_rx, user_keymap_watcher) =
+        settings::watch_config_file(cx.background_executor(), fs, paths::keymap_file().clone());
+    cx.spawn(async move |cx| {
+        let _user_keymap_watcher = user_keymap_watcher;
+        while let Some(user_keymap_content) = user_keymap_rx.next().await {
+            cx.update(|cx| {
+                if let Err(error) = load_user_keymap(&user_keymap_content, cx) {
+                    log::warn!("failed to reload terminal keymap: {error:#}");
+                }
+            });
+        }
+    })
+    .detach();
+
+    Ok(())
+}
+
+fn load_user_keymap(user_keymap_content: &str, cx: &mut App) -> Result<()> {
+    match KeymapFile::load(user_keymap_content, cx) {
+        KeymapFileLoadResult::Success { key_bindings } => reload_keymaps(key_bindings, cx)?,
+        KeymapFileLoadResult::SomeFailedToLoad {
+            key_bindings,
+            error_message,
+        } => {
+            log::warn!("partially loaded terminal keymap: {}", error_message.0);
+            if !key_bindings.is_empty() {
+                reload_keymaps(key_bindings, cx)?;
+            }
+        }
+        KeymapFileLoadResult::JsonParseFailure { error } => {
+            log::warn!("failed to parse terminal keymap file: {error:#}");
+        }
+    }
+
+    Ok(())
+}
+
+fn reload_keymaps(mut user_key_bindings: Vec<KeyBinding>, cx: &mut App) -> Result<()> {
+    cx.clear_key_bindings();
+    load_default_keymap(cx)?;
+
+    for key_binding in &mut user_key_bindings {
+        key_binding.set_meta(KeybindSource::User.meta());
+    }
+    cx.bind_keys(user_key_bindings);
+    set_app_menus(cx);
+
+    Ok(())
+}
+
+fn load_default_keymap(cx: &mut App) -> Result<()> {
     cx.bind_keys(
-        settings::KeymapFile::load_asset_allow_partial_failure(settings::DEFAULT_KEYMAP_PATH, cx)
-            .expect("default keymap should load"),
+        KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
+            .context("failed to load zed terminal default keymap")?,
     );
 
-    cx.bind_keys([
-        KeyBinding::new("ctrl-j", NoAction, Some("Terminal")),
-        KeyBinding::new("ctrl-shift-t", NewTerminalTab, None),
-        KeyBinding::new(
-            "ctrl-shift-w",
-            workspace::CloseActiveItem {
-                close_pinned: false,
-                save_intent: None,
-            },
-            None,
-        ),
-        KeyBinding::new("ctrl-tab", workspace::ActivateNextItem::default(), None),
-        KeyBinding::new(
-            "ctrl-shift-tab",
-            workspace::ActivatePreviousItem::default(),
-            None,
-        ),
-        KeyBinding::new("ctrl-shift-5", workspace::SplitRight::default(), None),
-        KeyBinding::new("alt-shift-plus", workspace::SplitDown::default(), None),
-        KeyBinding::new("ctrl-,", zed_actions::OpenSettingsFile, None),
-    ]);
+    Ok(())
 }
 
 fn set_app_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(vec![
             MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+            MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
             MenuItem::action("Open Config Directory", OpenConfigDirectory),
             MenuItem::action("Open Logs Directory", OpenLogsDirectory),
             MenuItem::separator(),
@@ -444,8 +609,52 @@ fn open_terminal_window(
     Ok(())
 }
 
+fn default_terminal_config_dir() -> Result<PathBuf> {
+    if cfg!(target_os = "windows") {
+        Ok(dirs::config_dir()
+            .context("failed to determine RoamingAppData directory")?
+            .join(TERMINAL_APP_NAME))
+    } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        Ok(
+            if let Ok(flatpak_xdg_config) = env::var("FLATPAK_XDG_CONFIG_HOME") {
+                PathBuf::from(flatpak_xdg_config)
+            } else {
+                dirs::config_dir().context("failed to determine XDG_CONFIG_HOME directory")?
+            }
+            .join(TERMINAL_APP_NAME_LOWERCASE),
+        )
+    } else {
+        Ok(paths::home_dir()
+            .join(".config")
+            .join(TERMINAL_APP_NAME_LOWERCASE))
+    }
+}
+
+fn default_terminal_data_dir() -> Result<PathBuf> {
+    if cfg!(target_os = "macos") {
+        Ok(paths::home_dir()
+            .join("Library/Application Support")
+            .join(TERMINAL_APP_NAME))
+    } else if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+        Ok(
+            if let Ok(flatpak_xdg_data) = env::var("FLATPAK_XDG_DATA_HOME") {
+                PathBuf::from(flatpak_xdg_data)
+            } else {
+                dirs::data_local_dir().context("failed to determine XDG_DATA_HOME directory")?
+            }
+            .join(TERMINAL_APP_NAME_LOWERCASE),
+        )
+    } else if cfg!(target_os = "windows") {
+        Ok(dirs::data_local_dir()
+            .context("failed to determine LocalAppData directory")?
+            .join(TERMINAL_APP_NAME))
+    } else {
+        default_terminal_config_dir()
+    }
+}
+
 fn resolve_working_directory(input: &Path) -> Result<PathBuf> {
-    let expanded = expand_tilde(input);
+    let expanded = expand_tilde(input)?;
     let absolute = if expanded.is_absolute() {
         expanded
     } else {
@@ -470,8 +679,10 @@ fn resolve_working_directory(input: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-fn expand_tilde(path: &Path) -> PathBuf {
-    PathBuf::from(shellexpand::tilde(&path.to_string_lossy()).into_owned())
+fn expand_tilde(path: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        shellexpand::tilde(&path.to_string_lossy()).into_owned(),
+    ))
 }
 
 fn format_command_part(part: &str) -> String {
@@ -593,33 +804,34 @@ fn ensure_config_files(fs: &Arc<dyn fs::Fs>, cx: &App) -> Result<()> {
         })?;
     }
 
+    let keymap_path = paths::keymap_file();
+    if !keymap_path.exists() {
+        std_fs::write(keymap_path, settings::initial_keymap_content().as_ref())
+            .with_context(|| format!("failed to create keymap file {keymap_path:?}"))?;
+    }
+
     // Prime the abstract filesystem for platforms that use a non-std backend.
-    let _ = cx.foreground_executor().block_on(fs.load(settings_path));
+    if let Err(error) = cx.foreground_executor().block_on(fs.load(settings_path)) {
+        log::warn!("failed to prime settings file {settings_path:?}: {error:?}");
+    }
+    if let Err(error) = cx.foreground_executor().block_on(fs.load(keymap_path)) {
+        log::warn!("failed to prime keymap file {keymap_path:?}: {error:?}");
+    }
     Ok(())
 }
 
 fn open_settings_file(_: &OpenSettingsFile, cx: &mut App) {
-    if let Some(parent) = paths::settings_file().parent()
-        && let Err(error) = std_fs::create_dir_all(parent)
-    {
-        log::warn!("failed to create settings directory {parent:?}: {error:?}");
+    if !ensure_settings_file() {
         return;
     }
-
-    if !paths::settings_file().exists()
-        && let Err(error) = std_fs::write(
-            paths::settings_file(),
-            settings::initial_user_settings_content().as_ref(),
-        )
-    {
-        log::warn!(
-            "failed to create settings file {:?}: {error:?}",
-            paths::settings_file()
-        );
-        return;
-    }
-
     cx.open_with_system(paths::settings_file());
+}
+
+fn open_keymap_file(_: &OpenKeymapFile, cx: &mut App) {
+    if !ensure_keymap_file() {
+        return;
+    }
+    cx.open_with_system(paths::keymap_file());
 }
 
 fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
@@ -639,6 +851,54 @@ fn open_directory(path: &Path, label: &str, cx: &mut App) {
     cx.open_with_system(path);
 }
 
+fn ensure_settings_file() -> bool {
+    if let Some(parent) = paths::settings_file().parent()
+        && let Err(error) = std_fs::create_dir_all(parent)
+    {
+        log::warn!("failed to create settings directory {parent:?}: {error:?}");
+        return false;
+    }
+
+    if !paths::settings_file().exists()
+        && let Err(error) = std_fs::write(
+            paths::settings_file(),
+            settings::initial_user_settings_content().as_ref(),
+        )
+    {
+        log::warn!(
+            "failed to create settings file {:?}: {error:?}",
+            paths::settings_file()
+        );
+        return false;
+    }
+
+    true
+}
+
+fn ensure_keymap_file() -> bool {
+    if let Some(parent) = paths::keymap_file().parent()
+        && let Err(error) = std_fs::create_dir_all(parent)
+    {
+        log::warn!("failed to create keymap directory {parent:?}: {error:?}");
+        return false;
+    }
+
+    if !paths::keymap_file().exists()
+        && let Err(error) = std_fs::write(
+            paths::keymap_file(),
+            settings::initial_keymap_content().as_ref(),
+        )
+    {
+        log::warn!(
+            "failed to create keymap file {:?}: {error:?}",
+            paths::keymap_file()
+        );
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -647,6 +907,53 @@ mod tests {
         let path = env::temp_dir().join(format!("zed-terminal-test-{}", uuid::Uuid::new_v4()));
         std_fs::create_dir_all(&path).expect("failed to create temp test directory");
         path
+    }
+
+    #[test]
+    fn parses_path_options() {
+        let data_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--paths",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert!(options.print_paths);
+        assert_eq!(options.path_options.data_dir, data_dir);
+        assert_eq!(
+            options.path_options.config_dir,
+            options.path_options.data_dir.join("config")
+        );
+        std_fs::remove_dir_all(options.path_options.data_dir).ok();
+    }
+
+    #[test]
+    fn parses_config_dir_override() {
+        let data_dir = temp_test_dir();
+        let config_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.path_options.data_dir, data_dir);
+        assert_eq!(options.path_options.config_dir, config_dir);
+        std_fs::remove_dir_all(options.path_options.data_dir).ok();
+        std_fs::remove_dir_all(options.path_options.config_dir).ok();
+    }
+
+    #[test]
+    fn parses_terminal_keymap_asset() {
+        settings::KeymapFile::parse(include_str!("../../../assets/keymaps/zed-terminal.json"))
+            .expect("terminal keymap asset should parse");
     }
 
     #[test]

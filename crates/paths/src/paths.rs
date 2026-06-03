@@ -1,8 +1,8 @@
 //! Paths to locations used by Zed.
 
-use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, OnceLock};
+use std::{env, io};
 
 use util::paths::SanitizedPath;
 pub use util::paths::home_dir;
@@ -50,6 +50,11 @@ pub const APP_NAME_LOWERCASE: &str = {
 /// This is used to override the default data directory location.
 /// The directory will be created if it doesn't exist when set.
 static CUSTOM_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// A custom config directory override, set only by `set_custom_config_dir`.
+/// This is used to override the default config directory location.
+/// The directory will be created if it doesn't exist when set.
+static CUSTOM_CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The resolved data directory, combining custom override or platform defaults.
 /// This is set once and cached for subsequent calls.
@@ -101,27 +106,87 @@ pub fn remote_wsl_server_dir_relative() -> &'static RelPath {
 /// * The directory's path cannot be canonicalized to an absolute path
 /// * The directory cannot be created
 pub fn set_custom_data_dir(dir: &str) -> &'static PathBuf {
-    if CURRENT_DATA_DIR.get().is_some() || CONFIG_DIR.get().is_some() {
-        panic!("set_custom_data_dir called after data_dir or config_dir was initialized");
-    }
-    CUSTOM_DATA_DIR.get_or_init(|| {
-        let path = PathBuf::from(dir);
-        std::fs::create_dir_all(&path).expect("failed to create custom data directory");
-        let canonicalized = path
-            .canonicalize()
-            .expect("failed to canonicalize custom data directory's path to an absolute path");
-        // On Windows, `canonicalize` produces extended-length paths prefixed
-        // with `\\?\`. Strip that prefix so downstream consumers (e.g.
-        // Node.js language servers) that receive derived paths as arguments
-        // don't choke on the verbatim syntax.
-        SanitizedPath::new(&canonicalized).as_path().to_path_buf()
+    set_custom_data_dir_path(Path::new(dir))
+}
+
+/// Sets a custom directory for all user data, overriding the default data directory.
+/// This is the path-based form of [`set_custom_data_dir`].
+pub fn set_custom_data_dir_path(dir: impl AsRef<Path>) -> &'static PathBuf {
+    try_set_custom_data_dir_path(dir).unwrap_or_else(|error| {
+        panic!("failed to set custom data directory: {error}");
     })
+}
+
+/// Tries to set a custom directory for all user data, overriding the default data directory.
+/// This is the fallible path-based form of [`set_custom_data_dir`].
+pub fn try_set_custom_data_dir_path(dir: impl AsRef<Path>) -> io::Result<&'static PathBuf> {
+    if CURRENT_DATA_DIR.get().is_some() || CONFIG_DIR.get().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "set_custom_data_dir called after data_dir or config_dir was initialized",
+        ));
+    }
+    if CUSTOM_DATA_DIR.get().is_none() {
+        let canonicalized = canonicalize_custom_dir(dir.as_ref(), "data")?;
+        _ = CUSTOM_DATA_DIR.set(canonicalized);
+    }
+    Ok(CUSTOM_DATA_DIR
+        .get()
+        .expect("custom data directory should be initialized"))
+}
+
+/// Sets a custom directory for user configuration, overriding the default config directory.
+///
+/// This function must be called before any path operations that depend on the
+/// config directory. The directory's path will be canonicalized to an absolute
+/// path by a blocking FS operation, and the directory will be created if it
+/// doesn't exist.
+pub fn set_custom_config_dir(dir: &str) -> &'static PathBuf {
+    set_custom_config_dir_path(Path::new(dir))
+}
+
+/// Sets a custom directory for user configuration, overriding the default config directory.
+/// This is the path-based form of [`set_custom_config_dir`].
+pub fn set_custom_config_dir_path(dir: impl AsRef<Path>) -> &'static PathBuf {
+    try_set_custom_config_dir_path(dir).unwrap_or_else(|error| {
+        panic!("failed to set custom config directory: {error}");
+    })
+}
+
+/// Tries to set a custom directory for user configuration, overriding the default config directory.
+/// This is the fallible path-based form of [`set_custom_config_dir`].
+pub fn try_set_custom_config_dir_path(dir: impl AsRef<Path>) -> io::Result<&'static PathBuf> {
+    if CONFIG_DIR.get().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "set_custom_config_dir called after config_dir was initialized",
+        ));
+    }
+    if CUSTOM_CONFIG_DIR.get().is_none() {
+        let canonicalized = canonicalize_custom_dir(dir.as_ref(), "config")?;
+        _ = CUSTOM_CONFIG_DIR.set(canonicalized);
+    }
+    Ok(CUSTOM_CONFIG_DIR
+        .get()
+        .expect("custom config directory should be initialized"))
+}
+
+fn canonicalize_custom_dir(dir: &Path, _label: &str) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let canonicalized = dir.canonicalize()?;
+    // On Windows, `canonicalize` produces extended-length paths prefixed
+    // with `\\?\`. Strip that prefix so downstream consumers (e.g.
+    // Node.js language servers) that receive derived paths as arguments
+    // don't choke on the verbatim syntax.
+    Ok(SanitizedPath::new(&canonicalized).as_path().to_path_buf())
 }
 
 /// Returns the path to the configuration directory used by Zed.
 pub fn config_dir() -> &'static PathBuf {
     CONFIG_DIR.get_or_init(|| {
-        if let Some(custom_dir) = CUSTOM_DATA_DIR.get() {
+        if let Some(custom_dir) = CUSTOM_CONFIG_DIR.get() {
+            custom_dir.clone()
+        } else if let Some(custom_dir) = CUSTOM_DATA_DIR.get() {
             custom_dir.join("config")
         } else if cfg!(target_os = "windows") {
             dirs::config_dir()
