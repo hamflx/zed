@@ -292,7 +292,16 @@ impl Project {
         cwd: Option<PathBuf>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Terminal>>> {
-        self.create_terminal_shell_internal(cwd, false, cx)
+        self.create_terminal_shell_internal(cwd, false, None, cx)
+    }
+
+    pub fn create_terminal_shell_with_shell(
+        &mut self,
+        cwd: Option<PathBuf>,
+        shell: Shell,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<Terminal>>> {
+        self.create_terminal_shell_internal(cwd, false, Some(shell), cx)
     }
 
     /// Creates a local terminal even if the project is remote.
@@ -309,7 +318,7 @@ impl Project {
             // Local project: use project directory like normal terminals
             self.active_project_directory(cx).map(|p| p.to_path_buf())
         };
-        self.create_terminal_shell_internal(working_directory, true, cx)
+        self.create_terminal_shell_internal(working_directory, true, None, cx)
     }
 
     /// Internal method for creating terminal shells.
@@ -319,6 +328,7 @@ impl Project {
         &mut self,
         cwd: Option<PathBuf>,
         force_local: bool,
+        shell_override: Option<Shell>,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<Terminal>>> {
         let path = cwd.map(|p| Arc::from(&*p));
@@ -359,12 +369,17 @@ impl Project {
         } else {
             self.remote_client.clone()
         };
+        let terminal_shell = if remote_client.is_none() {
+            shell_override.unwrap_or_else(|| settings.shell.clone())
+        } else {
+            settings.shell.clone()
+        };
         let shell = match &remote_client {
             Some(remote_client) => remote_client
                 .read(cx)
                 .shell()
                 .unwrap_or_else(get_default_system_shell),
-            None => settings.shell.program(),
+            None => terminal_shell.program(),
         };
         let env_shell = match &remote_client {
             Some(_) => shell.clone(),
@@ -409,7 +424,7 @@ impl Project {
                             Some(remote_client) => {
                                 create_remote_shell(None, env, path, remote_client, cx)?
                             }
-                            None => (settings.shell, env),
+                            None => (terminal_shell, env),
                         }
                     };
                     anyhow::Ok(TerminalBuilder::new(

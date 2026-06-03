@@ -135,6 +135,7 @@ struct LaunchOptions {
     print_paths: bool,
     initial_tab: LaunchTab,
     additional_tabs: Vec<LaunchTab>,
+    new_terminal_shell: Option<Shell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +150,7 @@ struct LaunchTab {
     command: Option<LaunchCommand>,
     env: HashMap<String, String>,
     title: Option<String>,
+    shell: Option<Shell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,6 +168,8 @@ struct TerminalStartupConfig {
     command: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    shell: Option<TerminalStartupShellConfig>,
     #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
@@ -186,6 +190,8 @@ struct TerminalStartupProfileConfig {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    shell: Option<TerminalStartupShellConfig>,
+    #[serde(default)]
     env: HashMap<String, String>,
     #[serde(default)]
     tabs: Vec<TerminalStartupTabConfig>,
@@ -201,7 +207,24 @@ struct TerminalStartupTabConfig {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    shell: Option<TerminalStartupShellConfig>,
+    #[serde(default)]
     env: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+enum TerminalStartupShellConfig {
+    Program(String),
+    WithArguments(TerminalStartupShellWithArgumentsConfig),
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TerminalStartupShellWithArgumentsConfig {
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
 }
 
 impl LaunchOptions {
@@ -259,6 +282,9 @@ impl LaunchOptions {
         let inherited_env = startup_config
             .inherited_env(profile)
             .context("failed to resolve configured startup environment")?;
+        let inherited_shell = startup_config
+            .inherited_shell(profile)
+            .context("failed to resolve configured startup shell")?;
         let mut initial_tab = startup_config
             .initial_tab(profile)
             .context("failed to resolve configured initial startup tab")?;
@@ -268,6 +294,7 @@ impl LaunchOptions {
         if let Some(command) = command {
             initial_tab.command = Some(command);
             initial_tab.env = inherited_env.clone();
+            initial_tab.shell = None;
         }
         let mut additional_tabs = startup_config
             .additional_tabs(profile)
@@ -276,6 +303,7 @@ impl LaunchOptions {
             &cli.new_tabs,
             &cli.new_tab_commands,
             &inherited_env,
+            inherited_shell.as_ref(),
         )?);
 
         Ok(Self {
@@ -283,6 +311,7 @@ impl LaunchOptions {
             print_paths: cli.print_paths,
             initial_tab,
             additional_tabs,
+            new_terminal_shell: inherited_shell,
         })
     }
 
@@ -325,6 +354,7 @@ impl LaunchTab {
         directories: &[PathBuf],
         commands: &[String],
         inherited_env: &HashMap<String, String>,
+        inherited_shell: Option<&Shell>,
     ) -> Result<Vec<Self>> {
         let mut tabs = Vec::with_capacity(directories.len() + commands.len());
 
@@ -336,6 +366,7 @@ impl LaunchTab {
                 command: None,
                 env: HashMap::default(),
                 title: None,
+                shell: inherited_shell.cloned(),
             });
         }
 
@@ -349,6 +380,7 @@ impl LaunchTab {
                 ),
                 env: inherited_env.clone(),
                 title: None,
+                shell: None,
             });
         }
 
@@ -361,6 +393,8 @@ impl LaunchTab {
         inherited_env: &HashMap<String, String>,
         tab_env: &HashMap<String, String>,
         title: Option<&str>,
+        inherited_shell: Option<&Shell>,
+        tab_shell: Option<&TerminalStartupShellConfig>,
         label: impl std::fmt::Display,
     ) -> Result<Self> {
         let working_directory = working_directory
@@ -374,6 +408,9 @@ impl LaunchTab {
         if command.is_none() && !tab_env.is_empty() {
             bail!("environment variables require a command for {label}");
         }
+        if command.is_some() && tab_shell.is_some() {
+            bail!("shell selection requires a shell tab for {label}");
+        }
         let env = if command.is_some() {
             let mut env = inherited_env.clone();
             env.extend(tab_env.clone());
@@ -381,13 +418,48 @@ impl LaunchTab {
         } else {
             HashMap::default()
         };
+        let shell = if command.is_some() {
+            None
+        } else if let Some(shell) = tab_shell {
+            Some(
+                shell
+                    .to_shell()
+                    .with_context(|| format!("failed to parse shell for {label}"))?,
+            )
+        } else {
+            inherited_shell.cloned()
+        };
 
         Ok(Self {
             working_directory,
             command,
             env,
             title: normalize_terminal_title(title),
+            shell,
         })
+    }
+}
+
+impl TerminalStartupShellConfig {
+    fn to_shell(&self) -> Result<Shell> {
+        match self {
+            TerminalStartupShellConfig::Program(program) => {
+                let program = normalize_terminal_shell_program(program)?;
+                Ok(Shell::Program(program))
+            }
+            TerminalStartupShellConfig::WithArguments(config) => {
+                let program = normalize_terminal_shell_program(&config.program)?;
+                if config.args.is_empty() {
+                    Ok(Shell::Program(program))
+                } else {
+                    Ok(Shell::WithArguments {
+                        program,
+                        args: config.args.clone(),
+                        title_override: None,
+                    })
+                }
+            }
+        }
     }
 }
 
@@ -468,6 +540,7 @@ impl TerminalStartupConfig {
                 working_directory: self.working_directory.as_deref(),
                 command: self.command.as_deref(),
                 title: self.title.as_deref(),
+                shell: self.shell.as_ref(),
                 env: &self.env,
                 tabs: &self.tabs,
                 label: "root startup layout".into(),
@@ -493,6 +566,7 @@ impl TerminalStartupConfig {
             working_directory: profile.working_directory.as_deref(),
             command: profile.command.as_deref(),
             title: profile.title.as_deref(),
+            shell: profile.shell.as_ref(),
             env: &profile.env,
             tabs: &profile.tabs,
             label: format!("startup profile {profile_name:?}"),
@@ -501,12 +575,18 @@ impl TerminalStartupConfig {
 
     fn initial_tab(&self, requested_profile: Option<&str>) -> Result<LaunchTab> {
         let layout = self.selected_layout(requested_profile)?;
+        let shell = layout
+            .shell
+            .map(TerminalStartupShellConfig::to_shell)
+            .transpose()?;
         LaunchTab::from_config(
             layout.working_directory,
             layout.command,
             layout.env,
             &HashMap::default(),
             layout.title,
+            shell.as_ref(),
+            None,
             format!("initial tab for {}", layout.label),
         )
     }
@@ -515,8 +595,19 @@ impl TerminalStartupConfig {
         Ok(self.selected_layout(requested_profile)?.env.clone())
     }
 
+    fn inherited_shell(&self, requested_profile: Option<&str>) -> Result<Option<Shell>> {
+        self.selected_layout(requested_profile)?
+            .shell
+            .map(TerminalStartupShellConfig::to_shell)
+            .transpose()
+    }
+
     fn additional_tabs(&self, requested_profile: Option<&str>) -> Result<Vec<LaunchTab>> {
         let layout = self.selected_layout(requested_profile)?;
+        let shell = layout
+            .shell
+            .map(TerminalStartupShellConfig::to_shell)
+            .transpose()?;
         layout
             .tabs
             .iter()
@@ -528,6 +619,8 @@ impl TerminalStartupConfig {
                     layout.env,
                     &tab.env,
                     tab.title.as_deref(),
+                    shell.as_ref(),
+                    tab.shell.as_ref(),
                     format!("tab {} for {}", index + 2, layout.label),
                 )
             })
@@ -539,6 +632,7 @@ struct TerminalStartupLayout<'a> {
     working_directory: Option<&'a Path>,
     command: Option<&'a str>,
     title: Option<&'a str>,
+    shell: Option<&'a TerminalStartupShellConfig>,
     env: &'a HashMap<String, String>,
     tabs: &'a [TerminalStartupTabConfig],
     label: String,
@@ -866,6 +960,7 @@ fn open_terminal_window(
     let bounds = Bounds::centered(None, window_size, cx);
     let startup_working_directories = launch_options.startup_working_directories();
     let new_terminal_working_directory = launch_options.initial_tab.working_directory.clone();
+    let new_terminal_shell = launch_options.new_terminal_shell.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
 
@@ -908,11 +1003,22 @@ fn open_terminal_window(
                     let working_directory = new_terminal_working_directory
                         .clone()
                         .or_else(|| default_working_directory(workspace, cx));
+                    let shell = new_terminal_shell.clone();
                     TerminalPanel::add_center_terminal(
                         workspace,
                         window,
                         cx,
-                        move |project, cx| project.create_terminal_shell(working_directory, cx),
+                        move |project, cx| {
+                            if let Some(shell) = shell {
+                                project.create_terminal_shell_with_shell(
+                                    working_directory,
+                                    shell,
+                                    cx,
+                                )
+                            } else {
+                                project.create_terminal_shell(working_directory, cx)
+                            }
+                        },
                     )
                     .detach_and_log_err(cx);
                 });
@@ -965,6 +1071,7 @@ fn add_launch_tab(
     let command = tab.command;
     let env = tab.env;
     let title = tab.title;
+    let shell = tab.shell;
     TerminalPanel::add_center_terminal_with_custom_title(
         workspace,
         window,
@@ -973,6 +1080,8 @@ fn add_launch_tab(
         move |project, cx| {
             if let Some(command) = command {
                 project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
+            } else if let Some(shell) = shell {
+                project.create_terminal_shell_with_shell(working_directory, shell, cx)
             } else {
                 project.create_terminal_shell(working_directory, cx)
             }
@@ -1070,6 +1179,14 @@ fn normalize_terminal_title(title: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .map(str::to_string)
+}
+
+fn normalize_terminal_shell_program(program: &str) -> Result<String> {
+    let program = program.trim();
+    if program.is_empty() {
+        bail!("shell program is empty");
+    }
+    Ok(program.to_string())
 }
 
 fn set_terminal_window_title(window: &mut Window, cx: &mut App) {
@@ -1327,6 +1444,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
   "working_directory": null,
   "command": null,
   "title": null,
+  "shell": null,
   "env": {},
   "tabs": [],
   "default_profile": null,
@@ -1365,6 +1483,14 @@ mod tests {
             env.insert((*key).into(), (*value).into());
         }
         env
+    }
+
+    fn shell_with_args(program: &str, args: &[&str]) -> Shell {
+        Shell::WithArguments {
+            program: program.into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            title_override: None,
+        }
     }
 
     #[test]
@@ -1573,12 +1699,209 @@ mod tests {
     }
 
     #[test]
+    fn applies_root_shell_to_shell_tabs() {
+        let cli_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+            tabs: vec![TerminalStartupTabConfig {
+                title: Some("Inherited".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            cli_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C cli-tab",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.new_terminal_shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(options.initial_tab.command, None);
+        assert_eq!(
+            options.initial_tab.shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(options.additional_tabs.len(), 3);
+        assert_eq!(
+            options.additional_tabs[0].shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(
+            options.additional_tabs[1].shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(
+            options.additional_tabs[2].command.as_ref().unwrap().program,
+            "cmd"
+        );
+        assert_eq!(options.additional_tabs[2].shell, None);
+
+        std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn tab_shell_overrides_inherited_shell() {
+        let config = TerminalStartupConfig {
+            shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+            tabs: vec![TerminalStartupTabConfig {
+                shell: Some(TerminalStartupShellConfig::WithArguments(
+                    TerminalStartupShellWithArgumentsConfig {
+                        program: "cmd.exe".into(),
+                        args: vec!["/K".into()],
+                    },
+                )),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.initial_tab.shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(
+            options.additional_tabs[0].shell,
+            Some(shell_with_args("cmd.exe", &["/K"]))
+        );
+    }
+
+    #[test]
+    fn profile_shell_is_selected_for_shell_tabs_and_new_terminal_tabs() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                shell: Some(TerminalStartupShellConfig::WithArguments(
+                    TerminalStartupShellWithArgumentsConfig {
+                        program: "pwsh.exe".into(),
+                        args: vec!["-NoLogo".into()],
+                    },
+                )),
+                tabs: vec![TerminalStartupTabConfig::default()],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--profile", "work"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.new_terminal_shell,
+            Some(shell_with_args("pwsh.exe", &["-NoLogo"]))
+        );
+        assert_eq!(
+            options.initial_tab.shell,
+            Some(shell_with_args("pwsh.exe", &["-NoLogo"]))
+        );
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(
+            options.additional_tabs[0].shell,
+            Some(shell_with_args("pwsh.exe", &["-NoLogo"]))
+        );
+    }
+
+    #[test]
+    fn cli_startup_command_does_not_inherit_profile_shell() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "--",
+            "cmd",
+            "/C",
+            "cli",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.new_terminal_shell,
+            Some(Shell::Program("pwsh.exe".into()))
+        );
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "cli".into()],
+            })
+        );
+        assert_eq!(options.initial_tab.shell, None);
+    }
+
+    #[test]
+    fn rejects_empty_startup_shell_program() {
+        let config = TerminalStartupConfig {
+            shell: Some(TerminalStartupShellConfig::Program("   ".into())),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect_err("empty startup shell should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to resolve configured startup shell"));
+        assert!(message.contains("shell program is empty"));
+    }
+
+    #[test]
+    fn rejects_tab_shell_on_command_tab() {
+        let config = TerminalStartupConfig {
+            tabs: vec![TerminalStartupTabConfig {
+                command: Some("cmd /C tab".into()),
+                shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect_err("tab shell on command tab should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to resolve configured startup tabs"));
+        assert!(message.contains("shell selection requires a shell tab"));
+    }
+
+    #[test]
     fn no_startup_config_ignores_configured_startup_tabs() {
         let configured_dir = temp_test_dir();
         let config = TerminalStartupConfig {
             working_directory: Some(configured_dir.clone()),
             command: Some("cmd /C configured".into()),
             title: Some("Configured".into()),
+            shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(configured_dir.clone()),
                 command: Some("cmd /C tab".into()),
@@ -1595,6 +1918,8 @@ mod tests {
         assert_eq!(options.initial_tab.working_directory, None);
         assert_eq!(options.initial_tab.command, None);
         assert_eq!(options.initial_tab.title, None);
+        assert_eq!(options.initial_tab.shell, None);
+        assert_eq!(options.new_terminal_shell, None);
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
@@ -1843,10 +2168,12 @@ mod tests {
 
         assert_eq!(options.initial_tab.env, HashMap::default());
         assert_eq!(options.initial_tab.title, None);
+        assert_eq!(options.initial_tab.shell, None);
         assert_eq!(options.additional_tabs.len(), 1);
         assert_eq!(options.additional_tabs[0].command, None);
         assert_eq!(options.additional_tabs[0].env, HashMap::default());
         assert_eq!(options.additional_tabs[0].title, None);
+        assert_eq!(options.additional_tabs[0].shell, None);
     }
 
     #[test]
@@ -2250,6 +2577,7 @@ mod tests {
                 }),
                 env: HashMap::default(),
                 title: None,
+                shell: None,
             }]
         );
     }
