@@ -3,6 +3,7 @@ use std::{
     env,
     fmt::Write as _,
     fs as std_fs,
+    io::{self, Write as _},
     path::{Path, PathBuf},
     process,
     sync::{Arc, OnceLock},
@@ -90,7 +91,7 @@ struct Cli {
 
     #[arg(
         long = "paths",
-        conflicts_with_all = ["list_profiles", "validate_startup_config"]
+        conflicts_with_all = ["list_profiles", "validate_startup_config", "validate_keymap"]
     )]
     print_paths: bool,
 
@@ -98,6 +99,7 @@ struct Cli {
         long = "list-profiles",
         conflicts_with_all = [
             "validate_startup_config",
+            "validate_keymap",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -113,14 +115,19 @@ struct Cli {
     #[arg(
         long = "all-profiles",
         requires = "list_profiles",
-        conflicts_with = "validate_startup_config",
+        conflicts_with_all = ["validate_startup_config", "validate_keymap"],
         help = "Include hidden startup profiles when listing profiles"
     )]
     all_profiles: bool,
 
     #[arg(
         long = "no-startup-config",
-        conflicts_with_all = ["profile", "list_profiles", "validate_startup_config"]
+        conflicts_with_all = [
+            "profile",
+            "list_profiles",
+            "validate_startup_config",
+            "validate_keymap"
+        ]
     )]
     no_startup_config: bool,
 
@@ -129,6 +136,7 @@ struct Cli {
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
+            "validate_keymap",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -140,6 +148,24 @@ struct Cli {
         help = "Validate terminal.json without opening a terminal window"
     )]
     validate_startup_config: bool,
+
+    #[arg(
+        long = "validate-keymap",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "validate_startup_config",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Validate the standalone default keymap and active keymap.json without opening a terminal window"
+    )]
+    validate_keymap: bool,
 
     #[arg(long = "profile", value_name = "NAME")]
     profile: Option<String>,
@@ -197,6 +223,9 @@ enum TerminalCliCommand {
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
+    },
+    ValidateKeymap {
+        path_options: TerminalPathOptions,
     },
     Launch(LaunchOptions),
 }
@@ -332,12 +361,25 @@ struct TerminalStartupConfigValidation {
     tab_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapValidation {
+    default_binding_count: usize,
+    user_binding_count: usize,
+    user_keymap_source: TerminalUserKeymapSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalUserKeymapSource {
+    File,
+    Initial,
+}
+
 impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
             TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
                 .context("failed to resolve terminal paths")?;
-        let startup_config = if cli.print_paths || cli.no_startup_config {
+        let startup_config = if cli.print_paths || cli.no_startup_config || cli.validate_keymap {
             TerminalStartupConfig::default()
         } else {
             TerminalStartupConfig::load(&terminal_startup_config_file(&path_options.config_dir))?
@@ -382,6 +424,10 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.validate_keymap {
+            return Ok(Self::ValidateKeymap { path_options });
+        }
+
         Ok(Self::Launch(LaunchOptions::from_cli_parts(
             cli,
             startup_config,
@@ -394,6 +440,7 @@ impl TerminalCliCommand {
             Self::PrintPaths(path_options) => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
+            Self::ValidateKeymap { path_options } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
     }
@@ -965,8 +1012,33 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::ValidateKeymap { .. } => run_keymap_validation(),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
+}
+
+fn run_keymap_validation() {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match validate_keymaps(cx) {
+                Ok(validation) => {
+                    print!(
+                        "{}",
+                        format_keymap_validation(paths::keymap_file(), &validation)
+                    );
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush keymap validation output");
+                }
+                Err(error) => {
+                    eprintln!("failed to validate terminal keymap: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
 }
 
 fn launch_terminal(launch_options: LaunchOptions) {
@@ -1051,6 +1123,47 @@ fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Re
         format_startup_config_validation(&active_terminal_startup_config_file(), &validation)
     );
     Ok(())
+}
+
+fn validate_keymaps(cx: &mut App) -> Result<TerminalKeymapValidation> {
+    let default_binding_count =
+        KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
+            .context("failed to validate zed terminal default keymap")?
+            .len();
+    let (user_keymap_content, user_keymap_source) = read_user_keymap_content()?;
+    let user_binding_count =
+        load_keymap_content_for_validation("terminal keymap file", &user_keymap_content, cx)?;
+
+    Ok(TerminalKeymapValidation {
+        default_binding_count,
+        user_binding_count,
+        user_keymap_source,
+    })
+}
+
+fn read_user_keymap_content() -> Result<(String, TerminalUserKeymapSource)> {
+    let keymap_file = paths::keymap_file();
+    match std_fs::read_to_string(keymap_file) {
+        Ok(content) => Ok((content, TerminalUserKeymapSource::File)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((
+            settings::initial_keymap_content().into_owned(),
+            TerminalUserKeymapSource::Initial,
+        )),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to read terminal keymap {}", keymap_file.display())),
+    }
+}
+
+fn load_keymap_content_for_validation(label: &str, content: &str, cx: &App) -> Result<usize> {
+    match KeymapFile::load(content, cx) {
+        KeymapFileLoadResult::Success { key_bindings } => Ok(key_bindings.len()),
+        KeymapFileLoadResult::SomeFailedToLoad { error_message, .. } => {
+            bail!("{label} has errors: {}", error_message.0)
+        }
+        KeymapFileLoadResult::JsonParseFailure { error } => {
+            Err(error).with_context(|| format!("failed to parse {label}"))
+        }
+    }
 }
 
 fn format_startup_profiles(
@@ -1150,6 +1263,41 @@ fn format_startup_config_validation(
     writeln!(&mut output, "tabs: {}", validation.tab_count)
         .expect("writing to string should not fail");
     output
+}
+
+fn format_keymap_validation(keymap_file: &Path, validation: &TerminalKeymapValidation) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "keymap_file: {}", keymap_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "default_bindings: {}",
+        validation.default_binding_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "user_keymap_source: {}",
+        validation.user_keymap_source.as_str()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "user_bindings: {}",
+        validation.user_binding_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+impl TerminalUserKeymapSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Initial => "initial",
+        }
+    }
 }
 
 fn profile_menu_label(profile: &TerminalStartupProfileSummary) -> String {
@@ -2488,6 +2636,28 @@ mod tests {
     }
 
     #[test]
+    fn formats_keymap_validation() {
+        let output = format_keymap_validation(
+            Path::new("keymap.json"),
+            &TerminalKeymapValidation {
+                default_binding_count: 31,
+                user_binding_count: 2,
+                user_keymap_source: TerminalUserKeymapSource::File,
+            },
+        );
+
+        assert_eq!(
+            output,
+            "keymap_file: keymap.json\nstatus: ok\ndefault_bindings: 31\nuser_keymap_source: file\nuser_bindings: 2\n"
+        );
+    }
+
+    #[test]
+    fn formats_initial_keymap_validation_source() {
+        assert_eq!(TerminalUserKeymapSource::Initial.as_str(), "initial");
+    }
+
+    #[test]
     fn validate_startup_config_mode_does_not_launch() {
         let cli = Cli::try_parse_from(["zed-terminal", "--validate-startup-config"])
             .expect("failed to parse cli args");
@@ -2508,6 +2678,20 @@ mod tests {
                 tab_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn validate_keymap_mode_does_not_resolve_startup_layout() {
+        let config = TerminalStartupConfig {
+            default_profile: Some("missing".into()),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--validate-keymap"])
+            .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
+            .expect("keymap validation should not resolve startup layout");
+
+        assert!(matches!(command, TerminalCliCommand::ValidateKeymap { .. }));
     }
 
     #[test]
@@ -2554,6 +2738,46 @@ mod tests {
             "--all-profiles",
         ])
         .expect_err("hidden profile listing should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn validate_keymap_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap", "--profile", "work"])
+            .expect_err("profile selection should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-keymap",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-keymap",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap", "--", "cmd"])
+            .expect_err("startup command should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--validate-keymap"])
+            .expect_err("path inspection should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap", "--all-profiles"])
+            .expect_err("hidden profile listing should conflict with keymap validation");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
