@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fs as std_fs,
+    env,
+    fmt::Write as _,
+    fs as std_fs,
     path::{Path, PathBuf},
     process,
     sync::{Arc, OnceLock},
@@ -78,10 +80,35 @@ struct Cli {
     )]
     config_dir: Option<PathBuf>,
 
-    #[arg(long = "paths")]
+    #[arg(long = "paths", conflicts_with = "list_profiles")]
     print_paths: bool,
 
-    #[arg(long = "no-startup-config", conflicts_with = "profile")]
+    #[arg(
+        long = "list-profiles",
+        conflicts_with_all = [
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "List configured startup profiles without opening a terminal window"
+    )]
+    list_profiles: bool,
+
+    #[arg(
+        long = "all-profiles",
+        requires = "list_profiles",
+        help = "Include hidden startup profiles when listing profiles"
+    )]
+    all_profiles: bool,
+
+    #[arg(
+        long = "no-startup-config",
+        conflicts_with_all = ["profile", "list_profiles"]
+    )]
     no_startup_config: bool,
 
     #[arg(long = "profile", value_name = "NAME")]
@@ -130,9 +157,19 @@ struct Cli {
 }
 
 #[derive(Clone, Debug)]
+enum TerminalCliCommand {
+    PrintPaths(TerminalPathOptions),
+    ListProfiles {
+        path_options: TerminalPathOptions,
+        startup_config: TerminalStartupConfig,
+        include_hidden: bool,
+    },
+    Launch(LaunchOptions),
+}
+
+#[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
-    print_paths: bool,
     initial_tab: LaunchTab,
     additional_tabs: Vec<LaunchTab>,
     new_terminal_shell: Option<Shell>,
@@ -184,6 +221,16 @@ struct TerminalStartupConfig {
 #[serde(deny_unknown_fields)]
 struct TerminalStartupProfileConfig {
     #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    hidden: bool,
+    #[serde(default)]
     working_directory: Option<PathBuf>,
     #[serde(default)]
     command: Option<String>,
@@ -227,12 +274,19 @@ struct TerminalStartupShellWithArgumentsConfig {
     args: Vec<String>,
 }
 
-impl LaunchOptions {
-    #[cfg(test)]
-    fn from_cli(cli: Cli) -> Result<Self> {
-        Self::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileSummary {
+    name: String,
+    display_name: String,
+    description: Option<String>,
+    icon: Option<String>,
+    color: Option<String>,
+    hidden: bool,
+    is_default: bool,
+    tab_count: usize,
+}
 
+impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
             TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
@@ -263,18 +317,69 @@ impl LaunchOptions {
         startup_config: TerminalStartupConfig,
         path_options: TerminalPathOptions,
     ) -> Result<Self> {
+        if cli.print_paths {
+            return Ok(Self::PrintPaths(path_options));
+        }
+
+        if cli.list_profiles {
+            return Ok(Self::ListProfiles {
+                path_options,
+                startup_config,
+                include_hidden: cli.all_profiles,
+            });
+        }
+
+        Ok(Self::Launch(LaunchOptions::from_cli_parts(
+            cli,
+            startup_config,
+            path_options,
+        )?))
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::PrintPaths(path_options) => path_options,
+            Self::ListProfiles { path_options, .. } => path_options,
+            Self::Launch(launch_options) => &launch_options.path_options,
+        }
+    }
+}
+
+impl LaunchOptions {
+    #[cfg(test)]
+    fn from_cli(cli: Cli) -> Result<Self> {
+        Self::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+    }
+
+    #[cfg(test)]
+    fn from_cli_and_startup_config(
+        cli: Cli,
+        startup_config: TerminalStartupConfig,
+    ) -> Result<Self> {
+        let path_options =
+            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
+                .context("failed to resolve terminal paths")?;
+
+        Self::from_cli_parts(cli, startup_config, path_options)
+    }
+
+    fn from_cli_parts(
+        cli: Cli,
+        startup_config: TerminalStartupConfig,
+        path_options: TerminalPathOptions,
+    ) -> Result<Self> {
         let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
-        let startup_config = if cli.print_paths || cli.no_startup_config {
+        let startup_config = if cli.no_startup_config {
             TerminalStartupConfig::default()
         } else {
             startup_config
         };
-        let profile = if cli.print_paths || cli.no_startup_config {
+        let profile = if cli.no_startup_config {
             None
         } else {
             cli.profile.as_deref()
@@ -308,7 +413,6 @@ impl LaunchOptions {
 
         Ok(Self {
             path_options,
-            print_paths: cli.print_paths,
             initial_tab,
             additional_tabs,
             new_terminal_shell: inherited_shell,
@@ -626,6 +730,29 @@ impl TerminalStartupConfig {
             })
             .collect()
     }
+
+    fn profile_summaries(&self, include_hidden: bool) -> Vec<TerminalStartupProfileSummary> {
+        self.profiles
+            .iter()
+            .filter_map(|(name, profile)| {
+                if profile.hidden && !include_hidden {
+                    return None;
+                }
+
+                Some(TerminalStartupProfileSummary {
+                    name: name.clone(),
+                    display_name: normalize_profile_text(profile.display_name.as_deref())
+                        .unwrap_or_else(|| name.clone()),
+                    description: normalize_profile_text(profile.description.as_deref()),
+                    icon: normalize_profile_text(profile.icon.as_deref()),
+                    color: normalize_profile_text(profile.color.as_deref()),
+                    hidden: profile.hidden,
+                    is_default: self.default_profile.as_deref() == Some(name.as_str()),
+                    tab_count: 1 + profile.tabs.len(),
+                })
+            })
+            .collect()
+    }
 }
 
 struct TerminalStartupLayout<'a> {
@@ -639,24 +766,31 @@ struct TerminalStartupLayout<'a> {
 }
 
 fn main() {
-    let launch_options = match LaunchOptions::from_cli_and_config_file(Cli::parse()) {
-        Ok(launch_options) => launch_options,
+    let command = match TerminalCliCommand::from_cli_and_config_file(Cli::parse()) {
+        Ok(command) => command,
         Err(error) => {
-            eprintln!("failed to launch zed terminal: {error:#}");
+            eprintln!("failed to run zed terminal: {error:#}");
             process::exit(2);
         }
     };
 
-    if let Err(error) = install_terminal_paths(&launch_options.path_options) {
-        eprintln!("failed to launch zed terminal: {error:#}");
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
         process::exit(2);
     }
 
-    if launch_options.print_paths {
-        print_terminal_paths();
-        return;
+    match command {
+        TerminalCliCommand::PrintPaths(_) => print_terminal_paths(),
+        TerminalCliCommand::ListProfiles {
+            startup_config,
+            include_hidden,
+            ..
+        } => print_startup_profiles(&startup_config, include_hidden),
+        TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
+}
 
+fn launch_terminal(launch_options: LaunchOptions) {
     init_terminal_logging();
 
     gpui_platform::application()
@@ -718,6 +852,97 @@ fn print_terminal_paths() {
     println!("keymap_file: {}", paths::keymap_file().display());
     println!("themes_dir: {}", paths::themes_dir().display());
     println!("log_file: {}", terminal_log_file().display());
+}
+
+fn print_startup_profiles(startup_config: &TerminalStartupConfig, include_hidden: bool) {
+    print!(
+        "{}",
+        format_startup_profiles(
+            startup_config,
+            &active_terminal_startup_config_file(),
+            include_hidden
+        )
+    );
+}
+
+fn format_startup_profiles(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+    include_hidden: bool,
+) -> String {
+    let summaries = startup_config.profile_summaries(include_hidden);
+    let hidden_count = startup_config
+        .profiles
+        .values()
+        .filter(|profile| profile.hidden)
+        .count();
+    let visible_count = startup_config.profiles.len() - hidden_count;
+    let mut output = String::new();
+
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+
+    if summaries.is_empty() {
+        if startup_config.profiles.is_empty() {
+            writeln!(&mut output, "No startup profiles configured.")
+                .expect("writing to string should not fail");
+        } else if include_hidden {
+            writeln!(&mut output, "No startup profiles configured.")
+                .expect("writing to string should not fail");
+        } else {
+            writeln!(
+                &mut output,
+                "No visible startup profiles configured. Use --all-profiles to include hidden profiles."
+            )
+            .expect("writing to string should not fail");
+        }
+        return output;
+    }
+
+    writeln!(
+        &mut output,
+        "profiles: {} visible, {} hidden",
+        visible_count, hidden_count
+    )
+    .expect("writing to string should not fail");
+
+    for profile in summaries {
+        let mut badges = Vec::new();
+        if profile.is_default {
+            badges.push("default");
+        }
+        if profile.hidden {
+            badges.push("hidden");
+        }
+        let badges = if badges.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", badges.join(", "))
+        };
+
+        writeln!(&mut output, "- {}{}", profile.name, badges)
+            .expect("writing to string should not fail");
+        writeln!(&mut output, "  display_name: {}", profile.display_name)
+            .expect("writing to string should not fail");
+        if let Some(description) = profile.description {
+            writeln!(&mut output, "  description: {description}")
+                .expect("writing to string should not fail");
+        }
+        if let Some(icon) = profile.icon {
+            writeln!(&mut output, "  icon: {icon}").expect("writing to string should not fail");
+        }
+        if let Some(color) = profile.color {
+            writeln!(&mut output, "  color: {color}").expect("writing to string should not fail");
+        }
+        writeln!(&mut output, "  tabs: {}", profile.tab_count)
+            .expect("writing to string should not fail");
+    }
+
+    output
 }
 
 fn terminal_log_file() -> &'static PathBuf {
@@ -1181,6 +1406,12 @@ fn normalize_terminal_title(title: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn normalize_profile_text(text: Option<&str>) -> Option<String> {
+    text.map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
 fn normalize_terminal_shell_program(program: &str) -> Result<String> {
     let program = program.trim();
     if program.is_empty() {
@@ -1440,6 +1671,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
     r#"// Zed Terminal startup layout.
 // Command strings use the same shell-like quoting rules as --new-tab-command.
 // Environment variables apply to command-backed startup tabs only.
+// Profiles may include display_name, description, icon, color, and hidden metadata.
 {
   "working_directory": null,
   "command": null,
@@ -1503,15 +1735,19 @@ mod tests {
             data_dir.to_str().unwrap(),
         ])
         .expect("failed to parse cli args");
-        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("failed to build cli command");
+        let TerminalCliCommand::PrintPaths(path_options) = command else {
+            panic!("expected paths mode");
+        };
 
-        assert!(options.print_paths);
-        assert_eq!(options.path_options.data_dir, data_dir);
+        assert_eq!(path_options.data_dir, data_dir);
         assert_eq!(
-            options.path_options.config_dir,
-            options.path_options.data_dir.join("config")
+            path_options.config_dir,
+            path_options.data_dir.join("config")
         );
-        std_fs::remove_dir_all(options.path_options.data_dir).ok();
+        std_fs::remove_dir_all(path_options.data_dir).ok();
     }
 
     #[test]
@@ -1547,6 +1783,177 @@ mod tests {
                 .expect("initial terminal startup config should parse");
 
         assert_eq!(config, TerminalStartupConfig::default());
+    }
+
+    #[test]
+    fn parses_startup_profile_metadata() {
+        let config: TerminalStartupConfig = settings::parse_json_with_comments(
+            r##"{
+                "default_profile": "work",
+                "profiles": {
+                    "hidden": {
+                        "display_name": "   ",
+                        "hidden": true
+                    },
+                    "work": {
+                        "display_name": " Work Shell ",
+                        "description": " Project startup shell ",
+                        "icon": " terminal ",
+                        "color": " #0f766e ",
+                        "tabs": [{ "title": "Logs" }]
+                    }
+                }
+            }"##,
+        )
+        .expect("profile metadata should parse");
+
+        assert_eq!(
+            config.profile_summaries(false),
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project startup shell".into()),
+                icon: Some("terminal".into()),
+                color: Some("#0f766e".into()),
+                hidden: false,
+                is_default: true,
+                tab_count: 2,
+            }]
+        );
+        assert_eq!(
+            config
+                .profile_summaries(true)
+                .into_iter()
+                .map(|profile| (profile.name, profile.display_name, profile.hidden))
+                .collect::<Vec<_>>(),
+            vec![
+                ("hidden".into(), "hidden".into(), true),
+                ("work".into(), "Work Shell".into(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_list() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "secret".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Secret".into()),
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Work Shell".into()),
+                description: Some("Project startup shell".into()),
+                icon: Some("terminal".into()),
+                color: Some("#0f766e".into()),
+                tabs: vec![TerminalStartupTabConfig::default()],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let visible = format_startup_profiles(&config, Path::new("terminal.json"), false);
+
+        assert!(visible.contains("startup_config_file: terminal.json"));
+        assert!(visible.contains("profiles: 1 visible, 1 hidden"));
+        assert!(visible.contains("- work (default)"));
+        assert!(visible.contains("  display_name: Work Shell"));
+        assert!(visible.contains("  description: Project startup shell"));
+        assert!(visible.contains("  icon: terminal"));
+        assert!(visible.contains("  color: #0f766e"));
+        assert!(visible.contains("  tabs: 2"));
+        assert!(!visible.contains("- secret"));
+
+        let all = format_startup_profiles(&config, Path::new("terminal.json"), true);
+
+        assert!(all.contains("- secret (hidden)"));
+        assert!(all.contains("  display_name: Secret"));
+    }
+
+    #[test]
+    fn list_profiles_mode_does_not_resolve_startup_layout() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Work".into()),
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            default_profile: Some("missing".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--all-profiles"])
+            .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
+            .expect("profile listing should not resolve startup layout");
+
+        let TerminalCliCommand::ListProfiles {
+            startup_config,
+            include_hidden,
+            ..
+        } = command
+        else {
+            panic!("expected profile listing mode");
+        };
+
+        assert!(include_hidden);
+        assert_eq!(
+            startup_config.profile_summaries(include_hidden),
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work".into(),
+                description: None,
+                icon: None,
+                color: None,
+                hidden: true,
+                is_default: false,
+                tab_count: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn list_profiles_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--profile", "work"])
+            .expect_err("profile selection should conflict with profile listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profiles",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profiles",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--", "cmd"])
+            .expect_err("startup command should conflict with profile listing");
+        assert!(error.to_string().contains("cannot be used with"));
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -1958,8 +2365,11 @@ mod tests {
             data_dir.to_str().unwrap(),
         ])
         .expect("failed to parse cli args");
-        let options =
-            LaunchOptions::from_cli_and_config_file(cli).expect("failed to build launch options");
+        let command =
+            TerminalCliCommand::from_cli_and_config_file(cli).expect("failed to build cli command");
+        let TerminalCliCommand::Launch(options) = command else {
+            panic!("expected launch mode");
+        };
 
         assert_initial_working_directory(&options, &configured_dir);
         assert_eq!(
@@ -2390,13 +2800,10 @@ mod tests {
         };
         let cli = Cli::try_parse_from(["zed-terminal", "--paths", "--profile", "missing"])
             .expect("failed to parse cli args");
-        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+        let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
             .expect("paths mode should not resolve startup profiles");
 
-        assert!(options.print_paths);
-        assert_eq!(options.initial_tab.working_directory, None);
-        assert_eq!(options.initial_tab.command, None);
-        assert!(options.additional_tabs.is_empty());
+        assert!(matches!(command, TerminalCliCommand::PrintPaths(_)));
     }
 
     #[test]
