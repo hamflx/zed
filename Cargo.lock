@@ -23192,6 +23192,7 @@ dependencies = [
  "reqwest_client",
  "schemars 1.0.4",
  "serde",
+ "serde_json",
  "session",
  "settings",
  "shellexpand",

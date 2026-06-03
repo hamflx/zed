@@ -91,7 +91,12 @@ struct Cli {
 
     #[arg(
         long = "paths",
-        conflicts_with_all = ["list_profiles", "validate_startup_config", "validate_keymap"]
+        conflicts_with_all = [
+            "list_profiles",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema"
+        ]
     )]
     print_paths: bool,
 
@@ -100,6 +105,7 @@ struct Cli {
         conflicts_with_all = [
             "validate_startup_config",
             "validate_keymap",
+            "print_startup_config_schema",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -115,7 +121,11 @@ struct Cli {
     #[arg(
         long = "all-profiles",
         requires = "list_profiles",
-        conflicts_with_all = ["validate_startup_config", "validate_keymap"],
+        conflicts_with_all = [
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema"
+        ],
         help = "Include hidden startup profiles when listing profiles"
     )]
     all_profiles: bool,
@@ -126,7 +136,8 @@ struct Cli {
             "profile",
             "list_profiles",
             "validate_startup_config",
-            "validate_keymap"
+            "validate_keymap",
+            "print_startup_config_schema"
         ]
     )]
     no_startup_config: bool,
@@ -137,6 +148,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "validate_keymap",
+            "print_startup_config_schema",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -150,11 +162,31 @@ struct Cli {
     validate_startup_config: bool,
 
     #[arg(
+        long = "print-startup-config-schema",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "validate_startup_config",
+            "validate_keymap",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Print the JSON Schema for terminal.json without opening a terminal window"
+    )]
+    print_startup_config_schema: bool,
+
+    #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
             "validate_startup_config",
+            "print_startup_config_schema",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -224,6 +256,9 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
     },
+    PrintStartupConfigSchema {
+        path_options: TerminalPathOptions,
+    },
     ValidateKeymap {
         path_options: TerminalPathOptions,
     },
@@ -259,7 +294,7 @@ struct LaunchCommand {
     args: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupConfig {
     #[serde(default)]
@@ -280,7 +315,7 @@ struct TerminalStartupConfig {
     profiles: BTreeMap<String, TerminalStartupProfileConfig>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupProfileConfig {
     #[serde(default)]
@@ -307,7 +342,7 @@ struct TerminalStartupProfileConfig {
     tabs: Vec<TerminalStartupTabConfig>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupTabConfig {
     #[serde(default)]
@@ -322,14 +357,14 @@ struct TerminalStartupTabConfig {
     env: HashMap<String, String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(untagged)]
 enum TerminalStartupShellConfig {
     Program(String),
     WithArguments(TerminalStartupShellWithArgumentsConfig),
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupShellWithArgumentsConfig {
     program: String,
@@ -379,7 +414,11 @@ impl TerminalCliCommand {
         let path_options =
             TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
                 .context("failed to resolve terminal paths")?;
-        let startup_config = if cli.print_paths || cli.no_startup_config || cli.validate_keymap {
+        let startup_config = if cli.print_paths
+            || cli.no_startup_config
+            || cli.validate_keymap
+            || cli.print_startup_config_schema
+        {
             TerminalStartupConfig::default()
         } else {
             TerminalStartupConfig::load(&terminal_startup_config_file(&path_options.config_dir))?
@@ -424,6 +463,10 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.print_startup_config_schema {
+            return Ok(Self::PrintStartupConfigSchema { path_options });
+        }
+
         if cli.validate_keymap {
             return Ok(Self::ValidateKeymap { path_options });
         }
@@ -440,6 +483,7 @@ impl TerminalCliCommand {
             Self::PrintPaths(path_options) => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
+            Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::ValidateKeymap { path_options } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
@@ -1012,6 +1056,12 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::PrintStartupConfigSchema { .. } => {
+            if let Err(error) = print_startup_config_schema() {
+                eprintln!("failed to print terminal startup config schema: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::ValidateKeymap { .. } => run_keymap_validation(),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
@@ -1122,6 +1172,11 @@ fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Re
         "{}",
         format_startup_config_validation(&active_terminal_startup_config_file(), &validation)
     );
+    Ok(())
+}
+
+fn print_startup_config_schema() -> Result<()> {
+    print!("{}", format_startup_config_schema()?);
     Ok(())
 }
 
@@ -1263,6 +1318,14 @@ fn format_startup_config_validation(
     writeln!(&mut output, "tabs: {}", validation.tab_count)
         .expect("writing to string should not fail");
     output
+}
+
+fn format_startup_config_schema() -> Result<String> {
+    let schema = schemars::schema_for!(TerminalStartupConfig);
+    let mut output = serde_json::to_string_pretty(&schema)
+        .context("failed to serialize terminal startup config schema")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_keymap_validation(keymap_file: &Path, validation: &TerminalKeymapValidation) -> String {
@@ -2636,6 +2699,34 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_config_schema() {
+        let schema = format_startup_config_schema().expect("schema should format");
+        let schema: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema).expect("schema should parse as json");
+
+        let properties = schema
+            .get("properties")
+            .and_then(gpui::private::serde_json::Value::as_object)
+            .expect("schema should contain root properties");
+
+        for property in [
+            "working_directory",
+            "command",
+            "title",
+            "shell",
+            "env",
+            "tabs",
+            "default_profile",
+            "profiles",
+        ] {
+            assert!(
+                properties.contains_key(property),
+                "schema should include {property}: {schema:#}"
+            );
+        }
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let output = format_keymap_validation(
             Path::new("keymap.json"),
@@ -2678,6 +2769,35 @@ mod tests {
                 tab_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn print_startup_config_schema_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--print-startup-config-schema",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("schema printing should not load terminal.json");
+
+        assert!(matches!(
+            command,
+            TerminalCliCommand::PrintStartupConfigSchema { .. }
+        ));
+
+        std_fs::remove_dir_all(data_dir).ok();
     }
 
     #[test]
@@ -2738,6 +2858,57 @@ mod tests {
             "--all-profiles",
         ])
         .expect_err("hidden profile listing should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn print_startup_config_schema_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--print-startup-config-schema", "--", "cmd"])
+                .expect_err("startup command should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--paths", "--print-startup-config-schema"])
+                .expect_err("path inspection should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with schema printing");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
