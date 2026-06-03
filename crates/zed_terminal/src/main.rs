@@ -11,6 +11,7 @@ use anyhow::{Context as _, Result, bail};
 use assets::Assets;
 use clap::{Parser, ValueHint};
 use client::{Client, UserStore};
+use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
@@ -146,6 +147,7 @@ struct TerminalPathOptions {
 struct LaunchTab {
     working_directory: Option<PathBuf>,
     command: Option<LaunchCommand>,
+    env: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +164,8 @@ struct TerminalStartupConfig {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
     tabs: Vec<TerminalStartupTabConfig>,
     #[serde(default)]
     default_profile: Option<String>,
@@ -177,6 +181,8 @@ struct TerminalStartupProfileConfig {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
     tabs: Vec<TerminalStartupTabConfig>,
 }
 
@@ -187,6 +193,8 @@ struct TerminalStartupTabConfig {
     working_directory: Option<PathBuf>,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
 }
 
 impl LaunchOptions {
@@ -241,6 +249,9 @@ impl LaunchOptions {
         } else {
             cli.profile.as_deref()
         };
+        let inherited_env = startup_config
+            .inherited_env(profile)
+            .context("failed to resolve configured startup environment")?;
         let mut initial_tab = startup_config
             .initial_tab(profile)
             .context("failed to resolve configured initial startup tab")?;
@@ -249,6 +260,7 @@ impl LaunchOptions {
         }
         if let Some(command) = command {
             initial_tab.command = Some(command);
+            initial_tab.env = inherited_env.clone();
         }
         let mut additional_tabs = startup_config
             .additional_tabs(profile)
@@ -256,6 +268,7 @@ impl LaunchOptions {
         additional_tabs.extend(LaunchTab::additional_from_cli(
             &cli.new_tabs,
             &cli.new_tab_commands,
+            &inherited_env,
         )?);
 
         Ok(Self {
@@ -301,7 +314,11 @@ impl TerminalPathOptions {
 }
 
 impl LaunchTab {
-    fn additional_from_cli(directories: &[PathBuf], commands: &[String]) -> Result<Vec<Self>> {
+    fn additional_from_cli(
+        directories: &[PathBuf],
+        commands: &[String],
+        inherited_env: &HashMap<String, String>,
+    ) -> Result<Vec<Self>> {
         let mut tabs = Vec::with_capacity(directories.len() + commands.len());
 
         for directory in directories {
@@ -310,6 +327,7 @@ impl LaunchTab {
                     || format!("failed to resolve startup tab {}", tabs.len() + 2),
                 )?),
                 command: None,
+                env: HashMap::default(),
             });
         }
 
@@ -321,6 +339,7 @@ impl LaunchTab {
                         format!("failed to parse startup tab {}", tabs.len() + 2)
                     })?,
                 ),
+                env: inherited_env.clone(),
             });
         }
 
@@ -330,6 +349,8 @@ impl LaunchTab {
     fn from_config(
         working_directory: Option<&Path>,
         command: Option<&str>,
+        inherited_env: &HashMap<String, String>,
+        tab_env: &HashMap<String, String>,
         label: impl std::fmt::Display,
     ) -> Result<Self> {
         let working_directory = working_directory
@@ -340,10 +361,21 @@ impl LaunchTab {
             .map(LaunchCommand::from_command_line)
             .transpose()
             .with_context(|| format!("failed to parse command for {label}"))?;
+        if command.is_none() && !tab_env.is_empty() {
+            bail!("environment variables require a command for {label}");
+        }
+        let env = if command.is_some() {
+            let mut env = inherited_env.clone();
+            env.extend(tab_env.clone());
+            env
+        } else {
+            HashMap::default()
+        };
 
         Ok(Self {
             working_directory,
             command,
+            env,
         })
     }
 }
@@ -364,7 +396,11 @@ impl LaunchCommand {
         Self::from_args(args).with_context(|| "command line is empty")
     }
 
-    fn into_spawn_task(self, cwd: Option<PathBuf>) -> SpawnInTerminal {
+    fn into_spawn_task(
+        self,
+        cwd: Option<PathBuf>,
+        env: HashMap<String, String>,
+    ) -> SpawnInTerminal {
         let label = self.display_label();
 
         SpawnInTerminal {
@@ -375,6 +411,7 @@ impl LaunchCommand {
             args: self.args,
             command_label: label,
             cwd,
+            env,
             use_new_terminal: true,
             allow_concurrent_runs: true,
             reveal: RevealStrategy::Always,
@@ -419,6 +456,7 @@ impl TerminalStartupConfig {
             return Ok(TerminalStartupLayout {
                 working_directory: self.working_directory.as_deref(),
                 command: self.command.as_deref(),
+                env: &self.env,
                 tabs: &self.tabs,
                 label: "root startup layout".into(),
             });
@@ -442,6 +480,7 @@ impl TerminalStartupConfig {
         Ok(TerminalStartupLayout {
             working_directory: profile.working_directory.as_deref(),
             command: profile.command.as_deref(),
+            env: &profile.env,
             tabs: &profile.tabs,
             label: format!("startup profile {profile_name:?}"),
         })
@@ -452,8 +491,14 @@ impl TerminalStartupConfig {
         LaunchTab::from_config(
             layout.working_directory,
             layout.command,
+            layout.env,
+            &HashMap::default(),
             format!("initial tab for {}", layout.label),
         )
+    }
+
+    fn inherited_env(&self, requested_profile: Option<&str>) -> Result<HashMap<String, String>> {
+        Ok(self.selected_layout(requested_profile)?.env.clone())
     }
 
     fn additional_tabs(&self, requested_profile: Option<&str>) -> Result<Vec<LaunchTab>> {
@@ -466,6 +511,8 @@ impl TerminalStartupConfig {
                 LaunchTab::from_config(
                     tab.working_directory.as_deref(),
                     tab.command.as_deref(),
+                    layout.env,
+                    &tab.env,
                     format!("tab {} for {}", index + 2, layout.label),
                 )
             })
@@ -476,6 +523,7 @@ impl TerminalStartupConfig {
 struct TerminalStartupLayout<'a> {
     working_directory: Option<&'a Path>,
     command: Option<&'a str>,
+    env: &'a HashMap<String, String>,
     tabs: &'a [TerminalStartupTabConfig],
     label: String,
 }
@@ -899,9 +947,10 @@ fn add_launch_tab(
 ) {
     let working_directory = tab.working_directory;
     let command = tab.command;
+    let env = tab.env;
     TerminalPanel::add_center_terminal(workspace, window, cx, move |project, cx| {
         if let Some(command) = command {
-            project.create_terminal_task(command.into_spawn_task(working_directory), cx)
+            project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
         } else {
             project.create_terminal_shell(working_directory, cx)
         }
@@ -1243,9 +1292,11 @@ fn ensure_keymap_file() -> bool {
 fn initial_terminal_startup_config_content() -> &'static str {
     r#"// Zed Terminal startup layout.
 // Command strings use the same shell-like quoting rules as --new-tab-command.
+// Environment variables apply to command-backed startup tabs only.
 {
   "working_directory": null,
   "command": null,
+  "env": {},
   "tabs": [],
   "default_profile": null,
   "profiles": {}
@@ -1275,6 +1326,14 @@ mod tests {
             tab.working_directory.as_deref(),
             Some(dunce::canonicalize(dir).unwrap().as_path())
         );
+    }
+
+    fn test_env(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        let mut env = HashMap::default();
+        for (key, value) in entries {
+            env.insert((*key).into(), (*value).into());
+        }
+        env
     }
 
     #[test]
@@ -1343,6 +1402,7 @@ mod tests {
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(second_dir.clone()),
                 command: Some("pwsh -NoLogo".into()),
+                ..TerminalStartupTabConfig::default()
             }],
             ..TerminalStartupConfig::default()
         };
@@ -1418,6 +1478,7 @@ mod tests {
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(configured_dir.clone()),
                 command: None,
+                ..TerminalStartupTabConfig::default()
             }],
             ..TerminalStartupConfig::default()
         };
@@ -1459,6 +1520,7 @@ mod tests {
             tabs: vec![TerminalStartupTabConfig {
                 working_directory: Some(configured_dir.clone()),
                 command: Some("cmd /C tab".into()),
+                ..TerminalStartupTabConfig::default()
             }],
             ..TerminalStartupConfig::default()
         };
@@ -1524,6 +1586,190 @@ mod tests {
     }
 
     #[test]
+    fn applies_root_env_to_configured_startup_command() {
+        let env = test_env(&[("ZED_TERMINAL_ROOT", "1"), ("COMMON", "root")]);
+        let config = TerminalStartupConfig {
+            command: Some("cmd /C configured".into()),
+            env: env.clone(),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "configured".into()],
+            })
+        );
+        assert_eq!(options.initial_tab.env, env);
+        assert!(options.additional_tabs.is_empty());
+    }
+
+    #[test]
+    fn profile_env_is_inherited_by_profile_command_tabs() {
+        let profile_env = test_env(&[("ZED_TERMINAL_PROFILE", "work"), ("COMMON", "profile")]);
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                command: Some("cmd /C profile".into()),
+                env: profile_env.clone(),
+                tabs: vec![TerminalStartupTabConfig {
+                    command: Some("pwsh -NoLogo".into()),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.env, profile_env);
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.additional_tabs[0].env, options.initial_tab.env);
+    }
+
+    #[test]
+    fn tab_env_overrides_inherited_env() {
+        let config = TerminalStartupConfig {
+            env: test_env(&[("COMMON", "root"), ("ROOT_ONLY", "yes")]),
+            tabs: vec![TerminalStartupTabConfig {
+                command: Some("cmd /C tab".into()),
+                env: test_env(&[("COMMON", "tab"), ("TAB_ONLY", "yes")]),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.env, HashMap::default());
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(
+            options.additional_tabs[0].env,
+            test_env(&[("COMMON", "tab"), ("ROOT_ONLY", "yes"), ("TAB_ONLY", "yes"),])
+        );
+    }
+
+    #[test]
+    fn cli_startup_command_inherits_selected_profile_env() {
+        let profile_env = test_env(&[("ZED_TERMINAL_PROFILE", "work")]);
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                env: profile_env.clone(),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "--",
+            "cmd",
+            "/C",
+            "cli",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "cli".into()],
+            })
+        );
+        assert_eq!(options.initial_tab.env, profile_env);
+    }
+
+    #[test]
+    fn cli_additional_command_tabs_inherit_selected_profile_env() {
+        let profile_env = test_env(&[("ZED_TERMINAL_PROFILE", "work")]);
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                env: profile_env.clone(),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "--new-tab-command",
+            "cmd /C cli-tab",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.additional_tabs[0].env, profile_env);
+    }
+
+    #[test]
+    fn configured_shell_tabs_do_not_inherit_layout_env() {
+        let config = TerminalStartupConfig {
+            env: test_env(&[("ZED_TERMINAL_ROOT", "1")]),
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: None,
+                command: None,
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.env, HashMap::default());
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_eq!(options.additional_tabs[0].env, HashMap::default());
+    }
+
+    #[test]
+    fn rejects_env_on_configured_shell_tab() {
+        let config = TerminalStartupConfig {
+            tabs: vec![TerminalStartupTabConfig {
+                env: test_env(&[("ZED_TERMINAL_TAB", "1")]),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect_err("tab-level env without a command should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to resolve configured startup tabs"));
+        assert!(message.contains("environment variables require a command"));
+    }
+
+    #[test]
     fn applies_default_startup_profile() {
         let profile_dir = temp_test_dir();
         let profile_tab_dir = temp_test_dir();
@@ -1536,7 +1782,9 @@ mod tests {
                 tabs: vec![TerminalStartupTabConfig {
                     working_directory: Some(profile_tab_dir.clone()),
                     command: Some("pwsh -NoLogo".into()),
+                    ..TerminalStartupTabConfig::default()
                 }],
+                ..TerminalStartupProfileConfig::default()
             },
         );
         let config = TerminalStartupConfig {
@@ -1545,6 +1793,7 @@ mod tests {
             tabs: Vec::new(),
             default_profile: Some("work".into()),
             profiles,
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
         let options = LaunchOptions::from_cli_and_startup_config(cli, config)
@@ -1584,6 +1833,7 @@ mod tests {
                 working_directory: Some(work_dir.clone()),
                 command: Some("cmd /C work".into()),
                 tabs: Vec::new(),
+                ..TerminalStartupProfileConfig::default()
             },
         );
         profiles.insert(
@@ -1594,7 +1844,9 @@ mod tests {
                 tabs: vec![TerminalStartupTabConfig {
                     working_directory: None,
                     command: Some("pwsh -NoLogo".into()),
+                    ..TerminalStartupTabConfig::default()
                 }],
+                ..TerminalStartupProfileConfig::default()
             },
         );
         let config = TerminalStartupConfig {
@@ -1603,6 +1855,7 @@ mod tests {
             tabs: Vec::new(),
             default_profile: Some("work".into()),
             profiles,
+            ..TerminalStartupConfig::default()
         };
         let cli = Cli::try_parse_from(["zed-terminal", "--profile", "admin"])
             .expect("failed to parse cli args");
@@ -1642,6 +1895,7 @@ mod tests {
                 working_directory: Some(profile_dir.clone()),
                 command: Some("cmd /C profile".into()),
                 tabs: Vec::new(),
+                ..TerminalStartupProfileConfig::default()
             },
         );
         let config = TerminalStartupConfig {
@@ -1684,6 +1938,7 @@ mod tests {
                 working_directory: None,
                 command: None,
                 tabs: Vec::new(),
+                ..TerminalStartupProfileConfig::default()
             },
         );
         let config = TerminalStartupConfig {
@@ -1894,6 +2149,7 @@ mod tests {
                     program: "cargo".into(),
                     args: vec!["--version".into()],
                 }),
+                env: HashMap::default(),
             }]
         );
     }
@@ -2018,7 +2274,10 @@ mod tests {
             args: vec!["/C".into(), "echo hello".into()],
         };
 
-        let task = command.into_spawn_task(Some(dir.clone()));
+        let mut env = HashMap::default();
+        env.insert("ZED_TERMINAL_TEST".into(), "1".into());
+
+        let task = command.into_spawn_task(Some(dir.clone()), env.clone());
 
         assert_eq!(task.id, TaskId("zed-terminal:cmd /C \"echo hello\"".into()));
         assert_eq!(task.full_label, "cmd /C \"echo hello\"");
@@ -2027,6 +2286,7 @@ mod tests {
         assert_eq!(task.args, vec!["/C", "echo hello"]);
         assert_eq!(task.command_label, "cmd /C \"echo hello\"");
         assert_eq!(task.cwd.as_deref(), Some(dir.as_path()));
+        assert_eq!(task.env, env);
         assert!(task.use_new_terminal);
         assert!(task.allow_concurrent_runs);
         assert_eq!(task.reveal, RevealStrategy::Always);

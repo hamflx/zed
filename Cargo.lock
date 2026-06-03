@@ -23171,6 +23171,7 @@ dependencies = [
  "assets",
  "clap",
  "client",
+ "collections",
  "component",
  "db",
  "dirs",
