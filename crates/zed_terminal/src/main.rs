@@ -6,7 +6,7 @@ use client::{Client, UserStore};
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, SharedString,
+    App, AppContext as _, Bounds, KeyBinding, Menu, MenuItem, NoAction, SharedString,
     SystemWindowTabController, TaskExt, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
@@ -156,6 +156,7 @@ fn bind_keys(cx: &mut App) {
     );
 
     cx.bind_keys([
+        KeyBinding::new("ctrl-j", NoAction, Some("Terminal")),
         KeyBinding::new("ctrl-shift-t", workspace::NewTerminal::default(), None),
         KeyBinding::new(
             "ctrl-shift-w",
