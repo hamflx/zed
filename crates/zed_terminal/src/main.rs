@@ -93,6 +93,7 @@ struct Cli {
         long = "paths",
         conflicts_with_all = [
             "list_profiles",
+            "print_startup_layout",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -105,6 +106,7 @@ struct Cli {
     #[arg(
         long = "list-profiles",
         conflicts_with_all = [
+            "print_startup_layout",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -130,6 +132,7 @@ struct Cli {
         long = "all-profiles",
         requires = "list_profiles",
         conflicts_with_all = [
+            "print_startup_layout",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -155,10 +158,27 @@ struct Cli {
     no_startup_config: bool,
 
     #[arg(
+        long = "print-startup-layout",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor"
+        ],
+        help = "Print the resolved startup layout without opening a terminal window"
+    )]
+    print_startup_layout: bool,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
+            "print_startup_layout",
             "validate_keymap",
             "print_startup_config_schema",
             "init_config",
@@ -184,6 +204,7 @@ struct Cli {
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
+            "print_startup_layout",
             "validate_startup_config",
             "validate_keymap",
             "init_config",
@@ -209,6 +230,7 @@ struct Cli {
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
+            "print_startup_layout",
             "validate_startup_config",
             "print_startup_config_schema",
             "validate_keymap",
@@ -235,6 +257,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "all_profiles",
+            "print_startup_layout",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -260,6 +283,7 @@ struct Cli {
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
+            "print_startup_layout",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -369,6 +393,7 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
     },
+    PrintStartupLayout(LaunchOptions),
     PrintStartupConfigSchema {
         path_options: TerminalPathOptions,
     },
@@ -648,6 +673,14 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.print_startup_layout {
+            return Ok(Self::PrintStartupLayout(LaunchOptions::from_cli_parts(
+                cli,
+                startup_config,
+                path_options,
+            )?));
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -683,6 +716,7 @@ impl TerminalCliCommand {
             Self::PrintPaths(path_options) => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
+            Self::PrintStartupLayout(launch_options) => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
             Self::Doctor { path_options } => path_options,
@@ -1272,9 +1306,16 @@ fn main() {
         }
     };
 
-    if let TerminalCliCommand::Doctor { path_options } = command {
-        run_terminal_doctor(path_options);
-        return;
+    match &command {
+        TerminalCliCommand::Doctor { path_options } => {
+            run_terminal_doctor(path_options.clone());
+            return;
+        }
+        TerminalCliCommand::PrintStartupLayout(launch_options) => {
+            print_startup_layout(launch_options);
+            return;
+        }
+        _ => {}
     }
 
     if let Err(error) = install_terminal_paths(command.path_options()) {
@@ -1294,6 +1335,9 @@ fn main() {
                 eprintln!("failed to validate terminal startup config: {error:#}");
                 process::exit(2);
             }
+        }
+        TerminalCliCommand::PrintStartupLayout(_) => {
+            unreachable!("startup layout printing is handled before path install")
         }
         TerminalCliCommand::PrintStartupConfigSchema { .. } => {
             if let Err(error) = print_startup_config_schema() {
@@ -1436,6 +1480,16 @@ fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Re
         format_startup_config_validation(&active_terminal_startup_config_file(), &validation)
     );
     Ok(())
+}
+
+fn print_startup_layout(launch_options: &LaunchOptions) {
+    print!(
+        "{}",
+        format_startup_layout(
+            launch_options,
+            &terminal_startup_config_file(&launch_options.path_options.config_dir),
+        )
+    );
 }
 
 fn print_startup_config_schema() -> Result<()> {
@@ -1892,6 +1946,94 @@ fn format_startup_profiles(
     }
 
     output
+}
+
+fn format_startup_layout(launch_options: &LaunchOptions, startup_config_file: &Path) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "tabs: {}",
+        1 + launch_options.additional_tabs.len()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "new_terminal_shell: {}",
+        format_optional_shell(launch_options.new_terminal_shell.as_ref())
+    )
+    .expect("writing to string should not fail");
+
+    for (index, tab) in std::iter::once(&launch_options.initial_tab)
+        .chain(launch_options.additional_tabs.iter())
+        .enumerate()
+    {
+        format_startup_layout_tab(&mut output, index + 1, tab);
+    }
+
+    output
+}
+
+fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &LaunchTab) {
+    let kind = if tab.command.is_some() {
+        "command"
+    } else {
+        "shell"
+    };
+    writeln!(output, "- tab {tab_number}").expect("writing to string should not fail");
+    writeln!(output, "  kind: {kind}").expect("writing to string should not fail");
+    writeln!(
+        output,
+        "  title: {}",
+        tab.title.as_deref().unwrap_or("dynamic")
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        output,
+        "  working_directory: {}",
+        tab.working_directory
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "default".into())
+    )
+    .expect("writing to string should not fail");
+
+    if let Some(command) = &tab.command {
+        writeln!(output, "  command: {}", command.display_label())
+            .expect("writing to string should not fail");
+    } else {
+        writeln!(
+            output,
+            "  shell: {}",
+            format_optional_shell(tab.shell.as_ref())
+        )
+        .expect("writing to string should not fail");
+    }
+
+    writeln!(output, "  env: {} variables", tab.env.len())
+        .expect("writing to string should not fail");
+}
+
+fn format_optional_shell(shell: Option<&Shell>) -> String {
+    shell.map(format_shell).unwrap_or_else(|| "default".into())
+}
+
+fn format_shell(shell: &Shell) -> String {
+    match shell {
+        Shell::System => "system".into(),
+        Shell::Program(program) => format_command_part(program),
+        Shell::WithArguments { program, args, .. } => std::iter::once(program.as_str())
+            .chain(args.iter().map(String::as_str))
+            .map(format_command_part)
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
 }
 
 fn format_startup_config_validation(
@@ -3269,6 +3411,80 @@ mod tests {
     }
 
     #[test]
+    fn formats_resolved_startup_layout_without_env_values() {
+        let initial_dir = temp_test_dir();
+        let command_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                title: Some("Configured".into()),
+                shell: Some(TerminalStartupShellConfig::WithArguments(
+                    TerminalStartupShellWithArgumentsConfig {
+                        program: "pwsh.exe".into(),
+                        args: vec!["-NoLogo".into()],
+                    },
+                )),
+                env: test_env(&[
+                    ("ZED_TERMINAL_PROFILE", "work"),
+                    ("ZED_TERMINAL_SECRET", "do-not-print"),
+                ]),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "--title",
+            "CLI",
+            "--new-tab-command",
+            "cmd /C \"echo build\"",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+            "--new-tab-command-title",
+            "Build",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        let output = format_startup_layout(&options, Path::new("terminal.json"));
+
+        assert!(output.contains("startup_config_file: terminal.json"));
+        assert!(output.contains("status: ok"));
+        assert!(output.contains("tabs: 2"));
+        assert!(output.contains("new_terminal_shell: pwsh.exe -NoLogo"));
+        assert!(output.contains("- tab 1"));
+        assert!(output.contains("  kind: shell"));
+        assert!(output.contains("  title: CLI"));
+        assert!(output.contains(&format!(
+            "  working_directory: {}",
+            dunce::canonicalize(&initial_dir).unwrap().display()
+        )));
+        assert!(output.contains("  shell: pwsh.exe -NoLogo"));
+        assert!(output.contains("- tab 2"));
+        assert!(output.contains("  kind: command"));
+        assert!(output.contains("  title: Build"));
+        assert!(output.contains(&format!(
+            "  working_directory: {}",
+            dunce::canonicalize(&command_dir).unwrap().display()
+        )));
+        assert!(output.contains("  command: cmd /C \"echo build\""));
+        assert!(output.contains("  env: 2 variables"));
+        assert!(!output.contains("ZED_TERMINAL_SECRET"));
+        assert!(!output.contains("do-not-print"));
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
     fn validates_startup_config_layouts() {
         let root_dir = temp_test_dir();
         let root_tab_dir = temp_test_dir();
@@ -3772,6 +3988,77 @@ mod tests {
                 tab_count: 1,
             }
         );
+    }
+
+    #[test]
+    fn print_startup_layout_mode_resolves_launch_options_without_launching() {
+        let tab_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-layout",
+            "--title",
+            "Preview",
+            "--new-tab",
+            tab_dir.to_str().unwrap(),
+            "--new-tab-title",
+            "Logs",
+        ])
+        .expect("failed to parse cli args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("failed to build cli command");
+
+        let TerminalCliCommand::PrintStartupLayout(options) = command else {
+            panic!("expected startup layout printing mode");
+        };
+
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Preview"));
+        assert_eq!(options.additional_tabs.len(), 1);
+        assert_tab_working_directory(&options.additional_tabs[0], &tab_dir);
+        assert_eq!(options.additional_tabs[0].title.as_deref(), Some("Logs"));
+
+        std_fs::remove_dir_all(tab_dir).ok();
+    }
+
+    #[test]
+    fn print_startup_layout_with_no_startup_config_does_not_load_startup_config_file() {
+        let data_dir = env::temp_dir().join(format!(
+            "zed-terminal-layout-preview-read-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--no-startup-config",
+            "--print-startup-layout",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("layout preview should not load terminal.json when startup config is disabled");
+
+        let TerminalCliCommand::PrintStartupLayout(options) = command else {
+            panic!("expected startup layout printing mode");
+        };
+
+        assert_eq!(options.path_options.data_dir, data_dir);
+        assert_eq!(options.path_options.config_dir, config_dir);
+        assert_eq!(options.initial_tab.working_directory, None);
+        assert_eq!(options.initial_tab.command, None);
+        assert_eq!(options.initial_tab.env, HashMap::default());
+        assert_eq!(options.initial_tab.title, None);
+        assert_eq!(options.initial_tab.shell, None);
+        assert!(options.additional_tabs.is_empty());
+
+        std_fs::remove_dir_all(options.path_options.data_dir).ok();
     }
 
     #[test]
