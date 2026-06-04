@@ -2660,6 +2660,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
 
     let fs: Arc<dyn fs::Fs> = Arc::new(RealFs::new(None, cx.background_executor().clone()));
     <dyn fs::Fs>::set_global(fs.clone(), cx);
+    register_terminal_font_size_actions(fs.clone(), cx);
 
     ensure_config_files(&fs, cx)?;
     settings::init(cx);
@@ -2710,6 +2711,53 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     open_terminal_window(app_state, launch_options, cx)?;
     cx.activate(true);
     Ok(())
+}
+
+fn register_terminal_font_size_actions(fs: Arc<dyn fs::Fs>, cx: &mut App) {
+    cx.on_action({
+        let fs = fs.clone();
+        move |action: &zed_actions::IncreaseBufferFontSize, cx| {
+            if action.persist {
+                settings::update_settings_file(fs.clone(), cx, move |settings, cx| {
+                    let buffer_font_size =
+                        ThemeSettings::get_global(cx).buffer_font_size(cx) + px(1.0);
+                    let _ = settings.theme.buffer_font_size.insert(
+                        f32::from(theme_settings::clamp_font_size(buffer_font_size)).into(),
+                    );
+                });
+            } else {
+                theme_settings::increase_buffer_font_size(cx);
+            }
+        }
+    });
+    cx.on_action({
+        let fs = fs.clone();
+        move |action: &zed_actions::DecreaseBufferFontSize, cx| {
+            if action.persist {
+                settings::update_settings_file(fs.clone(), cx, move |settings, cx| {
+                    let buffer_font_size =
+                        ThemeSettings::get_global(cx).buffer_font_size(cx) - px(1.0);
+                    let _ = settings.theme.buffer_font_size.insert(
+                        f32::from(theme_settings::clamp_font_size(buffer_font_size)).into(),
+                    );
+                });
+            } else {
+                theme_settings::decrease_buffer_font_size(cx);
+            }
+        }
+    });
+    cx.on_action({
+        let fs = fs.clone();
+        move |action: &zed_actions::ResetBufferFontSize, cx| {
+            if action.persist {
+                settings::update_settings_file(fs.clone(), cx, move |settings, _| {
+                    settings.theme.buffer_font_size = None;
+                });
+            } else {
+                theme_settings::reset_buffer_font_size(cx);
+            }
+        }
+    });
 }
 
 fn init_terminal_search(cx: &mut App) {
@@ -2933,6 +2981,19 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
 fn terminal_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Find", zed_actions::buffer_search::Deploy::find()),
+        MenuItem::separator(),
+        MenuItem::action(
+            "Zoom In",
+            zed_actions::IncreaseBufferFontSize { persist: false },
+        ),
+        MenuItem::action(
+            "Zoom Out",
+            zed_actions::DecreaseBufferFontSize { persist: false },
+        ),
+        MenuItem::action(
+            "Reset Zoom",
+            zed_actions::ResetBufferFontSize { persist: false },
+        ),
         MenuItem::separator(),
         MenuItem::action("Copy", terminal::Copy),
         MenuItem::action("Paste", terminal::Paste),
@@ -3796,6 +3857,47 @@ mod tests {
     }
 
     #[test]
+    fn terminal_keymap_includes_font_zoom_bindings() {
+        let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
+            include_str!("../../../assets/keymaps/zed-terminal.json"),
+        )
+        .expect("terminal keymap asset should parse as json");
+
+        assert_key_binding_with_bool_param(
+            &keymap,
+            None,
+            "ctrl-=",
+            "zed::IncreaseBufferFontSize",
+            "persist",
+            false,
+        );
+        assert_key_binding_with_bool_param(
+            &keymap,
+            None,
+            "ctrl-shift-=",
+            "zed::IncreaseBufferFontSize",
+            "persist",
+            false,
+        );
+        assert_key_binding_with_bool_param(
+            &keymap,
+            None,
+            "ctrl--",
+            "zed::DecreaseBufferFontSize",
+            "persist",
+            false,
+        );
+        assert_key_binding_with_bool_param(
+            &keymap,
+            None,
+            "ctrl-0",
+            "zed::ResetBufferFontSize",
+            "persist",
+            false,
+        );
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -3861,6 +3963,37 @@ mod tests {
 
         assert_eq!(action, expected_action);
         assert_eq!(param, expected_param as u64);
+    }
+
+    fn assert_key_binding_with_bool_param(
+        keymap: &gpui::private::serde_json::Value,
+        context: Option<&str>,
+        keystroke: &str,
+        expected_action: &str,
+        param_name: &str,
+        expected_param: bool,
+    ) {
+        let binding = key_binding(keymap, context, keystroke)
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("key binding {keystroke:?} in context {context:?} should be an array action")
+            });
+        let action = binding
+            .first()
+            .and_then(gpui::private::serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "key binding {keystroke:?} in context {context:?} should include an action name"
+                )
+            });
+        let param = binding
+            .get(1)
+            .and_then(|param| param.get(param_name))
+            .and_then(gpui::private::serde_json::Value::as_bool)
+            .unwrap_or_else(|| panic!("key binding {keystroke:?} in context {context:?} should include a boolean {param_name:?} parameter"));
+
+        assert_eq!(action, expected_action);
+        assert_eq!(param, expected_param);
     }
 
     fn key_binding<'a>(
@@ -4032,6 +4165,15 @@ mod tests {
         let items = terminal_menu_items();
 
         assert_menu_action(&items, "Find", "buffer_search::Deploy");
+    }
+
+    #[test]
+    fn terminal_menu_exposes_font_zoom_actions() {
+        let items = terminal_menu_items();
+
+        assert_menu_action(&items, "Zoom In", "zed::IncreaseBufferFontSize");
+        assert_menu_action(&items, "Zoom Out", "zed::DecreaseBufferFontSize");
+        assert_menu_action(&items, "Reset Zoom", "zed::ResetBufferFontSize");
     }
 
     #[test]
