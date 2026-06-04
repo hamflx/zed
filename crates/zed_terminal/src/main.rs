@@ -19,7 +19,8 @@ use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
     Action, App, AppContext as _, Bounds, Context, KeyBinding, Menu, MenuItem, SharedString,
-    SystemWindowTabController, TaskExt, Window, WindowBounds, WindowOptions, actions, px, size,
+    SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds, WindowOptions,
+    actions, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -32,6 +33,7 @@ use settings::{KeybindSource, KeymapFile, KeymapFileLoadResult, Settings};
 use task::{
     HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
 };
+use terminal::Terminal;
 use terminal_view::{default_working_directory, terminal_panel::TerminalPanel};
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::load_user_theme;
@@ -524,6 +526,7 @@ struct LaunchTab {
     env: HashMap<String, String>,
     title: Option<String>,
     shell: Option<Shell>,
+    split: Option<TerminalStartupSplitDirection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -593,6 +596,8 @@ struct TerminalStartupTabConfig {
     shell: Option<TerminalStartupShellConfig>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    split: Option<TerminalStartupSplitDirection>,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -608,6 +613,15 @@ struct TerminalStartupShellWithArgumentsConfig {
     program: String,
     #[serde(default)]
     args: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalStartupSplitDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -990,6 +1004,7 @@ impl LaunchTab {
                     directory_titles.get(directory_index).map(String::as_str),
                 ),
                 shell: inherited_shell.cloned(),
+                split: None,
             });
         }
 
@@ -1015,6 +1030,7 @@ impl LaunchTab {
                     command_titles.get(command_index).map(String::as_str),
                 ),
                 shell: None,
+                split: None,
             });
         }
 
@@ -1029,6 +1045,7 @@ impl LaunchTab {
         title: Option<&str>,
         inherited_shell: Option<&Shell>,
         tab_shell: Option<&TerminalStartupShellConfig>,
+        split: Option<TerminalStartupSplitDirection>,
         label: impl std::fmt::Display,
     ) -> Result<Self> {
         let working_directory = working_directory
@@ -1070,7 +1087,28 @@ impl LaunchTab {
             env,
             title: normalize_terminal_title(title),
             shell,
+            split,
         })
+    }
+}
+
+impl TerminalStartupSplitDirection {
+    fn to_workspace_split_direction(self) -> workspace::SplitDirection {
+        match self {
+            Self::Up => workspace::SplitDirection::Up,
+            Self::Down => workspace::SplitDirection::Down,
+            Self::Left => workspace::SplitDirection::Left,
+            Self::Right => workspace::SplitDirection::Right,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+            Self::Left => "left",
+            Self::Right => "right",
+        }
     }
 }
 
@@ -1239,6 +1277,7 @@ impl TerminalStartupConfig {
             layout.title,
             shell.as_ref(),
             None,
+            None,
             format!("initial tab for {}", layout.label),
         )?;
 
@@ -1251,6 +1290,7 @@ impl TerminalStartupConfig {
                 tab.title.as_deref(),
                 shell.as_ref(),
                 tab.shell.as_ref(),
+                tab.split,
                 format!("tab {} for {}", index + 2, layout.label),
             )?;
         }
@@ -1317,6 +1357,7 @@ impl TerminalStartupConfig {
             layout.title,
             shell.as_ref(),
             None,
+            None,
             format!("initial tab for {}", layout.label),
         )
     }
@@ -1351,6 +1392,7 @@ impl TerminalStartupConfig {
                     tab.title.as_deref(),
                     shell.as_ref(),
                     tab.shell.as_ref(),
+                    tab.split,
                     format!("tab {} for {}", index + 2, layout.label),
                 )
             })
@@ -2214,6 +2256,14 @@ fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &Launc
     writeln!(output, "  kind: {kind}").expect("writing to string should not fail");
     writeln!(
         output,
+        "  placement: {}",
+        tab.split
+            .map(|direction| format!("split {}", direction.as_str()))
+            .unwrap_or_else(|| "tab".into())
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        output,
         "  title: {}",
         tab.title.as_deref().unwrap_or("dynamic")
     )
@@ -2890,7 +2940,7 @@ fn open_terminal_window(
                                             .detach_and_log_err(cx);
                                     });
                                 }
-                                add_launch_tab(workspace, window, cx, tab);
+                                add_launch_tab(workspace, window, cx, tab).detach_and_log_err(cx);
                             }
                             Err(error) => {
                                 log::warn!(
@@ -2924,11 +2974,8 @@ fn open_terminal_window(
 
             let initial_tab = initial_tab.clone();
             let additional_tabs = additional_tabs.clone();
-            workspace.update(cx, |workspace, cx| {
-                add_launch_tab(workspace, window, cx, initial_tab);
-                for tab in additional_tabs {
-                    add_launch_tab(workspace, window, cx, tab);
-                }
+            workspace.update(cx, |_workspace, cx| {
+                add_launch_tabs(window, cx, initial_tab, additional_tabs).detach_and_log_err(cx);
             });
 
             window.defer(cx, set_terminal_window_title);
@@ -2945,28 +2992,63 @@ fn add_launch_tab(
     window: &mut Window,
     cx: &mut Context<Workspace>,
     tab: LaunchTab,
-) {
+) -> Task<Result<WeakEntity<Terminal>>> {
     let working_directory = tab.working_directory;
     let command = tab.command;
     let env = tab.env;
     let title = tab.title;
     let shell = tab.shell;
-    TerminalPanel::add_center_terminal_with_custom_title(
-        workspace,
-        window,
-        cx,
-        title,
-        move |project, cx| {
-            if let Some(command) = command {
-                project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
-            } else if let Some(shell) = shell {
-                project.create_terminal_shell_with_shell(working_directory, shell, cx)
-            } else {
-                project.create_terminal_shell(working_directory, cx)
-            }
-        },
-    )
-    .detach_and_log_err(cx);
+    let split = tab.split;
+    let create_terminal = move |project: &mut Project, cx: &mut Context<Project>| {
+        if let Some(command) = command {
+            project.create_terminal_task(command.into_spawn_task(working_directory, env), cx)
+        } else if let Some(shell) = shell {
+            project.create_terminal_shell_with_shell(working_directory, shell, cx)
+        } else {
+            project.create_terminal_shell(working_directory, cx)
+        }
+    };
+
+    if let Some(split) = split {
+        TerminalPanel::split_center_terminal_with_custom_title(
+            workspace,
+            window,
+            cx,
+            split.to_workspace_split_direction(),
+            title,
+            create_terminal,
+        )
+    } else {
+        TerminalPanel::add_center_terminal_with_custom_title(
+            workspace,
+            window,
+            cx,
+            title,
+            create_terminal,
+        )
+    }
+}
+
+fn add_launch_tabs(
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    initial_tab: LaunchTab,
+    additional_tabs: Vec<LaunchTab>,
+) -> Task<Result<()>> {
+    let tabs = std::iter::once(initial_tab)
+        .chain(additional_tabs)
+        .collect::<Vec<_>>();
+    cx.spawn_in(window, async move |workspace, cx| {
+        for tab in tabs {
+            workspace
+                .update_in(cx, |workspace, window, cx| {
+                    add_launch_tab(workspace, window, cx, tab)
+                })?
+                .await?;
+        }
+
+        Ok(())
+    })
 }
 
 fn default_terminal_config_dir() -> Result<PathBuf> {
@@ -3314,6 +3396,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
     r#"// Zed Terminal startup layout.
 // Command strings use the same shell-like quoting rules as --new-tab-command.
 // Environment variables apply to command-backed startup tabs only.
+// tabs[].split may be "right", "down", "left", or "up" to open that tab as a startup split pane.
 // Profiles may include display_name, description, icon, color, and hidden metadata.
 {
   "working_directory": null,
@@ -3807,6 +3890,7 @@ mod tests {
         assert!(output.contains("new_terminal_shell: pwsh.exe -NoLogo"));
         assert!(output.contains("- tab 1"));
         assert!(output.contains("  kind: shell"));
+        assert!(output.contains("  placement: tab"));
         assert!(output.contains("  title: CLI"));
         assert!(output.contains(&format!(
             "  working_directory: {}",
@@ -3815,6 +3899,7 @@ mod tests {
         assert!(output.contains("  shell: pwsh.exe -NoLogo"));
         assert!(output.contains("- tab 2"));
         assert!(output.contains("  kind: command"));
+        assert!(output.contains("  placement: tab"));
         assert!(output.contains("  title: Build"));
         assert!(output.contains(&format!(
             "  working_directory: {}",
@@ -3827,6 +3912,124 @@ mod tests {
 
         std_fs::remove_dir_all(initial_dir).ok();
         std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
+    fn parses_startup_split_tabs_from_config() {
+        let config: TerminalStartupConfig = settings::parse_json_with_comments(
+            r#"{
+  "tabs": [
+    { "title": "Right", "split": "right" },
+    { "title": "Down", "split": "down" },
+    { "title": "Plain" }
+  ]
+}"#,
+        )
+        .expect("startup config should parse split tabs");
+
+        assert_eq!(
+            config.tabs[0].split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+        assert_eq!(
+            config.tabs[1].split,
+            Some(TerminalStartupSplitDirection::Down)
+        );
+        assert_eq!(config.tabs[2].split, None);
+    }
+
+    #[test]
+    fn resolves_configured_startup_split_tabs() {
+        let right_dir = temp_test_dir();
+        let down_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            tabs: vec![
+                TerminalStartupTabConfig {
+                    working_directory: Some(right_dir.clone()),
+                    title: Some("Right".into()),
+                    split: Some(TerminalStartupSplitDirection::Right),
+                    ..TerminalStartupTabConfig::default()
+                },
+                TerminalStartupTabConfig {
+                    working_directory: Some(down_dir.clone()),
+                    command: Some("cmd /C split".into()),
+                    title: Some("Down".into()),
+                    split: Some(TerminalStartupSplitDirection::Down),
+                    ..TerminalStartupTabConfig::default()
+                },
+            ],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.split, None);
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_tab_working_directory(&options.additional_tabs[0], &right_dir);
+        assert_eq!(
+            options.additional_tabs[0].split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+        assert_eq!(options.additional_tabs[0].title.as_deref(), Some("Right"));
+        assert_tab_working_directory(&options.additional_tabs[1], &down_dir);
+        assert_eq!(
+            options.additional_tabs[1].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "split".into()],
+            })
+        );
+        assert_eq!(
+            options.additional_tabs[1].split,
+            Some(TerminalStartupSplitDirection::Down)
+        );
+
+        let output = format_startup_layout(&options, Path::new("terminal.json"));
+        assert!(output.contains("- tab 1"));
+        assert!(output.contains("  placement: tab"));
+        assert!(output.contains("- tab 2"));
+        assert!(output.contains("  placement: split right"));
+        assert!(output.contains("- tab 3"));
+        assert!(output.contains("  placement: split down"));
+
+        std_fs::remove_dir_all(right_dir).ok();
+        std_fs::remove_dir_all(down_dir).ok();
+    }
+
+    #[test]
+    fn cli_appended_tabs_do_not_inherit_configured_startup_split() {
+        let configured_dir = temp_test_dir();
+        let cli_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(configured_dir.clone()),
+                split: Some(TerminalStartupSplitDirection::Right),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            cli_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C cli",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 3);
+        assert_eq!(
+            options.additional_tabs[0].split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+        assert_eq!(options.additional_tabs[1].split, None);
+        assert_eq!(options.additional_tabs[2].split, None);
+
+        std_fs::remove_dir_all(configured_dir).ok();
+        std_fs::remove_dir_all(cli_dir).ok();
     }
 
     #[test]
@@ -3967,6 +4170,17 @@ mod tests {
                 "schema should include {property}: {schema:#}"
             );
         }
+
+        let tab_properties = schema
+            .get("$defs")
+            .and_then(|defs| defs.get("TerminalStartupTabConfig"))
+            .and_then(|tab_config| tab_config.get("properties"))
+            .and_then(gpui::private::serde_json::Value::as_object)
+            .expect("schema should contain tab item properties");
+        assert!(
+            tab_properties.contains_key("split"),
+            "schema should include tabs[].split: {schema:#}"
+        );
     }
 
     #[test]
@@ -6601,6 +6815,7 @@ mod tests {
                 env: HashMap::default(),
                 title: None,
                 shell: None,
+                split: None,
             }]
         );
     }

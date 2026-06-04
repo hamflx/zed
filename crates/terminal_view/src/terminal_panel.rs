@@ -800,6 +800,45 @@ impl TerminalPanel {
         })
     }
 
+    pub fn split_center_terminal_with_custom_title(
+        workspace: &mut Workspace,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+        split_direction: SplitDirection,
+        custom_title: Option<String>,
+        create_terminal: impl FnOnce(
+            &mut Project,
+            &mut Context<Project>,
+        ) -> Task<Result<Entity<Terminal>>>
+        + 'static,
+    ) -> Task<Result<WeakEntity<Terminal>>> {
+        if !is_enabled_in_workspace(workspace, cx) {
+            return Task::ready(Err(anyhow!(
+                "terminal not yet supported for remote projects"
+            )));
+        }
+        let project = workspace.project().downgrade();
+        cx.spawn_in(window, async move |workspace, cx| {
+            let terminal = project.update(cx, create_terminal)?.await?;
+
+            workspace.update_in(cx, |workspace, window, cx| {
+                let terminal_view = cx.new(|cx| {
+                    TerminalView::new_with_custom_title(
+                        terminal.clone(),
+                        workspace.weak_handle(),
+                        workspace.database_id(),
+                        workspace.project().downgrade(),
+                        custom_title,
+                        window,
+                        cx,
+                    )
+                });
+                workspace.split_item(split_direction, Box::new(terminal_view), window, cx);
+            })?;
+            Ok(terminal.downgrade())
+        })
+    }
+
     pub fn add_terminal_task(
         &mut self,
         task: SpawnInTerminal,
