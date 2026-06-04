@@ -46,6 +46,7 @@ actions!(
     [
         OpenSettingsFile,
         OpenStartupConfigFile,
+        OpenStartupConfigSchemaFile,
         OpenKeymapFile,
         OpenConfigDirectory,
         OpenLogsDirectory,
@@ -94,6 +95,7 @@ const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
+const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -1806,6 +1808,10 @@ fn print_terminal_paths() {
         active_terminal_startup_config_file().display()
     );
     println!(
+        "startup_config_schema_file: {}",
+        active_terminal_startup_config_schema_file().display()
+    );
+    println!(
         "global_settings_file: {}",
         paths::global_settings_file().display()
     );
@@ -1883,6 +1889,7 @@ struct TerminalConfigFilePaths {
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
     startup_config_file: PathBuf,
+    startup_config_schema_file: PathBuf,
 }
 
 impl TerminalConfigFilePaths {
@@ -1892,6 +1899,9 @@ impl TerminalConfigFilePaths {
             global_settings_file: path_options.config_dir.join("global_settings.json"),
             keymap_file: path_options.config_dir.join("keymap.json"),
             startup_config_file: terminal_startup_config_file(&path_options.config_dir),
+            startup_config_schema_file: terminal_startup_config_schema_file(
+                &path_options.config_dir,
+            ),
         }
     }
 }
@@ -1899,6 +1909,7 @@ impl TerminalConfigFilePaths {
 fn initialize_terminal_config_files_at(
     file_paths: TerminalConfigFilePaths,
 ) -> Result<TerminalConfigInitialization> {
+    let startup_config_schema = format_startup_config_schema()?;
     Ok(TerminalConfigInitialization {
         files: vec![
             initialize_terminal_config_file(
@@ -1920,6 +1931,11 @@ fn initialize_terminal_config_files_at(
                 "startup_config_file",
                 file_paths.startup_config_file,
                 initial_terminal_startup_config_content(),
+            )?,
+            initialize_terminal_config_file(
+                "startup_config_schema_file",
+                file_paths.startup_config_schema_file,
+                &startup_config_schema,
             )?,
         ],
     })
@@ -2127,6 +2143,11 @@ fn diagnose_terminal_config_files(
         diagnose_path(
             "startup_config_file",
             file_paths.startup_config_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
+            "startup_config_schema_file",
+            file_paths.startup_config_schema_file,
             TerminalDoctorPathKind::File,
         ),
     ]
@@ -2518,6 +2539,17 @@ fn format_startup_config_schema() -> Result<String> {
     Ok(output)
 }
 
+fn write_startup_config_schema_file(path: &Path) -> Result<()> {
+    let schema = format_startup_config_schema()?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    std_fs::write(path, schema)
+        .with_context(|| format!("failed to write startup config schema {}", path.display()))
+}
+
 fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
     let mut output = String::new();
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
@@ -2799,6 +2831,14 @@ fn active_terminal_startup_config_file() -> PathBuf {
     terminal_startup_config_file(paths::config_dir())
 }
 
+fn terminal_startup_config_schema_file(config_dir: &Path) -> PathBuf {
+    config_dir.join(TERMINAL_STARTUP_CONFIG_SCHEMA_FILE)
+}
+
+fn active_terminal_startup_config_schema_file() -> PathBuf {
+    terminal_startup_config_schema_file(paths::config_dir())
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -2807,6 +2847,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(|_: &zed_actions::Quit, cx| cx.quit());
     cx.on_action(open_settings_file);
     cx.on_action(open_startup_config_file);
+    cx.on_action(open_startup_config_schema_file);
     cx.on_action(open_keymap_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_logs_directory);
@@ -3012,6 +3053,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenConfigDirectory>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
+        TypeId::of::<OpenStartupConfigSchemaFile>(),
         TypeId::of::<ResetPaneSizes>(),
         TypeId::of::<ResizePaneDown>(),
         TypeId::of::<ResizePaneLeft>(),
@@ -3471,6 +3513,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
         MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
+        MenuItem::action(
+            "Open Startup Config Schema File",
+            OpenStartupConfigSchemaFile,
+        ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
@@ -4079,6 +4125,16 @@ fn open_startup_config_file(_: &OpenStartupConfigFile, cx: &mut App) {
     cx.open_with_system(&active_terminal_startup_config_file());
 }
 
+fn open_startup_config_schema_file(_: &OpenStartupConfigSchemaFile, cx: &mut App) {
+    let startup_config_schema_file = active_terminal_startup_config_schema_file();
+    if let Err(error) = write_startup_config_schema_file(&startup_config_schema_file) {
+        log::warn!("failed to write startup config schema file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_config_schema_file);
+}
+
 fn open_keymap_file(_: &OpenKeymapFile, cx: &mut App) {
     if !ensure_keymap_file() {
         return;
@@ -4534,6 +4590,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
+        assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
         assert_command_palette_action_visible(&filter, &terminal::Copy);
         assert_command_palette_action_visible(&filter, &terminal::Paste);
         assert_command_palette_action_visible(&filter, &terminal::Clear);
@@ -5154,6 +5211,11 @@ mod tests {
         let items = app_menu_items();
 
         assert_menu_action(&items, "Command Palette...", "command_palette::Toggle");
+        assert_menu_action(
+            &items,
+            "Open Startup Config Schema File",
+            "zed_terminal::OpenStartupConfigSchemaFile",
+        );
     }
 
     #[test]
@@ -5644,6 +5706,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_open_startup_config_schema_file_action_input() {
+        let action =
+            <OpenStartupConfigSchemaFile as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup config schema file action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupConfigSchemaFile>()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn formats_startup_profile_list() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
@@ -6041,6 +6117,30 @@ mod tests {
     }
 
     #[test]
+    fn writes_startup_config_schema_file_by_refreshing_existing_content() {
+        let root_dir = temp_test_dir();
+        let schema_file = root_dir.join("config").join("terminal.schema.json");
+        std_fs::create_dir_all(schema_file.parent().unwrap()).expect("failed to create config dir");
+        std_fs::write(&schema_file, "{ stale schema }\n").expect("failed to write stale schema");
+
+        write_startup_config_schema_file(&schema_file).expect("schema file should write");
+
+        let schema_text = std_fs::read_to_string(&schema_file).expect("failed to read schema file");
+        let schema: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema_text).expect("schema file should parse as json");
+        assert!(
+            schema
+                .get("properties")
+                .and_then(gpui::private::serde_json::Value::as_object)
+                .is_some(),
+            "schema file should contain root properties: {schema:#}"
+        );
+        assert_ne!(schema_text, "{ stale schema }\n");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_config_initialization() {
         let output = format_config_initialization(&TerminalConfigInitialization {
             files: vec![
@@ -6281,6 +6381,31 @@ mod tests {
     }
 
     #[test]
+    fn diagnose_terminal_config_files_reports_startup_config_schema_file() {
+        let root_dir = temp_test_dir();
+        let config_dir = root_dir.join("config");
+        let path_options = TerminalPathOptions {
+            data_dir: root_dir.join("data"),
+            config_dir: config_dir.clone(),
+        };
+
+        let checks = diagnose_terminal_config_files(TerminalConfigFilePaths::from_path_options(
+            &path_options,
+        ));
+
+        assert!(
+            checks.iter().any(|check| {
+                check.label == "startup_config_schema_file"
+                    && check.path == terminal_startup_config_schema_file(&config_dir)
+                    && check.status == TerminalDoctorCheckStatus::Missing
+            }),
+            "doctor config checks should include startup config schema file: {checks:#?}"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn diagnose_startup_config_file_uses_initial_config_when_missing() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -6331,6 +6456,7 @@ mod tests {
         let global_settings_file = config_dir.join("global_settings.json");
         let keymap_file = config_dir.join("keymap.json");
         let startup_config_file = config_dir.join("terminal.json");
+        let startup_config_schema_file = config_dir.join("terminal.schema.json");
         std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
         std_fs::write(&keymap_file, "custom keymap\n").expect("failed to write keymap");
 
@@ -6339,6 +6465,7 @@ mod tests {
             global_settings_file: global_settings_file.clone(),
             keymap_file: keymap_file.clone(),
             startup_config_file: startup_config_file.clone(),
+            startup_config_schema_file: startup_config_schema_file.clone(),
         })
         .expect("config files should initialize");
 
@@ -6365,6 +6492,10 @@ mod tests {
                     "startup_config_file",
                     TerminalConfigFileInitializationStatus::Created
                 ),
+                (
+                    "startup_config_schema_file",
+                    TerminalConfigFileInitializationStatus::Created
+                ),
             ]
         );
         assert!(settings_file.exists());
@@ -6378,6 +6509,15 @@ mod tests {
         )
         .expect("startup config should parse");
         assert_eq!(startup_config, TerminalStartupConfig::default());
+        let startup_config_schema: gpui::private::serde_json::Value = serde_json::from_str(
+            &std_fs::read_to_string(&startup_config_schema_file)
+                .expect("failed to read startup config schema"),
+        )
+        .expect("startup config schema should parse as json");
+        assert!(
+            startup_config_schema.get("properties").is_some(),
+            "startup config schema should include root properties"
+        );
 
         std_fs::remove_dir_all(root_dir).ok();
     }
