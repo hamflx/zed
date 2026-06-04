@@ -350,6 +350,14 @@ struct Cli {
     validate_startup_config: bool,
 
     #[arg(
+        long = "validate-startup-config-format",
+        value_enum,
+        requires = "validate_startup_config",
+        help = "Set the output format for --validate-startup-config"
+    )]
+    validate_startup_config_format: Option<TerminalStartupConfigValidationOutputFormat>,
+
+    #[arg(
         long = "print-startup-config-schema",
         conflicts_with_all = [
             "print_paths",
@@ -665,6 +673,7 @@ enum TerminalCliCommand {
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
+        format: TerminalStartupConfigValidationOutputFormat,
     },
     PrintStartupLayout {
         launch_options: LaunchOptions,
@@ -936,6 +945,12 @@ struct TerminalStartupConfigValidation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigValidationReport {
+    startup_config_file: PathBuf,
+    validation: TerminalStartupConfigValidation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalConfigInitialization {
     files: Vec<TerminalConfigFileInitialization>,
 }
@@ -1041,6 +1056,13 @@ enum TerminalStartupLayoutOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupConfigValidationOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDoctorOutputFormat {
     #[default]
     Text,
@@ -1126,6 +1148,7 @@ impl TerminalCliCommand {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
                 startup_config,
+                format: cli.validate_startup_config_format.unwrap_or_default(),
             });
         }
 
@@ -1923,8 +1946,12 @@ fn main() {
                 process::exit(2);
             }
         }
-        TerminalCliCommand::ValidateStartupConfig { startup_config, .. } => {
-            if let Err(error) = print_startup_config_validation(&startup_config) {
+        TerminalCliCommand::ValidateStartupConfig {
+            startup_config,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_config_validation(&startup_config, format) {
                 eprintln!("failed to validate terminal startup config: {error:#}");
                 process::exit(2);
             }
@@ -2107,13 +2134,31 @@ fn print_startup_profiles(
     Ok(())
 }
 
-fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Result<()> {
-    let validation = startup_config.validate()?;
-    print!(
-        "{}",
-        format_startup_config_validation(&active_terminal_startup_config_file(), &validation)
-    );
+fn print_startup_config_validation(
+    startup_config: &TerminalStartupConfig,
+    format: TerminalStartupConfigValidationOutputFormat,
+) -> Result<()> {
+    let report =
+        startup_config_validation_report(startup_config, &active_terminal_startup_config_file())?;
+    match format {
+        TerminalStartupConfigValidationOutputFormat::Text => {
+            print!("{}", format_startup_config_validation(&report))
+        }
+        TerminalStartupConfigValidationOutputFormat::Json => {
+            print!("{}", format_startup_config_validation_json(&report)?)
+        }
+    }
     Ok(())
+}
+
+fn startup_config_validation_report(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+) -> Result<TerminalStartupConfigValidationReport> {
+    Ok(TerminalStartupConfigValidationReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        validation: startup_config.validate()?,
+    })
 }
 
 fn print_startup_layout(
@@ -2988,23 +3033,35 @@ fn format_shell(shell: &Shell) -> String {
     }
 }
 
-fn format_startup_config_validation(
-    startup_config_file: &Path,
-    validation: &TerminalStartupConfigValidation,
-) -> String {
+fn format_startup_config_validation(report: &TerminalStartupConfigValidationReport) -> String {
     let mut output = String::new();
     writeln!(
         &mut output,
         "startup_config_file: {}",
-        startup_config_file.display()
+        report.startup_config_file.display()
     )
     .expect("writing to string should not fail");
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
-    writeln!(&mut output, "layouts: {}", validation.layout_count)
+    writeln!(&mut output, "layouts: {}", report.validation.layout_count)
         .expect("writing to string should not fail");
-    writeln!(&mut output, "tabs: {}", validation.tab_count)
+    writeln!(&mut output, "tabs: {}", report.validation.tab_count)
         .expect("writing to string should not fail");
     output
+}
+
+fn format_startup_config_validation_json(
+    report: &TerminalStartupConfigValidationReport,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "status": "ok",
+        "layout_count": report.validation.layout_count,
+        "tab_count": report.validation.tab_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup config validation as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_startup_config_schema() -> Result<String> {
@@ -6978,18 +7035,42 @@ mod tests {
 
     #[test]
     fn formats_startup_config_validation() {
-        let output = format_startup_config_validation(
-            Path::new("terminal.json"),
-            &TerminalStartupConfigValidation {
+        let report = TerminalStartupConfigValidationReport {
+            startup_config_file: PathBuf::from("terminal.json"),
+            validation: TerminalStartupConfigValidation {
                 layout_count: 2,
                 tab_count: 4,
             },
-        );
+        };
+
+        let output = format_startup_config_validation(&report);
 
         assert_eq!(
             output,
             "startup_config_file: terminal.json\nstatus: ok\nlayouts: 2\ntabs: 4\n"
         );
+    }
+
+    #[test]
+    fn formats_startup_config_validation_json() {
+        let report = TerminalStartupConfigValidationReport {
+            startup_config_file: PathBuf::from("terminal.json"),
+            validation: TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            },
+        };
+
+        let output =
+            format_startup_config_validation_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup config validation json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["layout_count"], 2);
+        assert_eq!(json["tab_count"], 4);
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
@@ -7935,10 +8016,16 @@ mod tests {
             TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
                 .expect("failed to build cli command");
 
-        let TerminalCliCommand::ValidateStartupConfig { startup_config, .. } = command else {
+        let TerminalCliCommand::ValidateStartupConfig {
+            startup_config,
+            format,
+            ..
+        } = command
+        else {
             panic!("expected startup config validation mode");
         };
 
+        assert_eq!(format, TerminalStartupConfigValidationOutputFormat::Text);
         assert_eq!(
             startup_config
                 .validate()
@@ -8219,6 +8306,25 @@ mod tests {
             panic!("expected startup layout printing mode");
         };
         assert_eq!(format, TerminalStartupLayoutOutputFormat::Json);
+    }
+
+    #[test]
+    fn validate_startup_config_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "--validate-startup-config-format",
+            "json",
+        ])
+        .expect("failed to parse startup config validation json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("startup config validation json mode should resolve");
+
+        let TerminalCliCommand::ValidateStartupConfig { format, .. } = command else {
+            panic!("expected startup config validation mode");
+        };
+        assert_eq!(format, TerminalStartupConfigValidationOutputFormat::Json);
     }
 
     #[test]
@@ -8918,6 +9024,13 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--startup-layout-format", "json"])
             .expect_err("startup layout format should require startup layout printing");
+        assert!(error.to_string().contains("required"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--validate-startup-config-format", "json"])
+                .expect_err(
+                    "startup config validation format should require startup config validation",
+                );
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
