@@ -73,6 +73,7 @@
       "alt-shift-up": "zed_terminal::ResizePaneUp",
       "alt-shift-down": "zed_terminal::ResizePaneDown",
       "alt-enter": "zed_terminal::ToggleFullScreen",
+      "alt-f4": "zed_terminal::CloseTerminalWindow",
       "ctrl-v": "terminal::Paste",
     },
   },

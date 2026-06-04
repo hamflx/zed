@@ -50,6 +50,7 @@ actions!(
         OpenConfigDirectory,
         OpenLogsDirectory,
         NewTerminalWindow,
+        CloseTerminalWindow,
         NewTerminalTab,
         DuplicateTerminalTab,
         ToggleFullScreen,
@@ -2999,6 +3000,7 @@ fn terminal_command_palette_hidden_namespaces() -> &'static [&'static str] {
 fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
     vec![
         TypeId::of::<ClearDefaultStartupProfile>(),
+        TypeId::of::<CloseTerminalWindow>(),
         TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalTab>(),
@@ -3476,6 +3478,7 @@ fn app_menu_items() -> Vec<MenuItem> {
 fn window_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("New Window", NewTerminalWindow),
+        MenuItem::action("Close Window", CloseTerminalWindow),
         MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleFullScreen),
     ]
@@ -3580,6 +3583,28 @@ fn open_terminal_window(
                 );
                 workspace.register_action(|_, _: &ToggleFullScreen, window, _| {
                     window.toggle_fullscreen();
+                });
+                workspace.register_action(|_workspace, _: &CloseTerminalWindow, window, cx| {
+                    cx.spawn_in(window, async move |workspace, cx| {
+                        let should_close = workspace
+                            .update_in(cx, |workspace, window, cx| {
+                                workspace.prepare_to_close(
+                                    workspace::CloseIntent::CloseWindow,
+                                    window,
+                                    cx,
+                                )
+                            })?
+                            .await?;
+
+                        if should_close {
+                            cx.update(|window, _cx| {
+                                window.remove_window();
+                            })?;
+                        }
+
+                        anyhow::Ok(())
+                    })
+                    .detach_and_log_err(cx);
                 });
                 workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
@@ -4388,6 +4413,12 @@ mod tests {
             "alt-enter",
             "zed_terminal::ToggleFullScreen",
         );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-f4",
+            "zed_terminal::CloseTerminalWindow",
+        );
     }
 
     #[test]
@@ -4461,6 +4492,7 @@ mod tests {
     fn terminal_command_palette_filter_keeps_terminal_product_actions() {
         let filter = terminal_command_palette_filter_for_test();
 
+        assert_command_palette_action_visible(&filter, &CloseTerminalWindow);
         assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
@@ -5114,6 +5146,7 @@ mod tests {
         let items = window_menu_items();
 
         assert_menu_action(&items, "New Window", "zed_terminal::NewTerminalWindow");
+        assert_menu_action(&items, "Close Window", "zed_terminal::CloseTerminalWindow");
         assert_menu_action(
             &items,
             "Toggle Full Screen",
@@ -5549,6 +5582,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<NewTerminalWindow>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_close_terminal_window_action_input() {
+        let action = <CloseTerminalWindow as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("close terminal window action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<CloseTerminalWindow>()
                 .is_some()
         );
     }
