@@ -114,8 +114,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -164,8 +167,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -186,8 +192,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -208,8 +217,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -231,8 +243,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -253,8 +268,11 @@ struct Cli {
             "profile",
             "working_directory",
             "directory",
+            "title",
             "new_tabs",
+            "new_tab_titles",
             "new_tab_command_directories",
+            "new_tab_command_titles",
             "new_tab_commands",
             "command"
         ],
@@ -281,12 +299,27 @@ struct Cli {
     directory: Option<PathBuf>,
 
     #[arg(
+        long = "title",
+        value_name = "TITLE",
+        help = "Set the initial terminal tab title"
+    )]
+    title: Option<String>,
+
+    #[arg(
         long = "new-tab",
         visible_alias = "tab",
         value_name = "DIRECTORY",
         value_hint = ValueHint::DirPath
     )]
     new_tabs: Vec<PathBuf>,
+
+    #[arg(
+        long = "new-tab-title",
+        visible_alias = "tab-title",
+        value_name = "TITLE",
+        help = "Set the title for a --new-tab by order"
+    )]
+    new_tab_titles: Vec<String>,
 
     #[arg(
         long = "new-tab-command",
@@ -305,6 +338,14 @@ struct Cli {
         help = "Set the working directory for a --new-tab-command by order"
     )]
     new_tab_command_directories: Vec<PathBuf>,
+
+    #[arg(
+        long = "new-tab-command-title",
+        visible_alias = "tab-command-title",
+        value_name = "TITLE",
+        help = "Set the title for a --new-tab-command by order"
+    )]
+    new_tab_command_titles: Vec<String>,
 
     #[arg(
         value_name = "COMMAND",
@@ -707,13 +748,18 @@ impl LaunchOptions {
             initial_tab.env = inherited_env.clone();
             initial_tab.shell = None;
         }
+        if cli.title.is_some() {
+            initial_tab.title = normalize_terminal_title(cli.title.as_deref());
+        }
         let mut additional_tabs = startup_config
             .additional_tabs(profile)
             .context("failed to resolve configured startup tabs")?;
         additional_tabs.extend(LaunchTab::additional_from_cli(
             &cli.new_tabs,
+            &cli.new_tab_titles,
             &cli.new_tab_commands,
             &cli.new_tab_command_directories,
+            &cli.new_tab_command_titles,
             &inherited_env,
             inherited_shell.as_ref(),
         )?);
@@ -763,25 +809,35 @@ impl TerminalPathOptions {
 impl LaunchTab {
     fn additional_from_cli(
         directories: &[PathBuf],
+        directory_titles: &[String],
         commands: &[String],
         command_directories: &[PathBuf],
+        command_titles: &[String],
         inherited_env: &HashMap<String, String>,
         inherited_shell: Option<&Shell>,
     ) -> Result<Vec<Self>> {
         let mut tabs = Vec::with_capacity(directories.len() + commands.len());
 
+        if directory_titles.len() > directories.len() {
+            bail!("startup tab title requires a matching --new-tab");
+        }
         if command_directories.len() > commands.len() {
             bail!("startup command tab directory requires a matching --new-tab-command");
         }
+        if command_titles.len() > commands.len() {
+            bail!("startup command tab title requires a matching --new-tab-command");
+        }
 
-        for directory in directories {
+        for (directory_index, directory) in directories.iter().enumerate() {
             tabs.push(Self {
                 working_directory: Some(resolve_working_directory(directory).with_context(
                     || format!("failed to resolve startup tab {}", tabs.len() + 2),
                 )?),
                 command: None,
                 env: HashMap::default(),
-                title: None,
+                title: normalize_terminal_title(
+                    directory_titles.get(directory_index).map(String::as_str),
+                ),
                 shell: inherited_shell.cloned(),
             });
         }
@@ -804,7 +860,9 @@ impl LaunchTab {
                         .with_context(|| format!("failed to parse startup tab {tab_number}"))?,
                 ),
                 env: inherited_env.clone(),
-                title: None,
+                title: normalize_terminal_title(
+                    command_titles.get(command_index).map(String::as_str),
+                ),
                 shell: None,
             });
         }
@@ -2864,6 +2922,11 @@ mod tests {
         }
     }
 
+    fn assert_cli_conflict(args: &[&str], reason: &str) {
+        let error = Cli::try_parse_from(args.iter().copied()).expect_err(reason);
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
     #[test]
     fn parses_path_options() {
         let data_dir = temp_test_dir();
@@ -4068,6 +4131,31 @@ mod tests {
     }
 
     #[test]
+    fn non_launch_modes_reject_startup_title_arguments() {
+        for mode in [
+            "--init-config",
+            "--doctor",
+            "--validate-startup-config",
+            "--print-startup-config-schema",
+            "--validate-keymap",
+            "--list-profiles",
+        ] {
+            assert_cli_conflict(
+                &["zed-terminal", mode, "--title", "Production"],
+                "initial title should conflict with non-launch modes",
+            );
+            assert_cli_conflict(
+                &["zed-terminal", mode, "--new-tab-title", "Logs"],
+                "startup tab title should conflict with non-launch modes",
+            );
+            assert_cli_conflict(
+                &["zed-terminal", mode, "--new-tab-command-title", "Build"],
+                "startup command tab title should conflict with non-launch modes",
+            );
+        }
+    }
+
+    #[test]
     fn list_profiles_mode_does_not_resolve_startup_layout() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
@@ -4236,6 +4324,20 @@ mod tests {
 
         std_fs::remove_dir_all(configured_dir).ok();
         std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn cli_overrides_configured_initial_startup_tab_title() {
+        let config = TerminalStartupConfig {
+            title: Some("Configured".into()),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--title", "CLI"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.title.as_deref(), Some("CLI"));
     }
 
     #[test]
@@ -5116,6 +5218,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_additional_startup_tab_titles() {
+        let first_dir = temp_test_dir();
+        let second_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            first_dir.to_str().unwrap(),
+            "--new-tab-title",
+            "Logs",
+            "--tab",
+            second_dir.to_str().unwrap(),
+            "--tab-title",
+            "Shell",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_tab_working_directory(&options.additional_tabs[0], &first_dir);
+        assert_eq!(options.additional_tabs[0].title.as_deref(), Some("Logs"));
+        assert_tab_working_directory(&options.additional_tabs[1], &second_dir);
+        assert_eq!(options.additional_tabs[1].title.as_deref(), Some("Shell"));
+
+        std_fs::remove_dir_all(first_dir).ok();
+        std_fs::remove_dir_all(second_dir).ok();
+    }
+
+    #[test]
     fn parses_additional_startup_tab_commands() {
         let first_dir = temp_test_dir();
         let second_dir = temp_test_dir();
@@ -5198,6 +5328,51 @@ mod tests {
     }
 
     #[test]
+    fn parses_additional_startup_tab_command_titles() {
+        let command_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab-command",
+            "cmd /C \"echo one\"",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+            "--new-tab-command-title",
+            "Build",
+            "--tab-command",
+            "pwsh -NoLogo",
+            "--tab-command-title",
+            "Shell Command",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_eq!(
+            options.additional_tabs[0].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo one".into()],
+            })
+        );
+        assert_tab_working_directory(&options.additional_tabs[0], &command_dir);
+        assert_eq!(options.additional_tabs[0].title.as_deref(), Some("Build"));
+        assert_eq!(options.additional_tabs[1].working_directory, None);
+        assert_eq!(
+            options.additional_tabs[1].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+        assert_eq!(
+            options.additional_tabs[1].title.as_deref(),
+            Some("Shell Command")
+        );
+
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
     fn maps_fewer_command_directories_to_first_command_tabs() {
         let command_dir = temp_test_dir();
         let cli = Cli::try_parse_from([
@@ -5234,6 +5409,33 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_blank_cli_startup_tab_titles() {
+        let tab_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--title",
+            "  ",
+            "--new-tab",
+            tab_dir.to_str().unwrap(),
+            "--new-tab-title",
+            "\t",
+            "--new-tab-command",
+            "cmd /C one",
+            "--new-tab-command-title",
+            "",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.title, None);
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_eq!(options.additional_tabs[0].title, None);
+        assert_eq!(options.additional_tabs[1].title, None);
+
+        std_fs::remove_dir_all(tab_dir).ok();
+    }
+
+    #[test]
     fn parses_command_only_additional_startup_tab() {
         let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", "cargo --version"])
             .expect("failed to parse cli args");
@@ -5265,6 +5467,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unmatched_additional_startup_tab_title() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-title", "Logs"])
+            .expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli(cli).expect_err("unmatched tab title should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup tab title requires a matching --new-tab")
+        );
+    }
+
+    #[test]
     fn rejects_unmatched_additional_startup_tab_command_directory() {
         let command_dir = temp_test_dir();
         let cli = Cli::try_parse_from([
@@ -5284,6 +5500,20 @@ mod tests {
         );
 
         std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
+    fn rejects_unmatched_additional_startup_tab_command_title() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command-title", "Build"])
+            .expect("failed to parse cli args");
+
+        let error = LaunchOptions::from_cli(cli).expect_err("unmatched command title should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup command tab title requires a matching --new-tab-command")
+        );
     }
 
     #[test]
