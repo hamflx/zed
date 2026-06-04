@@ -49,6 +49,7 @@ actions!(
         OpenKeymapFile,
         OpenConfigDirectory,
         OpenLogsDirectory,
+        NewTerminalWindow,
         NewTerminalTab,
         DuplicateTerminalTab,
         ToggleFullScreen,
@@ -1040,6 +1041,18 @@ impl LaunchOptions {
             }
         }
         directories
+    }
+
+    fn runtime_new_window_options(&self) -> Self {
+        let mut initial_tab = self.new_terminal_tab.clone();
+        initial_tab.split = None;
+
+        Self {
+            path_options: self.path_options.clone(),
+            initial_tab: initial_tab.clone(),
+            additional_tabs: Vec::new(),
+            new_terminal_tab: initial_tab,
+        }
     }
 }
 
@@ -2987,6 +3000,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
     vec![
         TypeId::of::<ClearDefaultStartupProfile>(),
         TypeId::of::<DuplicateTerminalTab>(),
+        TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalTab>(),
         TypeId::of::<NewTerminalSplitWithProfile>(),
         TypeId::of::<NewTerminalTabWithProfile>(),
@@ -3460,7 +3474,11 @@ fn app_menu_items() -> Vec<MenuItem> {
 }
 
 fn window_menu_items() -> Vec<MenuItem> {
-    vec![MenuItem::action("Toggle Full Screen", ToggleFullScreen)]
+    vec![
+        MenuItem::action("New Window", NewTerminalWindow),
+        MenuItem::separator(),
+        MenuItem::action("Toggle Full Screen", ToggleFullScreen),
+    ]
 }
 
 fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
@@ -3490,6 +3508,7 @@ fn open_terminal_window(
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let bounds = Bounds::centered(None, window_size, cx);
     let startup_working_directories = launch_options.startup_working_directories();
+    let new_terminal_window = launch_options.runtime_new_window_options();
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
     let duplicate_terminal_tab_fallback = new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
@@ -3530,6 +3549,20 @@ fn open_terminal_window(
             let workspace = cx.new(|cx| {
                 let mut workspace =
                     Workspace::new(None, project.clone(), app_state.clone(), window, cx);
+                let new_terminal_window_app_state = app_state.clone();
+                workspace.register_action({
+                    let new_terminal_window = new_terminal_window.clone();
+                    move |_, _: &NewTerminalWindow, _, cx| match open_terminal_window(
+                        new_terminal_window_app_state.clone(),
+                        new_terminal_window.clone(),
+                        cx,
+                    ) {
+                        Ok(()) => cx.activate(true),
+                        Err(error) => {
+                            log::warn!("failed to open new terminal window: {error:#}");
+                        }
+                    }
+                });
                 workspace.register_action(move |workspace, _: &NewTerminalTab, window, cx| {
                     add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
                         .detach_and_log_err(cx);
@@ -4281,6 +4314,12 @@ mod tests {
         assert_key_binding(
             &keymap,
             None,
+            "ctrl-shift-n",
+            "zed_terminal::NewTerminalWindow",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
             "ctrl-shift-d",
             "zed_terminal::DuplicateTerminalTab",
         );
@@ -4423,6 +4462,7 @@ mod tests {
         let filter = terminal_command_palette_filter_for_test();
 
         assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
+        assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
         assert_command_palette_action_visible(
             &filter,
@@ -5073,6 +5113,7 @@ mod tests {
     fn window_menu_exposes_full_screen_action() {
         let items = window_menu_items();
 
+        assert_menu_action(&items, "New Window", "zed_terminal::NewTerminalWindow");
         assert_menu_action(
             &items,
             "Toggle Full Screen",
@@ -5497,6 +5538,19 @@ mod tests {
             .expect("toggle full screen action input should parse");
 
         assert!(action.as_any().downcast_ref::<ToggleFullScreen>().is_some());
+    }
+
+    #[test]
+    fn parses_new_terminal_window_action_input() {
+        let action = <NewTerminalWindow as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("new terminal window action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<NewTerminalWindow>()
+                .is_some()
+        );
     }
 
     #[test]
@@ -8933,6 +8987,65 @@ mod tests {
 
         std_fs::remove_dir_all(initial_dir).ok();
         std_fs::remove_dir_all(new_terminal_dir).ok();
+        std_fs::remove_dir_all(additional_dir).ok();
+    }
+
+    #[test]
+    fn runtime_new_window_uses_new_tab_template_without_replaying_startup_tabs() {
+        let configured_dir = temp_test_dir();
+        let cli_dir = temp_test_dir();
+        let additional_dir = temp_test_dir();
+        let config = TerminalStartupConfig {
+            working_directory: Some(configured_dir.clone()),
+            command: Some("configured-task".into()),
+            title: Some("Configured".into()),
+            tabs: vec![TerminalStartupTabConfig {
+                working_directory: Some(additional_dir.clone()),
+                title: Some("Extra".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "-d",
+            cli_dir.to_str().expect("temp path should be utf8"),
+            "--title",
+            "CLI",
+            "--",
+            "pwsh",
+        ])
+        .expect("cli should parse");
+        let launch_options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        let window_options = launch_options.runtime_new_window_options();
+
+        assert!(window_options.additional_tabs.is_empty());
+        assert_eq!(window_options.initial_tab, launch_options.new_terminal_tab);
+        assert_eq!(
+            window_options.new_terminal_tab,
+            launch_options.new_terminal_tab
+        );
+        assert_eq!(
+            window_options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "configured-task".into(),
+                args: Vec::new()
+            })
+        );
+        assert_eq!(
+            window_options.initial_tab.title.as_deref(),
+            Some("Configured")
+        );
+        assert_initial_working_directory(&window_options, &cli_dir);
+        assert_eq!(
+            window_options.startup_working_directories(),
+            vec![dunce::canonicalize(&cli_dir).unwrap()]
+        );
+
+        std_fs::remove_dir_all(configured_dir).ok();
+        std_fs::remove_dir_all(cli_dir).ok();
         std_fs::remove_dir_all(additional_dir).ok();
     }
 

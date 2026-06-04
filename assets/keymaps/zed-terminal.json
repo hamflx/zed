@@ -2,6 +2,7 @@
 [
   {
     "bindings": {
+      "ctrl-shift-n": "zed_terminal::NewTerminalWindow",
       "ctrl-shift-t": "zed_terminal::NewTerminalTab",
       "ctrl-shift-d": "zed_terminal::DuplicateTerminalTab",
       "ctrl-shift-w": "pane::CloseActiveItem",
