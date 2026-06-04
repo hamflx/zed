@@ -414,6 +414,15 @@ struct Cli {
     doctor: bool,
 
     #[arg(
+        long = "doctor-format",
+        visible_alias = "format",
+        value_enum,
+        requires = "doctor",
+        help = "Set the output format for --doctor"
+    )]
+    doctor_format: Option<TerminalDoctorOutputFormat>,
+
+    #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
             "print_paths",
@@ -641,6 +650,7 @@ enum TerminalCliCommand {
     },
     Doctor {
         path_options: TerminalPathOptions,
+        format: TerminalDoctorOutputFormat,
     },
     ValidateKeymap {
         path_options: TerminalPathOptions,
@@ -891,6 +901,13 @@ enum TerminalDoctorPathKind {
     File,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalDoctorOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
@@ -982,7 +999,10 @@ impl TerminalCliCommand {
         }
 
         if cli.doctor {
-            return Ok(Self::Doctor { path_options });
+            return Ok(Self::Doctor {
+                path_options,
+                format: cli.doctor_format.unwrap_or_default(),
+            });
         }
 
         if cli.validate_keymap {
@@ -1007,7 +1027,7 @@ impl TerminalCliCommand {
             Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::PrintDefaultKeymap { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
-            Self::Doctor { path_options } => path_options,
+            Self::Doctor { path_options, .. } => path_options,
             Self::ValidateKeymap { path_options } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
@@ -1717,8 +1737,11 @@ fn main() {
     };
 
     match &command {
-        TerminalCliCommand::Doctor { path_options } => {
-            run_terminal_doctor(path_options.clone());
+        TerminalCliCommand::Doctor {
+            path_options,
+            format,
+        } => {
+            run_terminal_doctor(path_options.clone(), *format);
             return;
         }
         TerminalCliCommand::PrintStartupLayout(launch_options) => {
@@ -1782,12 +1805,23 @@ fn main() {
     }
 }
 
-fn run_terminal_doctor(path_options: TerminalPathOptions) {
+fn run_terminal_doctor(path_options: TerminalPathOptions, format: TerminalDoctorOutputFormat) {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
             let report = diagnose_terminal(&path_options, cx);
-            print!("{}", format_doctor_report(&report));
+            let output = match format {
+                TerminalDoctorOutputFormat::Text => Ok(format_doctor_report(&report)),
+                TerminalDoctorOutputFormat::Json => format_doctor_report_json(&report),
+            };
+            match output {
+                Ok(output) => print!("{output}"),
+                Err(error) => {
+                    eprintln!("failed to format terminal doctor report: {error:#}");
+                    cx.quit();
+                    process::exit(2);
+                }
+            }
             io::stdout()
                 .flush()
                 .expect("failed to flush terminal doctor output");
@@ -2775,6 +2809,67 @@ fn format_doctor_report(report: &TerminalDoctorReport) -> String {
     }
 
     output
+}
+
+fn format_doctor_report_json(report: &TerminalDoctorReport) -> Result<String> {
+    let value = serde_json::json!({
+        "status": if report.has_errors() { "error" } else { "ok" },
+        "directories": report
+            .directories
+            .iter()
+            .map(doctor_path_check_json)
+            .collect::<Vec<_>>(),
+        "config_files": report
+            .config_files
+            .iter()
+            .map(doctor_path_check_json)
+            .collect::<Vec<_>>(),
+        "startup_config": {
+            "path": report.startup_config.path.display().to_string(),
+            "status": report.startup_config.status.as_str(),
+            "source": report
+                .startup_config
+                .source
+                .map(TerminalDoctorConfigSource::as_str),
+            "validation": report
+                .startup_config
+                .validation
+                .as_ref()
+                .map(|validation| serde_json::json!({
+                    "layouts": validation.layout_count,
+                    "tabs": validation.tab_count,
+                })),
+            "message": report.startup_config.message.as_deref(),
+        },
+        "keymap": {
+            "path": report.keymap.path.display().to_string(),
+            "status": report.keymap.status.as_str(),
+            "source": report.keymap.source.map(TerminalUserKeymapSource::as_str),
+            "validation": report
+                .keymap
+                .validation
+                .as_ref()
+                .map(|validation| serde_json::json!({
+                    "default_bindings": validation.default_binding_count,
+                    "user_bindings": validation.user_binding_count,
+                    "user_keymap_source": validation.user_keymap_source.as_str(),
+                })),
+            "message": report.keymap.message.as_deref(),
+        },
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal doctor report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn doctor_path_check_json(check: &TerminalDoctorPathCheck) -> serde_json::Value {
+    serde_json::json!({
+        "label": check.label,
+        "path": check.path.display().to_string(),
+        "status": check.status.as_str(),
+        "message": check.message.as_deref(),
+    })
 }
 
 fn format_doctor_path_check(output: &mut String, check: &TerminalDoctorPathCheck) {
@@ -6505,49 +6600,7 @@ mod tests {
 
     #[test]
     fn formats_doctor_report() {
-        let output = format_doctor_report(&TerminalDoctorReport {
-            directories: vec![
-                TerminalDoctorPathCheck {
-                    label: "data_dir",
-                    path: PathBuf::from("data"),
-                    status: TerminalDoctorCheckStatus::Ok,
-                    message: None,
-                },
-                TerminalDoctorPathCheck {
-                    label: "logs_dir",
-                    path: PathBuf::from("logs"),
-                    status: TerminalDoctorCheckStatus::Missing,
-                    message: None,
-                },
-            ],
-            config_files: vec![TerminalDoctorPathCheck {
-                label: "settings_file",
-                path: PathBuf::from("settings.json"),
-                status: TerminalDoctorCheckStatus::Error,
-                message: Some("expected a file".into()),
-            }],
-            startup_config: TerminalDoctorStartupConfigCheck {
-                path: PathBuf::from("terminal.json"),
-                status: TerminalDoctorCheckStatus::Ok,
-                source: Some(TerminalDoctorConfigSource::File),
-                validation: Some(TerminalStartupConfigValidation {
-                    layout_count: 2,
-                    tab_count: 4,
-                }),
-                message: None,
-            },
-            keymap: TerminalDoctorKeymapCheck {
-                path: PathBuf::from("keymap.json"),
-                status: TerminalDoctorCheckStatus::Missing,
-                source: Some(TerminalUserKeymapSource::Initial),
-                validation: Some(TerminalKeymapValidation {
-                    default_binding_count: 31,
-                    user_binding_count: 0,
-                    user_keymap_source: TerminalUserKeymapSource::Initial,
-                }),
-                message: None,
-            },
-        });
+        let output = format_doctor_report(&sample_doctor_report());
 
         assert_eq!(
             output,
@@ -6571,6 +6624,32 @@ mod tests {
                 "  user_bindings: 0\n",
             )
         );
+    }
+
+    #[test]
+    fn formats_doctor_report_json() {
+        let output =
+            format_doctor_report_json(&sample_doctor_report()).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("doctor json should parse");
+
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["directories"][0]["label"], "data_dir");
+        assert_eq!(json["directories"][0]["status"], "ok");
+        assert_eq!(json["config_files"][0]["status"], "error");
+        assert_eq!(json["config_files"][0]["message"], "expected a file");
+        assert_eq!(json["startup_config"]["source"], "file");
+        assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
+        assert_eq!(json["startup_config"]["validation"]["tabs"], 4);
+        assert_eq!(json["keymap"]["status"], "missing");
+        assert_eq!(json["keymap"]["source"], "initial");
+        assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
+        assert_eq!(json["keymap"]["validation"]["user_bindings"], 0);
+        assert_eq!(
+            json["keymap"]["validation"]["user_keymap_source"],
+            "initial"
+        );
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
@@ -6613,6 +6692,52 @@ mod tests {
 
         assert!(!report.has_errors());
         assert!(format_doctor_report(&report).starts_with("status: ok\n"));
+    }
+
+    fn sample_doctor_report() -> TerminalDoctorReport {
+        TerminalDoctorReport {
+            directories: vec![
+                TerminalDoctorPathCheck {
+                    label: "data_dir",
+                    path: PathBuf::from("data"),
+                    status: TerminalDoctorCheckStatus::Ok,
+                    message: None,
+                },
+                TerminalDoctorPathCheck {
+                    label: "logs_dir",
+                    path: PathBuf::from("logs"),
+                    status: TerminalDoctorCheckStatus::Missing,
+                    message: None,
+                },
+            ],
+            config_files: vec![TerminalDoctorPathCheck {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Error,
+                message: Some("expected a file".into()),
+            }],
+            startup_config: TerminalDoctorStartupConfigCheck {
+                path: PathBuf::from("terminal.json"),
+                status: TerminalDoctorCheckStatus::Ok,
+                source: Some(TerminalDoctorConfigSource::File),
+                validation: Some(TerminalStartupConfigValidation {
+                    layout_count: 2,
+                    tab_count: 4,
+                }),
+                message: None,
+            },
+            keymap: TerminalDoctorKeymapCheck {
+                path: PathBuf::from("keymap.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalUserKeymapSource::Initial),
+                validation: Some(TerminalKeymapValidation {
+                    default_binding_count: 31,
+                    user_binding_count: 0,
+                    user_keymap_source: TerminalUserKeymapSource::Initial,
+                }),
+                message: None,
+            },
+        }
     }
 
     #[test]
@@ -7388,9 +7513,37 @@ mod tests {
         let command = TerminalCliCommand::from_cli_and_config_file(cli)
             .expect("doctor mode should not load terminal.json during cli resolution");
 
-        assert!(matches!(command, TerminalCliCommand::Doctor { .. }));
+        let TerminalCliCommand::Doctor { format, .. } = command else {
+            panic!("expected doctor mode");
+        };
+        assert_eq!(format, TerminalDoctorOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn doctor_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--doctor", "--doctor-format", "json"])
+            .expect("failed to parse doctor json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("doctor json mode should resolve");
+
+        let TerminalCliCommand::Doctor { format, .. } = command else {
+            panic!("expected doctor mode");
+        };
+        assert_eq!(format, TerminalDoctorOutputFormat::Json);
+
+        let cli = Cli::try_parse_from(["zed-terminal", "--doctor", "--format", "json"])
+            .expect("failed to parse doctor format alias");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("doctor json alias should resolve");
+
+        let TerminalCliCommand::Doctor { format, .. } = command else {
+            panic!("expected doctor mode");
+        };
+        assert_eq!(format, TerminalDoctorOutputFormat::Json);
     }
 
     #[test]
@@ -7658,6 +7811,10 @@ mod tests {
         let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--doctor"])
             .expect_err("profile listing should conflict with doctor");
         assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--doctor-format", "json"])
+            .expect_err("doctor format should require doctor mode");
+        assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
     }
