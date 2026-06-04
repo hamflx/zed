@@ -145,6 +145,14 @@ struct Cli {
     print_paths: bool,
 
     #[arg(
+        long = "paths-format",
+        value_enum,
+        requires = "print_paths",
+        help = "Set the output format for --paths"
+    )]
+    paths_format: Option<TerminalPathsOutputFormat>,
+
+    #[arg(
         long = "list-profiles",
         conflicts_with_all = [
             "print_startup_layout",
@@ -621,7 +629,10 @@ struct Cli {
 
 #[derive(Clone, Debug)]
 enum TerminalCliCommand {
-    PrintPaths(TerminalPathOptions),
+    PrintPaths {
+        path_options: TerminalPathOptions,
+        format: TerminalPathsOutputFormat,
+    },
     ListProfiles {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
@@ -670,6 +681,21 @@ struct LaunchOptions {
 struct TerminalPathOptions {
     data_dir: PathBuf,
     config_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalPathReport {
+    config_dir: PathBuf,
+    data_dir: PathBuf,
+    logs_dir: PathBuf,
+    settings_file: PathBuf,
+    startup_config_file: PathBuf,
+    startup_config_schema_file: PathBuf,
+    global_settings_file: PathBuf,
+    keymap_file: PathBuf,
+    default_keymap_reference_file: PathBuf,
+    themes_dir: PathBuf,
+    log_file: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -902,6 +928,13 @@ enum TerminalDoctorPathKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalPathsOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDoctorOutputFormat {
     #[default]
     Text,
@@ -949,7 +982,10 @@ impl TerminalCliCommand {
         path_options: TerminalPathOptions,
     ) -> Result<Self> {
         if cli.print_paths {
-            return Ok(Self::PrintPaths(path_options));
+            return Ok(Self::PrintPaths {
+                path_options,
+                format: cli.paths_format.unwrap_or_default(),
+            });
         }
 
         if cli.list_profiles {
@@ -1018,7 +1054,7 @@ impl TerminalCliCommand {
 
     fn path_options(&self) -> &TerminalPathOptions {
         match self {
-            Self::PrintPaths(path_options) => path_options,
+            Self::PrintPaths { path_options, .. } => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ClearDefaultProfile { path_options } => path_options,
@@ -1757,7 +1793,12 @@ fn main() {
     }
 
     match command {
-        TerminalCliCommand::PrintPaths(_) => print_terminal_paths(),
+        TerminalCliCommand::PrintPaths { format, .. } => {
+            if let Err(error) = print_terminal_paths(format) {
+                eprintln!("failed to print terminal paths: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::ListProfiles {
             startup_config,
             include_hidden,
@@ -1903,30 +1944,29 @@ fn init_terminal_logging() {
     }
 }
 
-fn print_terminal_paths() {
-    println!("config_dir: {}", paths::config_dir().display());
-    println!("data_dir: {}", paths::data_dir().display());
-    println!("logs_dir: {}", paths::logs_dir().display());
-    println!("settings_file: {}", paths::settings_file().display());
-    println!(
-        "startup_config_file: {}",
-        active_terminal_startup_config_file().display()
-    );
-    println!(
-        "startup_config_schema_file: {}",
-        active_terminal_startup_config_schema_file().display()
-    );
-    println!(
-        "global_settings_file: {}",
-        paths::global_settings_file().display()
-    );
-    println!("keymap_file: {}", paths::keymap_file().display());
-    println!(
-        "default_keymap_reference_file: {}",
-        active_terminal_default_keymap_reference_file().display()
-    );
-    println!("themes_dir: {}", paths::themes_dir().display());
-    println!("log_file: {}", terminal_log_file().display());
+fn print_terminal_paths(format: TerminalPathsOutputFormat) -> Result<()> {
+    let report = active_terminal_path_report();
+    match format {
+        TerminalPathsOutputFormat::Text => print!("{}", format_terminal_paths(&report)),
+        TerminalPathsOutputFormat::Json => print!("{}", format_terminal_paths_json(&report)?),
+    }
+    Ok(())
+}
+
+fn active_terminal_path_report() -> TerminalPathReport {
+    TerminalPathReport {
+        config_dir: paths::config_dir().clone(),
+        data_dir: paths::data_dir().clone(),
+        logs_dir: paths::logs_dir().clone(),
+        settings_file: paths::settings_file().clone(),
+        startup_config_file: active_terminal_startup_config_file(),
+        startup_config_schema_file: active_terminal_startup_config_schema_file(),
+        global_settings_file: paths::global_settings_file().clone(),
+        keymap_file: paths::keymap_file().clone(),
+        default_keymap_reference_file: active_terminal_default_keymap_reference_file(),
+        themes_dir: paths::themes_dir().clone(),
+        log_file: terminal_log_file().clone(),
+    }
 }
 
 fn print_startup_profiles(startup_config: &TerminalStartupConfig, include_hidden: bool) {
@@ -2709,6 +2749,73 @@ fn format_config_initialization(initialization: &TerminalConfigInitialization) -
         .expect("writing to string should not fail");
     }
     output
+}
+
+fn format_terminal_paths(report: &TerminalPathReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "config_dir: {}", report.config_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "data_dir: {}", report.data_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "logs_dir: {}", report.logs_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "settings_file: {}",
+        report.settings_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        report.startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_config_schema_file: {}",
+        report.startup_config_schema_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "global_settings_file: {}",
+        report.global_settings_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_file: {}", report.keymap_file.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "default_keymap_reference_file: {}",
+        report.default_keymap_reference_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "themes_dir: {}", report.themes_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "log_file: {}", report.log_file.display())
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
+    let value = serde_json::json!({
+        "config_dir": report.config_dir.display().to_string(),
+        "data_dir": report.data_dir.display().to_string(),
+        "logs_dir": report.logs_dir.display().to_string(),
+        "settings_file": report.settings_file.display().to_string(),
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "startup_config_schema_file": report.startup_config_schema_file.display().to_string(),
+        "global_settings_file": report.global_settings_file.display().to_string(),
+        "keymap_file": report.keymap_file.display().to_string(),
+        "default_keymap_reference_file": report.default_keymap_reference_file.display().to_string(),
+        "themes_dir": report.themes_dir.display().to_string(),
+        "log_file": report.log_file.display().to_string(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal paths as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_default_profile_update(update: &TerminalDefaultProfileUpdate) -> String {
@@ -4632,10 +4739,15 @@ mod tests {
         let command =
             TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
                 .expect("failed to build cli command");
-        let TerminalCliCommand::PrintPaths(path_options) = command else {
+        let TerminalCliCommand::PrintPaths {
+            path_options,
+            format,
+        } = command
+        else {
             panic!("expected paths mode");
         };
 
+        assert_eq!(format, TerminalPathsOutputFormat::Text);
         assert_eq!(path_options.data_dir, data_dir);
         assert_eq!(
             path_options.config_dir,
@@ -6565,6 +6677,49 @@ mod tests {
     }
 
     #[test]
+    fn formats_terminal_paths() {
+        let output = format_terminal_paths(&sample_path_report());
+
+        assert_eq!(
+            output,
+            concat!(
+                "config_dir: config\n",
+                "data_dir: data\n",
+                "logs_dir: logs\n",
+                "settings_file: settings.json\n",
+                "startup_config_file: terminal.json\n",
+                "startup_config_schema_file: terminal.schema.json\n",
+                "global_settings_file: global-settings.json\n",
+                "keymap_file: keymap.json\n",
+                "default_keymap_reference_file: default-keymap.json\n",
+                "themes_dir: themes\n",
+                "log_file: zed-terminal.log\n",
+            )
+        );
+    }
+
+    #[test]
+    fn formats_terminal_paths_json() {
+        let output =
+            format_terminal_paths_json(&sample_path_report()).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("paths json should parse");
+
+        assert_eq!(json["config_dir"], "config");
+        assert_eq!(json["data_dir"], "data");
+        assert_eq!(json["logs_dir"], "logs");
+        assert_eq!(json["settings_file"], "settings.json");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["startup_config_schema_file"], "terminal.schema.json");
+        assert_eq!(json["global_settings_file"], "global-settings.json");
+        assert_eq!(json["keymap_file"], "keymap.json");
+        assert_eq!(json["default_keymap_reference_file"], "default-keymap.json");
+        assert_eq!(json["themes_dir"], "themes");
+        assert_eq!(json["log_file"], "zed-terminal.log");
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_default_profile_update() {
         let output = format_default_profile_update(&TerminalDefaultProfileUpdate {
             path: PathBuf::from("terminal.json"),
@@ -6692,6 +6847,22 @@ mod tests {
 
         assert!(!report.has_errors());
         assert!(format_doctor_report(&report).starts_with("status: ok\n"));
+    }
+
+    fn sample_path_report() -> TerminalPathReport {
+        TerminalPathReport {
+            config_dir: PathBuf::from("config"),
+            data_dir: PathBuf::from("data"),
+            logs_dir: PathBuf::from("logs"),
+            settings_file: PathBuf::from("settings.json"),
+            startup_config_file: PathBuf::from("terminal.json"),
+            startup_config_schema_file: PathBuf::from("terminal.schema.json"),
+            global_settings_file: PathBuf::from("global-settings.json"),
+            keymap_file: PathBuf::from("keymap.json"),
+            default_keymap_reference_file: PathBuf::from("default-keymap.json"),
+            themes_dir: PathBuf::from("themes"),
+            log_file: PathBuf::from("zed-terminal.log"),
+        }
     }
 
     fn sample_doctor_report() -> TerminalDoctorReport {
@@ -7547,6 +7718,20 @@ mod tests {
     }
 
     #[test]
+    fn paths_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--paths", "--paths-format", "json"])
+            .expect("failed to parse paths json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("paths json mode should resolve");
+
+        let TerminalCliCommand::PrintPaths { format, .. } = command else {
+            panic!("expected paths mode");
+        };
+        assert_eq!(format, TerminalPathsOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -7814,6 +7999,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--doctor-format", "json"])
             .expect_err("doctor format should require doctor mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths-format", "json"])
+            .expect_err("paths format should require paths mode");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
@@ -9168,7 +9357,7 @@ mod tests {
         let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
             .expect("paths mode should not resolve startup profiles");
 
-        assert!(matches!(command, TerminalCliCommand::PrintPaths(_)));
+        assert!(matches!(command, TerminalCliCommand::PrintPaths { .. }));
     }
 
     #[test]
