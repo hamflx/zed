@@ -18,6 +18,7 @@ assets.workspace = true
 clap.workspace = true
 client.workspace = true
 collections.workspace = true
+command_palette.workspace = true
 component.workspace = true
 db.workspace = true
 dirs.workspace = true

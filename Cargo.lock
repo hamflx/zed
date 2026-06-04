@@ -23172,6 +23172,7 @@ dependencies = [
  "clap",
  "client",
  "collections",
+ "command_palette",
  "component",
  "db",
  "dirs",

@@ -6,6 +6,8 @@
       "ctrl-shift-w": "pane::CloseActiveItem",
       "ctrl-tab": "pane::ActivateNextItem",
       "ctrl-shift-tab": "pane::ActivatePreviousItem",
+      "f1": "command_palette::Toggle",
+      "ctrl-shift-p": "command_palette::Toggle",
       "ctrl-alt-1": ["pane::ActivateItem", 0],
       "ctrl-alt-2": ["pane::ActivateItem", 1],
       "ctrl-alt-3": ["pane::ActivateItem", 2],

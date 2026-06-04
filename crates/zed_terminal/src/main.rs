@@ -2673,6 +2673,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     theme_settings::init(theme::LoadThemes::All(Box::new(Assets)), cx);
     load_user_themes_in_background(fs.clone(), cx);
     watch_themes(fs.clone(), cx);
+    command_palette::init(cx);
     apply_rendering_settings(cx);
     observe_settings_for_rendering(cx);
 
@@ -3020,15 +3021,7 @@ fn set_app_menus(cx: &mut App) {
     let shell_items = shell_menu_items(startup_profile_menu_entries());
 
     cx.set_menus(vec![
-        Menu::new("Zed Terminal").items(vec![
-            MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
-            MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
-            MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
-            MenuItem::action("Open Config Directory", OpenConfigDirectory),
-            MenuItem::action("Open Logs Directory", OpenLogsDirectory),
-            MenuItem::separator(),
-            MenuItem::action("Quit", zed_actions::Quit),
-        ]),
+        Menu::new("Zed Terminal").items(app_menu_items()),
         Menu::new("Shell").items(shell_items),
         Menu::new("Terminal").items(terminal_menu_items()),
         Menu::new("Pane").items(vec![
@@ -3053,6 +3046,20 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Reset Pane Sizes", ResetPaneSizes),
         ]),
     ]);
+}
+
+fn app_menu_items() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
+        MenuItem::separator(),
+        MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+        MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
+        MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+        MenuItem::action("Open Config Directory", OpenConfigDirectory),
+        MenuItem::action("Open Logs Directory", OpenLogsDirectory),
+        MenuItem::separator(),
+        MenuItem::action("Quit", zed_actions::Quit),
+    ]
 }
 
 fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
@@ -3898,6 +3905,17 @@ mod tests {
     }
 
     #[test]
+    fn terminal_keymap_includes_command_palette_bindings() {
+        let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
+            include_str!("../../../assets/keymaps/zed-terminal.json"),
+        )
+        .expect("terminal keymap asset should parse as json");
+
+        assert_key_binding(&keymap, None, "ctrl-shift-p", "command_palette::Toggle");
+        assert_key_binding(&keymap, None, "f1", "command_palette::Toggle");
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -4174,6 +4192,13 @@ mod tests {
         assert_menu_action(&items, "Zoom In", "zed::IncreaseBufferFontSize");
         assert_menu_action(&items, "Zoom Out", "zed::DecreaseBufferFontSize");
         assert_menu_action(&items, "Reset Zoom", "zed::ResetBufferFontSize");
+    }
+
+    #[test]
+    fn app_menu_exposes_command_palette_action() {
+        let items = app_menu_items();
+
+        assert_menu_action(&items, "Command Palette...", "command_palette::Toggle");
     }
 
     #[test]
