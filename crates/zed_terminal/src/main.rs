@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use assets::Assets;
-use clap::{Parser, ValueEnum, ValueHint};
+use clap::{ArgGroup, Parser, ValueEnum, ValueHint};
 use client::{Client, UserStore};
 use collections::HashMap;
 use fs::RealFs;
@@ -112,6 +112,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
     version,
     about = "Launch the standalone Zed terminal."
 )]
+#[command(group(
+    ArgGroup::new("default_profile_command")
+        .args(["set_default_profile", "clear_default_profile"])
+))]
 struct Cli {
     #[arg(
         long = "user-data-dir",
@@ -286,6 +290,14 @@ struct Cli {
         help = "Set the default startup profile in terminal.json without opening a terminal window"
     )]
     set_default_profile: Option<String>,
+
+    #[arg(
+        long = "default-profile-format",
+        value_enum,
+        requires = "default_profile_command",
+        help = "Set the output format for --set-default-profile and --clear-default-profile"
+    )]
+    default_profile_format: Option<TerminalDefaultProfileUpdateOutputFormat>,
 
     #[arg(
         long = "clear-default-profile",
@@ -682,9 +694,11 @@ enum TerminalCliCommand {
     SetDefaultProfile {
         path_options: TerminalPathOptions,
         profile: String,
+        format: TerminalDefaultProfileUpdateOutputFormat,
     },
     ClearDefaultProfile {
         path_options: TerminalPathOptions,
+        format: TerminalDefaultProfileUpdateOutputFormat,
     },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
@@ -1080,6 +1094,13 @@ enum TerminalListProfilesOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalDefaultProfileUpdateOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupLayoutOutputFormat {
     #[default]
     Text,
@@ -1175,11 +1196,15 @@ impl TerminalCliCommand {
             return Ok(Self::SetDefaultProfile {
                 path_options,
                 profile,
+                format: cli.default_profile_format.unwrap_or_default(),
             });
         }
 
         if cli.clear_default_profile {
-            return Ok(Self::ClearDefaultProfile { path_options });
+            return Ok(Self::ClearDefaultProfile {
+                path_options,
+                format: cli.default_profile_format.unwrap_or_default(),
+            });
         }
 
         if cli.validate_startup_config {
@@ -1231,7 +1256,7 @@ impl TerminalCliCommand {
             Self::PrintPaths { path_options, .. } => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::SetDefaultProfile { path_options, .. } => path_options,
-            Self::ClearDefaultProfile { path_options } => path_options,
+            Self::ClearDefaultProfile { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -2003,14 +2028,16 @@ fn main() {
         TerminalCliCommand::PrintStartupLayout { .. } => {
             unreachable!("startup layout printing is handled before path install")
         }
-        TerminalCliCommand::SetDefaultProfile { profile, .. } => {
-            if let Err(error) = print_default_profile_update(&profile) {
+        TerminalCliCommand::SetDefaultProfile {
+            profile, format, ..
+        } => {
+            if let Err(error) = print_default_profile_update(&profile, format) {
                 eprintln!("failed to set default startup profile: {error:#}");
                 process::exit(2);
             }
         }
-        TerminalCliCommand::ClearDefaultProfile { .. } => {
-            if let Err(error) = print_clear_default_profile_update() {
+        TerminalCliCommand::ClearDefaultProfile { format, .. } => {
+            if let Err(error) = print_clear_default_profile_update(format) {
                 eprintln!("failed to clear default startup profile: {error:#}");
                 process::exit(2);
             }
@@ -2266,15 +2293,34 @@ fn print_config_initialization(format: TerminalConfigInitializationOutputFormat)
     Ok(())
 }
 
-fn print_default_profile_update(profile: &str) -> Result<()> {
+fn print_default_profile_update(
+    profile: &str,
+    format: TerminalDefaultProfileUpdateOutputFormat,
+) -> Result<()> {
     let update = set_default_startup_profile(&active_terminal_startup_config_file(), profile)?;
-    print!("{}", format_default_profile_update(&update));
+    match format {
+        TerminalDefaultProfileUpdateOutputFormat::Text => {
+            print!("{}", format_default_profile_update(&update))
+        }
+        TerminalDefaultProfileUpdateOutputFormat::Json => {
+            print!("{}", format_default_profile_update_json(&update)?)
+        }
+    }
     Ok(())
 }
 
-fn print_clear_default_profile_update() -> Result<()> {
+fn print_clear_default_profile_update(
+    format: TerminalDefaultProfileUpdateOutputFormat,
+) -> Result<()> {
     let update = clear_default_startup_profile(&active_terminal_startup_config_file())?;
-    print!("{}", format_default_profile_update(&update));
+    match format {
+        TerminalDefaultProfileUpdateOutputFormat::Text => {
+            print!("{}", format_default_profile_update(&update))
+        }
+        TerminalDefaultProfileUpdateOutputFormat::Json => {
+            print!("{}", format_default_profile_update_json(&update)?)
+        }
+    }
     Ok(())
 }
 
@@ -3312,6 +3358,20 @@ fn format_default_profile_update(update: &TerminalDefaultProfileUpdate) -> Strin
     writeln!(&mut output, "changed: {}", update.changed)
         .expect("writing to string should not fail");
     output
+}
+
+fn format_default_profile_update_json(update: &TerminalDefaultProfileUpdate) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": update.path.display().to_string(),
+        "status": "ok",
+        "previous_default_profile": update.previous_profile.as_deref(),
+        "default_profile": update.default_profile.as_deref(),
+        "changed": update.changed,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal default profile update as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_doctor_report(report: &TerminalDoctorReport) -> String {
@@ -7432,6 +7492,39 @@ mod tests {
     }
 
     #[test]
+    fn formats_default_profile_update_json() {
+        let output = format_default_profile_update_json(&TerminalDefaultProfileUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: Some("old".into()),
+            default_profile: Some("work".into()),
+            changed: true,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("default profile update json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["previous_default_profile"], "old");
+        assert_eq!(json["default_profile"], "work");
+        assert_eq!(json["changed"], true);
+        assert!(output.ends_with('\n'));
+
+        let clear_output = format_default_profile_update_json(&TerminalDefaultProfileUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: Some("work".into()),
+            default_profile: None,
+            changed: true,
+        })
+        .expect("clear json output should format");
+        let clear_json: serde_json::Value =
+            serde_json::from_str(&clear_output).expect("clear json should parse");
+
+        assert_eq!(clear_json["previous_default_profile"], "work");
+        assert_eq!(clear_json["default_profile"], serde_json::Value::Null);
+    }
+
+    #[test]
     fn formats_doctor_report() {
         let output = format_doctor_report(&sample_doctor_report());
 
@@ -8549,6 +8642,49 @@ mod tests {
     }
 
     #[test]
+    fn set_default_profile_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--set-default-profile",
+            "work",
+            "--default-profile-format",
+            "json",
+        ])
+        .expect("failed to parse set default profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("set default profile json mode should resolve");
+
+        let TerminalCliCommand::SetDefaultProfile {
+            profile, format, ..
+        } = command
+        else {
+            panic!("expected set default profile mode");
+        };
+        assert_eq!(profile, "work");
+        assert_eq!(format, TerminalDefaultProfileUpdateOutputFormat::Json);
+    }
+
+    #[test]
+    fn clear_default_profile_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--clear-default-profile",
+            "--default-profile-format",
+            "json",
+        ])
+        .expect("failed to parse clear default profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("clear default profile json mode should resolve");
+
+        let TerminalCliCommand::ClearDefaultProfile { format, .. } = command else {
+            panic!("expected clear default profile mode");
+        };
+        assert_eq!(format, TerminalDefaultProfileUpdateOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -8590,6 +8726,7 @@ mod tests {
         let TerminalCliCommand::SetDefaultProfile {
             path_options,
             profile,
+            format,
         } = command
         else {
             panic!("expected set default profile mode");
@@ -8598,6 +8735,7 @@ mod tests {
         assert_eq!(path_options.data_dir, data_dir);
         assert_eq!(path_options.config_dir, config_dir);
         assert_eq!(profile, "work");
+        assert_eq!(format, TerminalDefaultProfileUpdateOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -8624,12 +8762,17 @@ mod tests {
             "clear-default-profile mode should not load terminal.json during cli resolution",
         );
 
-        let TerminalCliCommand::ClearDefaultProfile { path_options } = command else {
+        let TerminalCliCommand::ClearDefaultProfile {
+            path_options,
+            format,
+        } = command
+        else {
             panic!("expected clear default profile mode");
         };
 
         assert_eq!(path_options.data_dir, data_dir);
         assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalDefaultProfileUpdateOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -8823,6 +8966,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--paths-format", "json"])
             .expect_err("paths format should require paths mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--default-profile-format", "json"])
+            .expect_err("default profile format should require a default profile command");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
@@ -9263,6 +9410,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--init-config-format", "json"])
             .expect_err("config initialization format should require config initialization");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--default-profile-format", "json"])
+            .expect_err("default profile format should require a default profile command");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
