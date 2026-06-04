@@ -416,6 +416,14 @@ struct Cli {
     init_config: bool,
 
     #[arg(
+        long = "init-config-format",
+        value_enum,
+        requires = "init_config",
+        help = "Set the output format for --init-config"
+    )]
+    init_config_format: Option<TerminalConfigInitializationOutputFormat>,
+
+    #[arg(
         long = "doctor",
         conflicts_with_all = [
             "print_paths",
@@ -695,6 +703,7 @@ enum TerminalCliCommand {
     },
     InitConfig {
         path_options: TerminalPathOptions,
+        format: TerminalConfigInitializationOutputFormat,
     },
     Doctor {
         path_options: TerminalPathOptions,
@@ -1050,6 +1059,13 @@ enum TerminalDoctorPathKind {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalConfigInitializationOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalPathsOutputFormat {
     #[default]
     Text,
@@ -1183,7 +1199,10 @@ impl TerminalCliCommand {
         }
 
         if cli.init_config {
-            return Ok(Self::InitConfig { path_options });
+            return Ok(Self::InitConfig {
+                path_options,
+                format: cli.init_config_format.unwrap_or_default(),
+            });
         }
 
         if cli.doctor {
@@ -1217,7 +1236,7 @@ impl TerminalCliCommand {
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::PrintDefaultKeymap { path_options } => path_options,
-            Self::InitConfig { path_options } => path_options,
+            Self::InitConfig { path_options, .. } => path_options,
             Self::Doctor { path_options, .. } => path_options,
             Self::ValidateKeymap { path_options, .. } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
@@ -2005,8 +2024,8 @@ fn main() {
         TerminalCliCommand::PrintDefaultKeymap { .. } => {
             print_default_keymap();
         }
-        TerminalCliCommand::InitConfig { .. } => {
-            if let Err(error) = print_config_initialization() {
+        TerminalCliCommand::InitConfig { format, .. } => {
+            if let Err(error) = print_config_initialization(format) {
                 eprintln!("failed to initialize terminal config files: {error:#}");
                 process::exit(2);
             }
@@ -2234,9 +2253,16 @@ fn print_default_keymap() {
     print!("{}", default_keymap_content());
 }
 
-fn print_config_initialization() -> Result<()> {
+fn print_config_initialization(format: TerminalConfigInitializationOutputFormat) -> Result<()> {
     let initialization = initialize_terminal_config_files()?;
-    print!("{}", format_config_initialization(&initialization));
+    match format {
+        TerminalConfigInitializationOutputFormat::Text => {
+            print!("{}", format_config_initialization(&initialization))
+        }
+        TerminalConfigInitializationOutputFormat::Json => {
+            print!("{}", format_config_initialization_json(&initialization)?)
+        }
+    }
     Ok(())
 }
 
@@ -3159,6 +3185,40 @@ fn format_config_initialization(initialization: &TerminalConfigInitialization) -
         .expect("writing to string should not fail");
     }
     output
+}
+
+fn format_config_initialization_json(
+    initialization: &TerminalConfigInitialization,
+) -> Result<String> {
+    let created_count = initialization
+        .files
+        .iter()
+        .filter(|file| file.status == TerminalConfigFileInitializationStatus::Created)
+        .count();
+    let existing_count = initialization
+        .files
+        .iter()
+        .filter(|file| file.status == TerminalConfigFileInitializationStatus::Existing)
+        .count();
+    let value = serde_json::json!({
+        "status": "ok",
+        "file_count": initialization.files.len(),
+        "created_count": created_count,
+        "existing_count": existing_count,
+        "files": initialization
+            .files
+            .iter()
+            .map(|file| serde_json::json!({
+                "label": file.label,
+                "path": file.path.display().to_string(),
+                "status": file.status.as_str(),
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal config initialization as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_terminal_paths(report: &TerminalPathReport) -> String {
@@ -7236,7 +7296,7 @@ mod tests {
 
     #[test]
     fn formats_config_initialization() {
-        let output = format_config_initialization(&TerminalConfigInitialization {
+        let initialization = TerminalConfigInitialization {
             files: vec![
                 TerminalConfigFileInitialization {
                     label: "settings_file",
@@ -7249,12 +7309,49 @@ mod tests {
                     status: TerminalConfigFileInitializationStatus::Existing,
                 },
             ],
-        });
+        };
+
+        let output = format_config_initialization(&initialization);
 
         assert_eq!(
             output,
             "status: ok\nsettings_file: created settings.json\nkeymap_file: existing keymap.json\n"
         );
+    }
+
+    #[test]
+    fn formats_config_initialization_json() {
+        let initialization = TerminalConfigInitialization {
+            files: vec![
+                TerminalConfigFileInitialization {
+                    label: "settings_file",
+                    path: PathBuf::from("settings.json"),
+                    status: TerminalConfigFileInitializationStatus::Created,
+                },
+                TerminalConfigFileInitialization {
+                    label: "keymap_file",
+                    path: PathBuf::from("keymap.json"),
+                    status: TerminalConfigFileInitializationStatus::Existing,
+                },
+            ],
+        };
+
+        let output =
+            format_config_initialization_json(&initialization).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("config initialization json should parse");
+
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["file_count"], 2);
+        assert_eq!(json["created_count"], 1);
+        assert_eq!(json["existing_count"], 1);
+        assert_eq!(json["files"][0]["label"], "settings_file");
+        assert_eq!(json["files"][0]["path"], "settings.json");
+        assert_eq!(json["files"][0]["status"], "created");
+        assert_eq!(json["files"][1]["label"], "keymap_file");
+        assert_eq!(json["files"][1]["path"], "keymap.json");
+        assert_eq!(json["files"][1]["status"], "existing");
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
@@ -8280,7 +8377,10 @@ mod tests {
         let command = TerminalCliCommand::from_cli_and_config_file(cli)
             .expect("config initialization should not load terminal.json");
 
-        assert!(matches!(command, TerminalCliCommand::InitConfig { .. }));
+        let TerminalCliCommand::InitConfig { format, .. } = command else {
+            panic!("expected config initialization mode");
+        };
+        assert_eq!(format, TerminalConfigInitializationOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -8351,6 +8451,25 @@ mod tests {
             panic!("expected paths mode");
         };
         assert_eq!(format, TerminalPathsOutputFormat::Json);
+    }
+
+    #[test]
+    fn init_config_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--init-config",
+            "--init-config-format",
+            "json",
+        ])
+        .expect("failed to parse config initialization json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("config initialization json mode should resolve");
+
+        let TerminalCliCommand::InitConfig { format, .. } = command else {
+            panic!("expected config initialization mode");
+        };
+        assert_eq!(format, TerminalConfigInitializationOutputFormat::Json);
     }
 
     #[test]
@@ -9140,6 +9259,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap-format", "json"])
             .expect_err("keymap validation format should require keymap validation");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--init-config-format", "json"])
+            .expect_err("config initialization format should require config initialization");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
