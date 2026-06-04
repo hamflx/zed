@@ -64,6 +64,83 @@ pub fn update_value_in_json_text<'a>(
     }
 }
 
+pub fn replace_key_in_json_text<T: AsRef<str>>(
+    text: &str,
+    key_path: &[T],
+    new_key: &str,
+) -> Option<(Range<usize>, String)> {
+    static PAIR_QUERY: LazyLock<Query> = LazyLock::new(|| {
+        Query::new(
+            &tree_sitter_json::LANGUAGE.into(),
+            "(pair key: (string) @key value: (_) @value)",
+        )
+        .expect("Failed to create PAIR_QUERY")
+    });
+
+    if key_path.is_empty() {
+        return None;
+    }
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_json::LANGUAGE.into())
+        .unwrap();
+    let syntax_tree = parser.parse(text, None).unwrap();
+    let mut cursor = tree_sitter::QueryCursor::new();
+
+    let mut depth = 0;
+    let mut last_value_range = 0..0;
+    let mut existing_value_range = 0..text.len();
+    let mut matched_key_range = None;
+
+    let mut matches = cursor.matches(&PAIR_QUERY, syntax_tree.root_node(), text.as_bytes());
+    while let Some(mat) = matches.next() {
+        if mat.captures.len() != 2 {
+            continue;
+        }
+
+        let key_range = mat.captures[0].node.byte_range();
+        let value_range = mat.captures[1].node.byte_range();
+
+        if last_value_range.contains_inclusive(&value_range) {
+            continue;
+        }
+
+        last_value_range = value_range.clone();
+
+        if key_range.start > existing_value_range.end {
+            break;
+        }
+
+        let found_key = text
+            .get(key_range.clone())
+            .zip(key_path.get(depth))
+            .and_then(|(key_text, key_path_value)| {
+                serde_json::to_string(key_path_value.as_ref())
+                    .ok()
+                    .map(|key_path| depth < key_path.len() && key_text == key_path)
+            })
+            .unwrap_or(false);
+
+        if found_key {
+            matched_key_range = Some(key_range);
+            existing_value_range = value_range;
+            last_value_range = existing_value_range.start..existing_value_range.start;
+            depth += 1;
+
+            if depth == key_path.len() {
+                break;
+            }
+        }
+    }
+
+    if depth == key_path.len() {
+        Some((matched_key_range?, serde_json::to_string(new_key).ok()?))
+    } else {
+        None
+    }
+}
+
 /// * `replace_key` - When an exact key match according to `key_path` is found, replace the key with `replace_key` if `Some`.
 pub fn replace_value_in_json_text<T: AsRef<str>>(
     text: &str,
@@ -1219,6 +1296,57 @@ mod tests {
             }"#
             .unindent(),
         );
+    }
+
+    #[test]
+    fn object_key_replace_preserves_value_text() {
+        let input = r#"{
+            "profiles": {
+                // keep profile comment
+                "old": {
+                    // keep inner comment
+                    "display_name": "Old"
+                },
+                "work": {
+                    "display_name": "Work"
+                }
+            }
+        }"#
+        .unindent();
+
+        let (range, replacement) = replace_key_in_json_text(&input, &["profiles", "old"], "new")
+            .expect("profile key should be found");
+        let mut result = input.clone();
+        result.replace_range(range, &replacement);
+
+        pretty_assertions::assert_eq!(
+            r#"{
+                "profiles": {
+                    // keep profile comment
+                    "new": {
+                        // keep inner comment
+                        "display_name": "Old"
+                    },
+                    "work": {
+                        "display_name": "Work"
+                    }
+                }
+            }"#
+            .unindent(),
+            result
+        );
+    }
+
+    #[test]
+    fn object_key_replace_returns_none_for_missing_path() {
+        let input = r#"{
+            "profiles": {
+                "work": {}
+            }
+        }"#
+        .unindent();
+
+        assert!(replace_key_in_json_text(&input, &["profiles", "old"], "new").is_none());
     }
 
     #[test]

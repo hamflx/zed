@@ -139,6 +139,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -164,6 +165,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -197,6 +199,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -224,6 +227,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -243,6 +247,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -272,6 +277,7 @@ struct Cli {
             "print_startup_layout",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -314,6 +320,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -383,6 +390,51 @@ struct Cli {
     remove_profile_format: Option<TerminalStartupProfileRemovalOutputFormat>,
 
     #[arg(
+        long = "rename-profile",
+        value_names = ["OLD_NAME", "NEW_NAME"],
+        num_args = 2,
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "remove_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Rename a startup profile in terminal.json and update profile references without opening a terminal window"
+    )]
+    rename_profile: Vec<String>,
+
+    #[arg(
+        long = "rename-profile-format",
+        value_enum,
+        requires = "rename_profile",
+        help = "Set the output format for --rename-profile"
+    )]
+    rename_profile_format: Option<TerminalStartupProfileRenameOutputFormat>,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "print_paths",
@@ -391,6 +443,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_keymap",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -429,6 +482,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_default_keymap",
@@ -459,6 +513,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -498,6 +553,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -537,6 +593,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -576,6 +633,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -647,6 +705,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -668,6 +727,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -690,6 +750,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "remove_profile",
+            "rename_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -763,6 +824,12 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         profile: String,
         format: TerminalStartupProfileRemovalOutputFormat,
+    },
+    RenameProfile {
+        path_options: TerminalPathOptions,
+        old_profile: String,
+        new_profile: String,
+        format: TerminalStartupProfileRenameOutputFormat,
     },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
@@ -1042,6 +1109,15 @@ struct TerminalStartupProfileRemoval {
     remaining_profile_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileRename {
+    path: PathBuf,
+    previous_profile: String,
+    profile: String,
+    changed: bool,
+    updated_reference_count: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TerminalStartupConfigValidation {
     layout_count: usize,
@@ -1180,6 +1256,13 @@ enum TerminalStartupProfileRemovalOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileRenameOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupLayoutOutputFormat {
     #[default]
     Text,
@@ -1217,6 +1300,7 @@ impl TerminalCliCommand {
             || cli.set_default_profile.is_some()
             || cli.clear_default_profile
             || cli.remove_profile.is_some()
+            || !cli.rename_profile.is_empty()
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.print_default_keymap
@@ -1295,6 +1379,22 @@ impl TerminalCliCommand {
             });
         }
 
+        if !cli.rename_profile.is_empty() {
+            let [old_profile, new_profile]: [String; 2] =
+                cli.rename_profile.try_into().map_err(|profiles: Vec<_>| {
+                    anyhow::anyhow!(
+                        "--rename-profile requires exactly 2 values, got {}",
+                        profiles.len()
+                    )
+                })?;
+            return Ok(Self::RenameProfile {
+                path_options,
+                old_profile,
+                new_profile,
+                format: cli.rename_profile_format.unwrap_or_default(),
+            });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -1346,6 +1446,7 @@ impl TerminalCliCommand {
             Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ClearDefaultProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
+            Self::RenameProfile { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -2139,6 +2240,17 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::RenameProfile {
+            old_profile,
+            new_profile,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_rename(&old_profile, &new_profile, format) {
+                eprintln!("failed to rename startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::PrintStartupConfigSchema { .. } => {
             if let Err(error) = print_startup_config_schema() {
                 eprintln!("failed to print terminal startup config schema: {error:#}");
@@ -2437,6 +2549,27 @@ fn print_startup_profile_removal(
     Ok(())
 }
 
+fn print_startup_profile_rename(
+    old_profile: &str,
+    new_profile: &str,
+    format: TerminalStartupProfileRenameOutputFormat,
+) -> Result<()> {
+    let rename = rename_startup_profile(
+        &active_terminal_startup_config_file(),
+        old_profile,
+        new_profile,
+    )?;
+    match format {
+        TerminalStartupProfileRenameOutputFormat::Text => {
+            print!("{}", format_startup_profile_rename(&rename))
+        }
+        TerminalStartupProfileRenameOutputFormat::Json => {
+            print!("{}", format_startup_profile_rename_json(&rename)?)
+        }
+    }
+    Ok(())
+}
+
 fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
     initialize_terminal_config_files_at(active_terminal_config_file_paths())
 }
@@ -2650,6 +2783,189 @@ fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupP
         changed: true,
         remaining_profile_count: startup_config.profiles.len(),
     })
+}
+
+fn rename_startup_profile(
+    path: &Path,
+    old_profile: &str,
+    new_profile: &str,
+) -> Result<TerminalStartupProfileRename> {
+    let old_profile = normalize_startup_profile_name(old_profile)?;
+    let new_profile = normalize_startup_profile_name(new_profile)?;
+    let mut text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+
+    if old_profile == new_profile {
+        startup_config.validate_profile_reference("startup profile", &old_profile)?;
+        return Ok(TerminalStartupProfileRename {
+            path: path.to_path_buf(),
+            previous_profile: old_profile,
+            profile: new_profile,
+            changed: false,
+            updated_reference_count: 0,
+        });
+    }
+
+    let mut updated_config = startup_config.clone();
+    let profile = updated_config
+        .profiles
+        .remove(&old_profile)
+        .with_context(|| {
+            if updated_config.profiles.is_empty() {
+                format!("startup profile not found: {old_profile}")
+            } else {
+                format!(
+                    "startup profile not found: {old_profile}. Available profiles: {}",
+                    updated_config.profile_names().join(", ")
+                )
+            }
+        })?;
+    if updated_config.profiles.contains_key(&new_profile) {
+        bail!("startup profile already exists: {new_profile}");
+    }
+    updated_config.profiles.insert(new_profile.clone(), profile);
+    let updated_reference_count =
+        rename_startup_profile_references(&mut updated_config, &old_profile, &new_profile);
+
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to rename startup profile {old_profile:?} to {new_profile:?} because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let (range, replacement) = settings_json::replace_key_in_json_text(
+        &text,
+        &["profiles", old_profile.as_str()],
+        &new_profile,
+    )
+    .with_context(|| {
+        format!(
+            "failed to find startup profile {old_profile:?} in {}",
+            path.display()
+        )
+    })?;
+    text.replace_range(range, &replacement);
+
+    let new_profile_value = serde_json::Value::String(new_profile.clone());
+    if startup_config.default_profile.as_deref() == Some(old_profile.as_str()) {
+        let (range, replacement) = settings_json::replace_value_in_json_text(
+            &text,
+            &["default_profile"],
+            settings_json::infer_json_indent_size(&text),
+            Some(&new_profile_value),
+            None,
+        );
+        text.replace_range(range, &replacement);
+    }
+
+    for path in startup_profile_reference_paths(&startup_config, &old_profile, &new_profile) {
+        let (range, replacement) = settings_json::replace_value_in_json_text(
+            &text,
+            &path,
+            settings_json::infer_json_indent_size(&text),
+            Some(&new_profile_value),
+            None,
+        );
+        text.replace_range(range, &replacement);
+    }
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because profile rename produced unexpected content",
+            path.display()
+        );
+    }
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupProfileRename {
+        path: path.to_path_buf(),
+        previous_profile: old_profile,
+        profile: new_profile,
+        changed: true,
+        updated_reference_count,
+    })
+}
+
+fn rename_startup_profile_references(
+    config: &mut TerminalStartupConfig,
+    old_profile: &str,
+    new_profile: &str,
+) -> usize {
+    let mut count = 0;
+    if config.default_profile.as_deref() == Some(old_profile) {
+        config.default_profile = Some(new_profile.into());
+        count += 1;
+    }
+    count += rename_startup_tab_profile_references(&mut config.tabs, old_profile, new_profile);
+    for profile in config.profiles.values_mut() {
+        count += rename_startup_tab_profile_references(&mut profile.tabs, old_profile, new_profile);
+    }
+    count
+}
+
+fn rename_startup_tab_profile_references(
+    tabs: &mut [TerminalStartupTabConfig],
+    old_profile: &str,
+    new_profile: &str,
+) -> usize {
+    let mut count = 0;
+    for tab in tabs {
+        if tab.profile.as_deref() == Some(old_profile) {
+            tab.profile = Some(new_profile.into());
+            count += 1;
+        }
+    }
+    count
+}
+
+fn startup_profile_reference_paths(
+    config: &TerminalStartupConfig,
+    old_profile: &str,
+    new_profile: &str,
+) -> Vec<Vec<String>> {
+    let mut paths = Vec::new();
+    for (index, tab) in config.tabs.iter().enumerate() {
+        if tab.profile.as_deref() == Some(old_profile) {
+            paths.push(vec!["tabs".into(), format!("#{index}"), "profile".into()]);
+        }
+    }
+    for (profile_name, profile) in &config.profiles {
+        let profile_key = if profile_name == old_profile {
+            new_profile
+        } else {
+            profile_name.as_str()
+        };
+        for (index, tab) in profile.tabs.iter().enumerate() {
+            if tab.profile.as_deref() == Some(old_profile) {
+                paths.push(vec![
+                    "profiles".into(),
+                    profile_key.into(),
+                    "tabs".into(),
+                    format!("#{index}"),
+                    "profile".into(),
+                ]);
+            }
+        }
+    }
+    paths
 }
 
 fn update_default_startup_profile(
@@ -3591,6 +3907,45 @@ fn format_startup_profile_removal_json(removal: &TerminalStartupProfileRemoval) 
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile removal as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_rename(rename: &TerminalStartupProfileRename) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        rename.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "previous_profile: {}", rename.previous_profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", rename.profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", rename.changed)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "updated_references: {}",
+        rename.updated_reference_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_profile_rename_json(rename: &TerminalStartupProfileRename) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": rename.path.display().to_string(),
+        "status": "ok",
+        "previous_profile": rename.previous_profile.as_str(),
+        "profile": rename.profile.as_str(),
+        "changed": rename.changed,
+        "updated_reference_count": rename.updated_reference_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile rename as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -7781,6 +8136,44 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_profile_rename() {
+        let output = format_startup_profile_rename(&TerminalStartupProfileRename {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: "old".into(),
+            profile: "new".into(),
+            changed: true,
+            updated_reference_count: 3,
+        });
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nprevious_profile: old\nprofile: new\nchanged: true\nupdated_references: 3\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_rename_json() {
+        let output = format_startup_profile_rename_json(&TerminalStartupProfileRename {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: "old".into(),
+            profile: "new".into(),
+            changed: false,
+            updated_reference_count: 0,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile rename json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["previous_profile"], "old");
+        assert_eq!(json["profile"], "new");
+        assert_eq!(json["changed"], false);
+        assert_eq!(json["updated_reference_count"], 0);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_doctor_report() {
         let output = format_doctor_report(&sample_doctor_report());
 
@@ -8681,6 +9074,218 @@ mod tests {
     }
 
     #[test]
+    fn rename_startup_profile_updates_jsonc_key_and_references() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  "default_profile": "old",
+  "tabs": [
+    { "title": "Root Old", "profile": "old" },
+    { "title": "Root Work", "profile": "work" }
+  ],
+  // keep profile map comment
+  "profiles": {
+    // keep old profile comment
+    "old": {
+      // keep inner comment
+      "display_name": "Old",
+      "tabs": [
+        { "title": "Nested Self", "profile": "old" }
+      ]
+    },
+    // keep work profile comment
+    "work": {
+      "display_name": "Work",
+      "tabs": [
+        { "title": "Nested Old", "profile": "old" }
+      ]
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let rename = rename_startup_profile(&startup_config_file, " old ", " new ")
+            .expect("startup profile should be renamed");
+
+        assert_eq!(rename.path, startup_config_file);
+        assert_eq!(rename.previous_profile, "old");
+        assert_eq!(rename.profile, "new");
+        assert!(rename.changed);
+        assert_eq!(rename.updated_reference_count, 4);
+
+        let content =
+            std_fs::read_to_string(&rename.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profile map comment"));
+        assert!(content.contains("// keep old profile comment"));
+        assert!(content.contains("// keep inner comment"));
+        assert!(content.contains("// keep work profile comment"));
+        assert!(content.contains(r#""default_profile": "new""#));
+        assert!(content.contains(r#""new": {"#));
+        assert!(!content.contains(r#""profile": "old""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(updated_config.default_profile.as_deref(), Some("new"));
+        assert!(updated_config.profiles.contains_key("new"));
+        assert!(!updated_config.profiles.contains_key("old"));
+        assert_eq!(
+            updated_config.profiles["new"].display_name.as_deref(),
+            Some("Old")
+        );
+        assert_eq!(updated_config.tabs[0].profile.as_deref(), Some("new"));
+        assert_eq!(updated_config.tabs[1].profile.as_deref(), Some("work"));
+        assert_eq!(
+            updated_config.profiles["new"].tabs[0].profile.as_deref(),
+            Some("new")
+        );
+        assert_eq!(
+            updated_config.profiles["work"].tabs[0].profile.as_deref(),
+            Some("new")
+        );
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rename_startup_profile_reports_unchanged_for_same_profile() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "old": {
+      "display_name": "Old"
+    }
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let rename = rename_startup_profile(&startup_config_file, " old ", "old")
+            .expect("same existing startup profile rename should be unchanged");
+
+        assert_eq!(rename.path, startup_config_file);
+        assert_eq!(rename.previous_profile, "old");
+        assert_eq!(rename.profile, "old");
+        assert!(!rename.changed);
+        assert_eq!(rename.updated_reference_count, 0);
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after no-op rename"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rename_startup_profile_rejects_missing_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = rename_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("missing source profile should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("startup profile not found: old"));
+        assert!(message.contains("Available profiles: work"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected rename"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rename_startup_profile_rejects_existing_target_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "old": {},
+    "new": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = rename_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("existing target profile should be rejected");
+
+        assert!(format!("{error:#}").contains("startup profile already exists: new"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected rename"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rename_startup_profile_rejects_blank_profiles_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{ "profiles": { "old": {} } }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = rename_startup_profile(&startup_config_file, "  ", "new")
+            .expect_err("blank source profile should be rejected");
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected rename"),
+            original
+        );
+
+        let error = rename_startup_profile(&startup_config_file, "old", "  ")
+            .expect_err("blank target profile should be rejected");
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected rename"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rename_startup_profile_rejects_missing_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let error = rename_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("missing startup config should be rejected when renaming a profile");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to read terminal startup config"));
+        assert!(
+            !startup_config_file.exists(),
+            "renaming in a missing startup config should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let report = TerminalKeymapValidationReport {
             keymap_file: PathBuf::from("keymap.json"),
@@ -9155,6 +9760,35 @@ mod tests {
     }
 
     #[test]
+    fn rename_profile_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "new",
+            "--rename-profile-format",
+            "json",
+        ])
+        .expect("failed to parse rename profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("rename profile json mode should resolve");
+
+        let TerminalCliCommand::RenameProfile {
+            old_profile,
+            new_profile,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected rename profile mode");
+        };
+        assert_eq!(old_profile, "old");
+        assert_eq!(new_profile, "new");
+        assert_eq!(format, TerminalStartupProfileRenameOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -9282,6 +9916,48 @@ mod tests {
         assert_eq!(path_options.config_dir, config_dir);
         assert_eq!(profile, "work");
         assert_eq!(format, TerminalStartupProfileRemovalOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn rename_profile_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--rename-profile",
+            "old",
+            "new",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("rename-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::RenameProfile {
+            path_options,
+            old_profile,
+            new_profile,
+            format,
+        } = command
+        else {
+            panic!("expected rename profile mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(old_profile, "old");
+        assert_eq!(new_profile, "new");
+        assert_eq!(format, TerminalStartupProfileRenameOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -9422,6 +10098,74 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--remove-profile-format", "json"])
             .expect_err("remove profile format should require remove profile mode");
+        assert!(error.to_string().contains("required"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn rename_profile_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "new",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "new",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "new",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--rename-profile", "old", "new", "--paths"])
+                .expect_err("path inspection should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "new",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--rename-profile-format", "json"])
+            .expect_err("rename profile format should require rename profile mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--rename-profile",
+            "old",
+            "--rename-profile-format",
+            "json",
+        ])
+        .expect_err("rename profile mode should require old and new profile names");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
@@ -9780,14 +10524,18 @@ mod tests {
             "--set-default-profile",
             "--clear-default-profile",
             "--remove-profile",
+            "--rename-profile",
         ] {
             let mode_args = match mode {
                 "--set-default-profile" | "--remove-profile" => vec!["zed-terminal", mode, "work"],
+                "--rename-profile" => vec!["zed-terminal", mode, "old", "new"],
                 _ => vec!["zed-terminal", mode],
             };
 
             let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec!["zed-terminal", mode, "work", "--title", "Production"]
+            } else if mode == "--rename-profile" {
+                vec!["zed-terminal", mode, "old", "new", "--title", "Production"]
             } else {
                 let mut args = mode_args.clone();
                 args.extend(["--title", "Production"]);
@@ -9797,6 +10545,15 @@ mod tests {
 
             let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec!["zed-terminal", mode, "work", "--new-tab-title", "Logs"]
+            } else if mode == "--rename-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "old",
+                    "new",
+                    "--new-tab-title",
+                    "Logs",
+                ]
             } else {
                 let mut args = mode_args.clone();
                 args.extend(["--new-tab-title", "Logs"]);
@@ -9812,6 +10569,15 @@ mod tests {
                     "zed-terminal",
                     mode,
                     "work",
+                    "--new-tab-profile-title",
+                    "Work",
+                ]
+            } else if mode == "--rename-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "old",
+                    "new",
                     "--new-tab-profile-title",
                     "Work",
                 ]
@@ -9833,6 +10599,15 @@ mod tests {
                     "--new-tab-profile-split",
                     "right",
                 ]
+            } else if mode == "--rename-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "old",
+                    "new",
+                    "--new-tab-profile-split",
+                    "right",
+                ]
             } else {
                 let mut args = mode_args.clone();
                 args.extend(["--new-tab-profile-split", "right"]);
@@ -9848,6 +10623,15 @@ mod tests {
                     "zed-terminal",
                     mode,
                     "work",
+                    "--new-tab-command-title",
+                    "Build",
+                ]
+            } else if mode == "--rename-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "old",
+                    "new",
                     "--new-tab-command-title",
                     "Build",
                 ]
