@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use assets::Assets;
-use clap::{Parser, ValueHint};
+use clap::{Parser, ValueEnum, ValueHint};
 use client::{Client, UserStore};
 use collections::HashMap;
 use fs::RealFs;
@@ -450,6 +450,64 @@ struct Cli {
     new_tab_titles: Vec<String>,
 
     #[arg(
+        long = "new-tab-profile",
+        visible_alias = "tab-profile",
+        value_name = "NAME",
+        conflicts_with_all = [
+            "list_profiles",
+            "set_default_profile",
+            "clear_default_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor",
+            "no_startup_config"
+        ],
+        help = "Open an additional startup tab from a terminal.json profile by name"
+    )]
+    new_tab_profiles: Vec<String>,
+
+    #[arg(
+        long = "new-tab-profile-title",
+        visible_alias = "tab-profile-title",
+        value_name = "TITLE",
+        conflicts_with_all = [
+            "list_profiles",
+            "set_default_profile",
+            "clear_default_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor",
+            "no_startup_config"
+        ],
+        help = "Set the title for a --new-tab-profile by order"
+    )]
+    new_tab_profile_titles: Vec<String>,
+
+    #[arg(
+        long = "new-tab-profile-split",
+        visible_alias = "tab-profile-split",
+        value_name = "DIRECTION",
+        value_enum,
+        conflicts_with_all = [
+            "list_profiles",
+            "set_default_profile",
+            "clear_default_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor",
+            "no_startup_config"
+        ],
+        help = "Set the split direction for a --new-tab-profile by order"
+    )]
+    new_tab_profile_splits: Vec<TerminalStartupSplitDirection>,
+
+    #[arg(
         long = "new-tab-command",
         visible_alias = "tab-command",
         value_name = "COMMAND",
@@ -602,6 +660,8 @@ struct TerminalStartupProfileConfig {
 #[serde(deny_unknown_fields)]
 struct TerminalStartupTabConfig {
     #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
     working_directory: Option<PathBuf>,
     #[serde(default)]
     command: Option<String>,
@@ -630,7 +690,7 @@ struct TerminalStartupShellWithArgumentsConfig {
     args: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, PartialEq, Eq, ValueEnum)]
 #[serde(rename_all = "snake_case")]
 enum TerminalStartupSplitDirection {
     Up,
@@ -945,11 +1005,15 @@ impl LaunchOptions {
         additional_tabs.extend(LaunchTab::additional_from_cli(
             &cli.new_tabs,
             &cli.new_tab_titles,
+            &cli.new_tab_profiles,
+            &cli.new_tab_profile_titles,
+            &cli.new_tab_profile_splits,
             &cli.new_tab_commands,
             &cli.new_tab_command_directories,
             &cli.new_tab_command_titles,
             &inherited_env,
             inherited_shell.as_ref(),
+            &startup_config,
         )?);
 
         Ok(Self {
@@ -1001,16 +1065,26 @@ impl LaunchTab {
     fn additional_from_cli(
         directories: &[PathBuf],
         directory_titles: &[String],
+        profiles: &[String],
+        profile_titles: &[String],
+        profile_splits: &[TerminalStartupSplitDirection],
         commands: &[String],
         command_directories: &[PathBuf],
         command_titles: &[String],
         inherited_env: &HashMap<String, String>,
         inherited_shell: Option<&Shell>,
+        startup_config: &TerminalStartupConfig,
     ) -> Result<Vec<Self>> {
-        let mut tabs = Vec::with_capacity(directories.len() + commands.len());
+        let mut tabs = Vec::with_capacity(directories.len() + profiles.len() + commands.len());
 
         if directory_titles.len() > directories.len() {
             bail!("startup tab title requires a matching --new-tab");
+        }
+        if profile_titles.len() > profiles.len() {
+            bail!("startup profile tab title requires a matching --new-tab-profile");
+        }
+        if profile_splits.len() > profiles.len() {
+            bail!("startup profile tab split requires a matching --new-tab-profile");
         }
         if command_directories.len() > commands.len() {
             bail!("startup command tab directory requires a matching --new-tab-command");
@@ -1032,6 +1106,18 @@ impl LaunchTab {
                 shell: inherited_shell.cloned(),
                 split: None,
             });
+        }
+
+        for (profile_index, profile) in profiles.iter().enumerate() {
+            let tab_number = tabs.len() + 2;
+            let mut tab = startup_config
+                .profile_launch_tab(profile, profile_splits.get(profile_index).copied())
+                .with_context(|| format!("failed to resolve startup profile tab {tab_number}"))?;
+            if profile_titles.get(profile_index).is_some() {
+                tab.title =
+                    normalize_terminal_title(profile_titles.get(profile_index).map(String::as_str));
+            }
+            tabs.push(tab);
         }
 
         for (command_index, command) in commands.iter().enumerate() {
@@ -1234,7 +1320,7 @@ impl TerminalStartupConfig {
             self.validate_profile_reference("default_profile", default_profile)?;
         }
 
-        let mut validation = Self::validate_layout(&TerminalStartupLayout {
+        let mut validation = self.validate_layout(&TerminalStartupLayout {
             working_directory: self.working_directory.as_deref(),
             command: self.command.as_deref(),
             title: self.title.as_deref(),
@@ -1249,16 +1335,17 @@ impl TerminalStartupConfig {
                 bail!("startup profile name is empty");
             }
 
-            let profile_validation = Self::validate_layout(&TerminalStartupLayout {
-                working_directory: profile.working_directory.as_deref(),
-                command: profile.command.as_deref(),
-                title: profile.title.as_deref(),
-                shell: profile.shell.as_ref(),
-                env: &profile.env,
-                tabs: &profile.tabs,
-                label: format!("startup profile {name:?}"),
-            })
-            .with_context(|| format!("failed to validate startup profile {name:?}"))?;
+            let profile_validation = self
+                .validate_layout(&TerminalStartupLayout {
+                    working_directory: profile.working_directory.as_deref(),
+                    command: profile.command.as_deref(),
+                    title: profile.title.as_deref(),
+                    shell: profile.shell.as_ref(),
+                    env: &profile.env,
+                    tabs: &profile.tabs,
+                    label: format!("startup profile {name:?}"),
+                })
+                .with_context(|| format!("failed to validate startup profile {name:?}"))?;
 
             validation.layout_count += profile_validation.layout_count;
             validation.tab_count += profile_validation.tab_count;
@@ -1287,6 +1374,7 @@ impl TerminalStartupConfig {
     }
 
     fn validate_layout(
+        &self,
         layout: &TerminalStartupLayout<'_>,
     ) -> Result<TerminalStartupConfigValidation> {
         let shell = layout
@@ -1308,15 +1396,10 @@ impl TerminalStartupConfig {
         )?;
 
         for (index, tab) in layout.tabs.iter().enumerate() {
-            LaunchTab::from_config(
-                tab.working_directory.as_deref(),
-                tab.command.as_deref(),
+            self.tab_from_config(
+                tab,
                 layout.env,
-                &tab.env,
-                tab.title.as_deref(),
                 shell.as_ref(),
-                tab.shell.as_ref(),
-                tab.split,
                 format!("tab {} for {}", index + 2, layout.label),
             )?;
         }
@@ -1410,19 +1493,63 @@ impl TerminalStartupConfig {
             .iter()
             .enumerate()
             .map(|(index, tab)| {
-                LaunchTab::from_config(
-                    tab.working_directory.as_deref(),
-                    tab.command.as_deref(),
+                self.tab_from_config(
+                    tab,
                     layout.env,
-                    &tab.env,
-                    tab.title.as_deref(),
                     shell.as_ref(),
-                    tab.shell.as_ref(),
-                    tab.split,
                     format!("tab {} for {}", index + 2, layout.label),
                 )
             })
             .collect()
+    }
+
+    fn tab_from_config(
+        &self,
+        tab: &TerminalStartupTabConfig,
+        inherited_env: &HashMap<String, String>,
+        inherited_shell: Option<&Shell>,
+        label: impl std::fmt::Display,
+    ) -> Result<LaunchTab> {
+        let label = label.to_string();
+        if let Some(profile) = tab.profile.as_deref() {
+            Self::validate_profile_tab_fields(tab, &label)?;
+            let mut launch_tab = self
+                .profile_launch_tab(profile, tab.split)
+                .with_context(|| format!("failed to resolve profile for {label}"))?;
+            if tab.title.is_some() {
+                launch_tab.title = normalize_terminal_title(tab.title.as_deref());
+            }
+            Ok(launch_tab)
+        } else {
+            LaunchTab::from_config(
+                tab.working_directory.as_deref(),
+                tab.command.as_deref(),
+                inherited_env,
+                &tab.env,
+                tab.title.as_deref(),
+                inherited_shell,
+                tab.shell.as_ref(),
+                tab.split,
+                label,
+            )
+        }
+    }
+
+    fn validate_profile_tab_fields(tab: &TerminalStartupTabConfig, label: &str) -> Result<()> {
+        if tab.working_directory.is_some() {
+            bail!("profile startup tab cannot include working_directory for {label}");
+        }
+        if tab.command.is_some() {
+            bail!("profile startup tab cannot include command for {label}");
+        }
+        if tab.shell.is_some() {
+            bail!("profile startup tab cannot include shell for {label}");
+        }
+        if !tab.env.is_empty() {
+            bail!("profile startup tab cannot include env for {label}");
+        }
+
+        Ok(())
     }
 
     fn profile_summaries(&self, include_hidden: bool) -> Vec<TerminalStartupProfileSummary> {
@@ -3917,6 +4044,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
 // Command strings use the same shell-like quoting rules as --new-tab-command.
 // Environment variables apply to command-backed startup tabs only.
 // tabs[].split may be "right", "down", "left", or "up" to open that tab as a startup split pane.
+// tabs[].profile may reference a named profile and may be combined with title and split only.
 // Profiles may include display_name, description, icon, color, and hidden metadata.
 {
   "working_directory": null,
@@ -4993,6 +5121,163 @@ mod tests {
     }
 
     #[test]
+    fn parses_startup_profile_tabs_from_config() {
+        let profile_dir = temp_test_dir();
+        let profile_extra_dir = temp_test_dir();
+        let config: TerminalStartupConfig = settings::parse_json_with_comments(&format!(
+            r#"{{
+                "tabs": [
+                    {{ "profile": "work", "title": "Profile Tab", "split": "right" }}
+                ],
+                "profiles": {{
+                    "work": {{
+                        "working_directory": "{}",
+                        "command": "cmd /C work",
+                        "title": "Work",
+                        "env": {{ "ZED_TERMINAL_PROFILE": "work" }},
+                        "tabs": [
+                            {{ "working_directory": "{}", "title": "Logs" }}
+                        ]
+                    }}
+                }}
+            }}"#,
+            profile_dir.display().to_string().replace('\\', "\\\\"),
+            profile_extra_dir
+                .display()
+                .to_string()
+                .replace('\\', "\\\\"),
+        ))
+        .expect("startup profile tab config should parse");
+
+        assert_eq!(config.tabs[0].profile.as_deref(), Some("work"));
+        assert_eq!(
+            config.tabs[0].split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+        assert_eq!(
+            config
+                .validate()
+                .expect("startup config should validate profile tabs"),
+            TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            }
+        );
+
+        let cli = Cli::try_parse_from(["zed-terminal"]).expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 1);
+        let tab = &options.additional_tabs[0];
+        assert_tab_working_directory(tab, &profile_dir);
+        assert_ne!(
+            tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&profile_extra_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "work".into()],
+            })
+        );
+        assert_eq!(tab.env, test_env(&[("ZED_TERMINAL_PROFILE", "work")]));
+        assert_eq!(tab.title.as_deref(), Some("Profile Tab"));
+        assert_eq!(tab.split, Some(TerminalStartupSplitDirection::Right));
+
+        let output = format_startup_layout(&options, Path::new("terminal.json"));
+        assert!(output.contains("- tab 2"));
+        assert!(output.contains("  placement: split right"));
+        assert!(output.contains("  title: Profile Tab"));
+        assert!(output.contains("  command: cmd /C work"));
+
+        std_fs::remove_dir_all(profile_dir).ok();
+        std_fs::remove_dir_all(profile_extra_dir).ok();
+    }
+
+    #[test]
+    fn rejects_mixed_profile_startup_tab_fields() {
+        let tab_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert("work".into(), TerminalStartupProfileConfig::default());
+
+        for (tab, expected_field) in [
+            (
+                TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    working_directory: Some(tab_dir.clone()),
+                    ..TerminalStartupTabConfig::default()
+                },
+                "working_directory",
+            ),
+            (
+                TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    command: Some("cmd /C mixed".into()),
+                    ..TerminalStartupTabConfig::default()
+                },
+                "command",
+            ),
+            (
+                TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+                    ..TerminalStartupTabConfig::default()
+                },
+                "shell",
+            ),
+            (
+                TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    env: test_env(&[("MIXED", "1")]),
+                    ..TerminalStartupTabConfig::default()
+                },
+                "env",
+            ),
+        ] {
+            let config = TerminalStartupConfig {
+                tabs: vec![tab],
+                profiles: profiles.clone(),
+                ..TerminalStartupConfig::default()
+            };
+
+            let error = config
+                .validate()
+                .expect_err("mixed profile startup tab fields should be rejected");
+            let message = format!("{error:#}");
+            assert!(message.contains("profile startup tab cannot include"));
+            assert!(message.contains(expected_field));
+            assert!(message.contains("tab 2 for root startup layout"));
+        }
+
+        std_fs::remove_dir_all(tab_dir).ok();
+    }
+
+    #[test]
+    fn rejects_missing_startup_profile_tab_reference() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert("work".into(), TerminalStartupProfileConfig::default());
+        let config = TerminalStartupConfig {
+            tabs: vec![TerminalStartupTabConfig {
+                profile: Some("missing".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let error = config
+            .validate()
+            .expect_err("missing profile tab reference should fail validation");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to resolve profile for tab 2 for root startup layout"));
+        assert!(message.contains("startup profile not found: missing"));
+        assert!(message.contains("Available profiles: work"));
+    }
+
+    #[test]
     fn parses_new_terminal_tab_with_profile_action_input() {
         let action = <NewTerminalTabWithProfile as Action>::build(
             gpui::private::serde_json::json!({ "profile": "work" }),
@@ -5492,6 +5777,10 @@ mod tests {
             .and_then(|tab_config| tab_config.get("properties"))
             .and_then(gpui::private::serde_json::Value::as_object)
             .expect("schema should contain tab item properties");
+        assert!(
+            tab_properties.contains_key("profile"),
+            "schema should include tabs[].profile: {schema:#}"
+        );
         assert!(
             tab_properties.contains_key("split"),
             "schema should include tabs[].split: {schema:#}"
@@ -6818,6 +7107,42 @@ mod tests {
                     "zed-terminal",
                     mode,
                     "work",
+                    "--new-tab-profile-title",
+                    "Work",
+                ]
+            } else {
+                let mut args = mode_args.clone();
+                args.extend(["--new-tab-profile-title", "Work"]);
+                args
+            };
+            assert_cli_conflict(
+                &args,
+                "startup profile tab title should conflict with non-launch modes",
+            );
+
+            let args = if mode == "--set-default-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "work",
+                    "--new-tab-profile-split",
+                    "right",
+                ]
+            } else {
+                let mut args = mode_args.clone();
+                args.extend(["--new-tab-profile-split", "right"]);
+                args
+            };
+            assert_cli_conflict(
+                &args,
+                "startup profile tab split should conflict with non-launch modes",
+            );
+
+            let args = if mode == "--set-default-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "work",
                     "--new-tab-command-title",
                     "Build",
                 ]
@@ -7996,6 +8321,85 @@ mod tests {
     }
 
     #[test]
+    fn parses_additional_startup_profile_tabs() {
+        let directory_tab_dir = temp_test_dir();
+        let profile_dir = temp_test_dir();
+        let profile_extra_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(profile_dir.clone()),
+                command: Some("cmd /C work".into()),
+                title: Some("Work".into()),
+                env: test_env(&[("ZED_TERMINAL_PROFILE", "work")]),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(profile_extra_dir.clone()),
+                    title: Some("Logs".into()),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            directory_tab_dir.to_str().unwrap(),
+            "--new-tab-profile",
+            "work",
+            "--new-tab-profile-title",
+            "Work Override",
+            "--new-tab-profile-split",
+            "left",
+            "--new-tab-command",
+            "cmd /C build",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 3);
+        assert_tab_working_directory(&options.additional_tabs[0], &directory_tab_dir);
+        assert_eq!(options.additional_tabs[0].command, None);
+
+        let profile_tab = &options.additional_tabs[1];
+        assert_tab_working_directory(profile_tab, &profile_dir);
+        assert_ne!(
+            profile_tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&profile_extra_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            profile_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "work".into()],
+            })
+        );
+        assert_eq!(
+            profile_tab.env,
+            test_env(&[("ZED_TERMINAL_PROFILE", "work")])
+        );
+        assert_eq!(profile_tab.title.as_deref(), Some("Work Override"));
+        assert_eq!(profile_tab.split, Some(TerminalStartupSplitDirection::Left));
+
+        assert_eq!(
+            options.additional_tabs[2].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "build".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(directory_tab_dir).ok();
+        std_fs::remove_dir_all(profile_dir).ok();
+        std_fs::remove_dir_all(profile_extra_dir).ok();
+    }
+
+    #[test]
     fn parses_additional_startup_tab_commands() {
         let first_dir = temp_test_dir();
         let second_dir = temp_test_dir();
@@ -8229,6 +8633,49 @@ mod tests {
                 .to_string()
                 .contains("startup tab title requires a matching --new-tab")
         );
+    }
+
+    #[test]
+    fn rejects_unmatched_additional_startup_profile_tab_title() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-profile-title", "Work"])
+            .expect("failed to parse cli args");
+
+        let error =
+            LaunchOptions::from_cli(cli).expect_err("unmatched profile tab title should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup profile tab title requires a matching --new-tab-profile")
+        );
+    }
+
+    #[test]
+    fn rejects_unmatched_additional_startup_profile_tab_split() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-profile-split", "down"])
+            .expect("failed to parse cli args");
+
+        let error =
+            LaunchOptions::from_cli(cli).expect_err("unmatched profile tab split should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup profile tab split requires a matching --new-tab-profile")
+        );
+    }
+
+    #[test]
+    fn rejects_additional_startup_profile_tab_with_no_startup_config() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--no-startup-config",
+            "--new-tab-profile",
+            "work",
+        ])
+        .expect_err("profile tabs should require startup config");
+
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
