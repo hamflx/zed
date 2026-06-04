@@ -51,6 +51,7 @@ actions!(
         OpenDefaultKeymapReferenceFile,
         OpenConfigDirectory,
         OpenDataDirectory,
+        OpenLogFile,
         OpenLogsDirectory,
         OpenThemesDirectory,
         NewTerminalWindow,
@@ -2970,6 +2971,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
+    cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
     cx.on_action(open_themes_directory);
     cx.on_action(set_default_startup_profile_action);
@@ -3174,6 +3176,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenConfigDirectory>(),
         TypeId::of::<OpenDataDirectory>(),
         TypeId::of::<OpenDefaultKeymapReferenceFile>(),
+        TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
@@ -3648,6 +3651,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         ),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
+        MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
         MenuItem::action("Open Themes Directory", OpenThemesDirectory),
         MenuItem::separator(),
@@ -4290,6 +4294,16 @@ fn open_data_directory(_: &OpenDataDirectory, cx: &mut App) {
     open_directory(paths::data_dir(), "data", cx);
 }
 
+fn open_log_file(_: &OpenLogFile, cx: &mut App) {
+    let log_file = terminal_log_file();
+    if let Err(error) = ensure_log_file(log_file) {
+        log::warn!("failed to ensure log file {log_file:?}: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(log_file);
+}
+
 fn open_logs_directory(_: &OpenLogsDirectory, cx: &mut App) {
     open_directory(paths::logs_dir(), "logs", cx);
 }
@@ -4336,6 +4350,21 @@ fn open_directory(path: &Path, label: &str, cx: &mut App) {
     }
 
     cx.open_with_system(path);
+}
+
+fn ensure_log_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create log directory {}", parent.display()))?;
+    }
+
+    std_fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to create log file {}", path.display()))?;
+
+    Ok(())
 }
 
 fn ensure_settings_file() -> bool {
@@ -4739,6 +4768,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
+        assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
@@ -5384,6 +5414,7 @@ mod tests {
             "Open Data Directory",
             "zed_terminal::OpenDataDirectory",
         );
+        assert_menu_action(&items, "Open Log File", "zed_terminal::OpenLogFile");
         assert_menu_action(
             &items,
             "Open Logs Directory",
@@ -5909,6 +5940,14 @@ mod tests {
                 .downcast_ref::<OpenDefaultKeymapReferenceFile>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn parses_open_log_file_action_input() {
+        let action = <OpenLogFile as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open log file action input should parse");
+
+        assert!(action.as_any().downcast_ref::<OpenLogFile>().is_some());
     }
 
     #[test]
@@ -6803,6 +6842,25 @@ mod tests {
         assert!(
             startup_config_schema.get("properties").is_some(),
             "startup config schema should include root properties"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn ensure_log_file_creates_parent_and_preserves_existing_content() {
+        let root_dir = temp_test_dir();
+        let log_file = root_dir.join("logs").join("Zed Terminal.log");
+
+        ensure_log_file(&log_file).expect("missing log file should be created");
+        assert!(log_file.is_file());
+
+        std_fs::write(&log_file, "existing log\n").expect("failed to write existing log");
+        ensure_log_file(&log_file).expect("existing log file should still open");
+
+        assert_eq!(
+            std_fs::read_to_string(&log_file).expect("failed to read log file"),
+            "existing log\n"
         );
 
         std_fs::remove_dir_all(root_dir).ok();
