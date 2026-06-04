@@ -57,6 +57,13 @@ struct NewTerminalTabWithProfile {
     profile: String,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct SetDefaultStartupProfile {
+    profile: String,
+}
+
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const APP_TITLE: &str = TERMINAL_APP_NAME;
@@ -94,6 +101,7 @@ struct Cli {
         conflicts_with_all = [
             "list_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -107,6 +115,7 @@ struct Cli {
         long = "list-profiles",
         conflicts_with_all = [
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -133,6 +142,7 @@ struct Cli {
         requires = "list_profiles",
         conflicts_with_all = [
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -148,6 +158,7 @@ struct Cli {
         conflicts_with_all = [
             "profile",
             "list_profiles",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -163,6 +174,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "all_profiles",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -174,11 +186,41 @@ struct Cli {
     print_startup_layout: bool,
 
     #[arg(
+        long = "set-default-profile",
+        value_name = "NAME",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Set the default startup profile in terminal.json without opening a terminal window"
+    )]
+    set_default_profile: Option<String>,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "print_paths",
             "list_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_keymap",
             "print_startup_config_schema",
             "init_config",
@@ -205,6 +247,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "validate_keymap",
             "init_config",
@@ -231,6 +274,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "validate_keymap",
@@ -258,6 +302,7 @@ struct Cli {
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -284,6 +329,7 @@ struct Cli {
             "print_paths",
             "list_profiles",
             "print_startup_layout",
+            "set_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -388,6 +434,10 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
         include_hidden: bool,
+    },
+    SetDefaultProfile {
+        path_options: TerminalPathOptions,
+        profile: String,
     },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
@@ -534,6 +584,14 @@ struct TerminalStartupProfileMenuEntry {
     label: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalDefaultProfileUpdate {
+    path: PathBuf,
+    previous_profile: Option<String>,
+    default_profile: String,
+    changed: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TerminalStartupConfigValidation {
     layout_count: usize,
@@ -631,6 +689,7 @@ impl TerminalCliCommand {
                 .context("failed to resolve terminal paths")?;
         let startup_config = if cli.print_paths
             || cli.no_startup_config
+            || cli.set_default_profile.is_some()
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.init_config
@@ -681,6 +740,13 @@ impl TerminalCliCommand {
             )?));
         }
 
+        if let Some(profile) = cli.set_default_profile {
+            return Ok(Self::SetDefaultProfile {
+                path_options,
+                profile,
+            });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -715,6 +781,7 @@ impl TerminalCliCommand {
         match self {
             Self::PrintPaths(path_options) => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
+            Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout(launch_options) => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -1339,6 +1406,12 @@ fn main() {
         TerminalCliCommand::PrintStartupLayout(_) => {
             unreachable!("startup layout printing is handled before path install")
         }
+        TerminalCliCommand::SetDefaultProfile { profile, .. } => {
+            if let Err(error) = print_default_profile_update(&profile) {
+                eprintln!("failed to set default startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::PrintStartupConfigSchema { .. } => {
             if let Err(error) = print_startup_config_schema() {
                 eprintln!("failed to print terminal startup config schema: {error:#}");
@@ -1503,6 +1576,12 @@ fn print_config_initialization() -> Result<()> {
     Ok(())
 }
 
+fn print_default_profile_update(profile: &str) -> Result<()> {
+    let update = set_default_startup_profile(&active_terminal_startup_config_file(), profile)?;
+    print!("{}", format_default_profile_update(&update));
+    Ok(())
+}
+
 fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
     initialize_terminal_config_files_at(active_terminal_config_file_paths())
 }
@@ -1616,6 +1695,59 @@ fn initialize_terminal_config_file(
         }
         Err(error) => Err(error).with_context(|| format!("failed to create {}", path.display())),
     }
+}
+
+fn set_default_startup_profile(path: &Path, profile: &str) -> Result<TerminalDefaultProfileUpdate> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let mut text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let mut startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    startup_config.validate_profile_reference("default_profile", &profile)?;
+
+    let previous_profile = startup_config.default_profile.clone();
+    startup_config.default_profile = Some(profile.clone());
+    startup_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid terminal startup config {}",
+            path.display()
+        )
+    })?;
+
+    let indent_size = settings_json::infer_json_indent_size(&text);
+    let new_value = serde_json::Value::String(profile.clone());
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &["default_profile"],
+        indent_size,
+        Some(&new_value),
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalDefaultProfileUpdate {
+        path: path.to_path_buf(),
+        changed: previous_profile.as_deref() != Some(profile.as_str()),
+        previous_profile,
+        default_profile: profile,
+    })
 }
 
 fn diagnose_terminal(path_options: &TerminalPathOptions, cx: &mut App) -> TerminalDoctorReport {
@@ -2079,6 +2211,28 @@ fn format_config_initialization(initialization: &TerminalConfigInitialization) -
     output
 }
 
+fn format_default_profile_update(update: &TerminalDefaultProfileUpdate) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        update.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "previous_default_profile: {}",
+        update.previous_profile.as_deref().unwrap_or("none")
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "default_profile: {}", update.default_profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", update.changed)
+        .expect("writing to string should not fail");
+    output
+}
+
 fn format_doctor_report(report: &TerminalDoctorReport) -> String {
     let mut output = String::new();
     writeln!(
@@ -2302,6 +2456,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_keymap_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_logs_directory);
+    cx.on_action(set_default_startup_profile_action);
     cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
         cx.dispatch_action(&OpenSettingsFile);
     });
@@ -2476,10 +2631,20 @@ fn set_app_menus(cx: &mut App) {
     let profile_entries = startup_profile_menu_entries();
     if !profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
-            profile_entries.into_iter().map(|entry| {
+            profile_entries.iter().cloned().map(|entry| {
                 MenuItem::action(
                     entry.label,
                     NewTerminalTabWithProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+        shell_items.push(MenuItem::submenu(Menu::new("Set Default Profile").items(
+            profile_entries.into_iter().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    SetDefaultStartupProfile {
                         profile: entry.profile,
                     },
                 )
@@ -2800,6 +2965,14 @@ fn normalize_profile_text(text: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
+fn normalize_startup_profile_name(profile: &str) -> Result<String> {
+    let profile = profile.trim();
+    if profile.is_empty() {
+        bail!("startup profile name is empty");
+    }
+    Ok(profile.to_string())
+}
+
 fn normalize_terminal_shell_program(program: &str) -> Result<String> {
     let program = program.trim();
     if program.is_empty() {
@@ -2954,6 +3127,25 @@ fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
 
 fn open_logs_directory(_: &OpenLogsDirectory, cx: &mut App) {
     open_directory(paths::logs_dir(), "logs", cx);
+}
+
+fn set_default_startup_profile_action(action: &SetDefaultStartupProfile, cx: &mut App) {
+    match set_default_startup_profile(&active_terminal_startup_config_file(), &action.profile) {
+        Ok(update) => {
+            log::info!(
+                "set default startup profile to {:?} in {:?}",
+                update.default_profile,
+                update.path
+            );
+            set_app_menus(cx);
+        }
+        Err(error) => {
+            log::warn!(
+                "failed to set default startup profile {:?}: {error:#}",
+                action.profile
+            );
+        }
+    }
 }
 
 fn open_directory(path: &Path, label: &str, cx: &mut App) {
@@ -3365,6 +3557,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_set_default_startup_profile_action_input() {
+        let action = <SetDefaultStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("set default profile action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<SetDefaultStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &SetDefaultStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <SetDefaultStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown set default profile action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
     fn formats_startup_profile_list() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
@@ -3645,6 +3863,30 @@ mod tests {
             output,
             "status: ok\nsettings_file: created settings.json\nkeymap_file: existing keymap.json\n"
         );
+    }
+
+    #[test]
+    fn formats_default_profile_update() {
+        let output = format_default_profile_update(&TerminalDefaultProfileUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: Some("old".into()),
+            default_profile: "work".into(),
+            changed: true,
+        });
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nprevious_default_profile: old\ndefault_profile: work\nchanged: true\n"
+        );
+
+        let first_update = format_default_profile_update(&TerminalDefaultProfileUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_profile: None,
+            default_profile: "work".into(),
+            changed: true,
+        });
+
+        assert!(first_update.contains("previous_default_profile: none\n"));
     }
 
     #[test]
@@ -3946,6 +4188,166 @@ mod tests {
     }
 
     #[test]
+    fn set_default_startup_profile_updates_jsonc_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  "default_profile": null,
+  // keep profile comment
+  "profiles": {
+    "secret": {
+      "hidden": true
+    },
+    "work": {
+      "display_name": "Work"
+    }
+  },
+  "tabs": []
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_default_startup_profile(&startup_config_file, " work ")
+            .expect("default profile should update");
+
+        assert_eq!(update.path, startup_config_file);
+        assert_eq!(update.previous_profile, None);
+        assert_eq!(update.default_profile, "work");
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profile comment"));
+        assert!(content.contains(r#""default_profile": "work""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(updated_config.default_profile.as_deref(), Some("work"));
+        assert!(updated_config.profiles["secret"].hidden);
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_default_startup_profile_inserts_missing_default_profile_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_default_startup_profile(&startup_config_file, "work")
+            .expect("default profile should be inserted");
+
+        assert_eq!(update.previous_profile, None);
+        assert_eq!(update.default_profile, "work");
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains(r#""default_profile": "work""#));
+        assert!(content.contains(r#""profiles""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(updated_config.default_profile.as_deref(), Some("work"));
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_default_startup_profile_reports_unchanged_default() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "default_profile": "work",
+  "profiles": {
+    "work": {}
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_default_startup_profile(&startup_config_file, "work")
+            .expect("existing default profile should update successfully");
+
+        assert_eq!(update.previous_profile.as_deref(), Some("work"));
+        assert_eq!(update.default_profile, "work");
+        assert!(!update.changed);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_default_startup_profile_rejects_missing_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "default_profile": "work",
+  "profiles": {
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = set_default_startup_profile(&startup_config_file, "missing")
+            .expect_err("missing profile should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("default_profile references missing startup profile: missing"));
+        assert!(message.contains("Available profiles: work"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_default_startup_profile_rejects_blank_profile() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(&startup_config_file, r#"{ "profiles": { "work": {} } }"#)
+            .expect("failed to write startup config");
+
+        let error = set_default_startup_profile(&startup_config_file, "  ")
+            .expect_err("blank profile should be rejected");
+
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let output = format_keymap_validation(
             Path::new("keymap.json"),
@@ -4154,6 +4556,93 @@ mod tests {
             .expect("keymap validation should not resolve startup layout");
 
         assert!(matches!(command, TerminalCliCommand::ValidateKeymap { .. }));
+    }
+
+    #[test]
+    fn set_default_profile_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--set-default-profile",
+            "work",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("set-default-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::SetDefaultProfile {
+            path_options,
+            profile,
+        } = command
+        else {
+            panic!("expected set default profile mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(profile, "work");
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn set_default_profile_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--set-default-profile",
+            "work",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with default profile updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--set-default-profile",
+            "work",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with default profile updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--set-default-profile",
+            "work",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with default profile updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--set-default-profile",
+            "work",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with default profile updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--paths", "--set-default-profile", "work"])
+                .expect_err("path inspection should conflict with default profile updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -4426,17 +4915,38 @@ mod tests {
             "--print-startup-config-schema",
             "--validate-keymap",
             "--list-profiles",
+            "--set-default-profile",
         ] {
+            let args = if mode == "--set-default-profile" {
+                vec!["zed-terminal", mode, "work", "--title", "Production"]
+            } else {
+                vec!["zed-terminal", mode, "--title", "Production"]
+            };
+            assert_cli_conflict(&args, "initial title should conflict with non-launch modes");
+
+            let args = if mode == "--set-default-profile" {
+                vec!["zed-terminal", mode, "work", "--new-tab-title", "Logs"]
+            } else {
+                vec!["zed-terminal", mode, "--new-tab-title", "Logs"]
+            };
             assert_cli_conflict(
-                &["zed-terminal", mode, "--title", "Production"],
-                "initial title should conflict with non-launch modes",
-            );
-            assert_cli_conflict(
-                &["zed-terminal", mode, "--new-tab-title", "Logs"],
+                &args,
                 "startup tab title should conflict with non-launch modes",
             );
+
+            let args = if mode == "--set-default-profile" {
+                vec![
+                    "zed-terminal",
+                    mode,
+                    "work",
+                    "--new-tab-command-title",
+                    "Build",
+                ]
+            } else {
+                vec!["zed-terminal", mode, "--new-tab-command-title", "Build"]
+            };
             assert_cli_conflict(
-                &["zed-terminal", mode, "--new-tab-command-title", "Build"],
+                &args,
                 "startup command tab title should conflict with non-launch modes",
             );
         }

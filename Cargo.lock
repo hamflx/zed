@@ -23195,6 +23195,7 @@ dependencies = [
  "serde_json",
  "session",
  "settings",
+ "settings_json",
  "shellexpand",
  "shlex",
  "task",
