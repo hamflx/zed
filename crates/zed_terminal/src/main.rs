@@ -121,6 +121,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
         .args(["create_profile", "update_profile"])
 ))]
 #[command(group(
+    ArgGroup::new("profile_copy_command")
+        .args(["copy_profile"])
+))]
+#[command(group(
     ArgGroup::new("profile_visibility_command")
         .args(["hide_profile", "show_profile"])
 ))]
@@ -146,6 +150,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -172,6 +177,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -206,6 +212,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -234,6 +241,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -254,6 +262,7 @@ struct Cli {
             "all_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -284,6 +293,7 @@ struct Cli {
             "all_profiles",
             "print_startup_layout",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -327,6 +337,7 @@ struct Cli {
             "all_profiles",
             "print_startup_layout",
             "set_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -365,6 +376,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "update_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "hide_profile",
@@ -452,6 +464,7 @@ struct Cli {
             "set_default_profile",
             "clear_default_profile",
             "create_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "hide_profile",
@@ -522,6 +535,57 @@ struct Cli {
     update_profile_format: Option<TerminalStartupProfileUpdateOutputFormat>,
 
     #[arg(
+        long = "copy-profile",
+        visible_alias = "duplicate-profile",
+        value_names = ["SOURCE_NAME", "TARGET_NAME"],
+        num_args = 2,
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Copy a startup profile in terminal.json without opening a terminal window"
+    )]
+    copy_profile: Vec<String>,
+
+    #[arg(
+        long = "copy-profile-format",
+        value_enum,
+        requires = "copy_profile",
+        help = "Set the output format for --copy-profile"
+    )]
+    copy_profile_format: Option<TerminalStartupProfileCopyOutputFormat>,
+
+    #[arg(
         long = "remove-profile",
         value_name = "NAME",
         conflicts_with_all = [
@@ -531,6 +595,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -575,6 +640,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "validate_startup_config",
             "validate_keymap",
@@ -619,6 +685,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -656,6 +723,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -699,6 +767,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_keymap",
@@ -738,6 +807,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -769,6 +839,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -809,6 +880,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -849,6 +921,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -889,6 +962,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -961,6 +1035,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -983,6 +1058,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -1006,6 +1082,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "copy_profile",
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
@@ -1088,6 +1165,12 @@ enum TerminalCliCommand {
         profile: String,
         update: TerminalStartupProfileMetadataUpdateRequest,
         format: TerminalStartupProfileUpdateOutputFormat,
+    },
+    CopyProfile {
+        path_options: TerminalPathOptions,
+        source_profile: String,
+        target_profile: String,
+        format: TerminalStartupProfileCopyOutputFormat,
     },
     RemoveProfile {
         path_options: TerminalPathOptions,
@@ -1422,6 +1505,16 @@ struct TerminalStartupProfileMetadataUpdate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileCopy {
+    path: PathBuf,
+    source_profile: String,
+    profile: String,
+    changed: bool,
+    copied_tab_count: usize,
+    total_profile_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupProfileRemoval {
     path: PathBuf,
     profile: String,
@@ -1592,6 +1685,13 @@ enum TerminalStartupProfileUpdateOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileCopyOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileRemovalOutputFormat {
     #[default]
     Text,
@@ -1651,6 +1751,7 @@ impl TerminalCliCommand {
             || cli.clear_default_profile
             || cli.create_profile.is_some()
             || cli.update_profile.is_some()
+            || !cli.copy_profile.is_empty()
             || cli.remove_profile.is_some()
             || !cli.rename_profile.is_empty()
             || cli.hide_profile.is_some()
@@ -1768,6 +1869,22 @@ impl TerminalCliCommand {
             });
         }
 
+        if !cli.copy_profile.is_empty() {
+            let [source_profile, target_profile]: [String; 2] =
+                cli.copy_profile.try_into().map_err(|profiles: Vec<_>| {
+                    anyhow::anyhow!(
+                        "--copy-profile requires exactly 2 values, got {}",
+                        profiles.len()
+                    )
+                })?;
+            return Ok(Self::CopyProfile {
+                path_options,
+                source_profile,
+                target_profile,
+                format: cli.copy_profile_format.unwrap_or_default(),
+            });
+        }
+
         if let Some(profile) = cli.remove_profile {
             return Ok(Self::RemoveProfile {
                 path_options,
@@ -1862,6 +1979,7 @@ impl TerminalCliCommand {
             Self::ClearDefaultProfile { path_options, .. } => path_options,
             Self::CreateProfile { path_options, .. } => path_options,
             Self::UpdateProfile { path_options, .. } => path_options,
+            Self::CopyProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
             Self::SetProfileVisibility { path_options, .. } => path_options,
             Self::RenameProfile { path_options, .. } => path_options,
@@ -2672,6 +2790,18 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::CopyProfile {
+            source_profile,
+            target_profile,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_copy(&source_profile, &target_profile, format)
+            {
+                eprintln!("failed to copy startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::RemoveProfile {
             profile, format, ..
         } => {
@@ -3015,6 +3145,27 @@ fn print_startup_profile_metadata_update(
         }
         TerminalStartupProfileUpdateOutputFormat::Json => {
             print!("{}", format_startup_profile_metadata_update_json(&update)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_copy(
+    source_profile: &str,
+    target_profile: &str,
+    format: TerminalStartupProfileCopyOutputFormat,
+) -> Result<()> {
+    let copy = copy_startup_profile(
+        &active_terminal_startup_config_file(),
+        source_profile,
+        target_profile,
+    )?;
+    match format {
+        TerminalStartupProfileCopyOutputFormat::Text => {
+            print!("{}", format_startup_profile_copy(&copy))
+        }
+        TerminalStartupProfileCopyOutputFormat::Json => {
+            print!("{}", format_startup_profile_copy_json(&copy)?)
         }
     }
     Ok(())
@@ -3517,6 +3668,229 @@ fn update_startup_profile_metadata(
         color,
         changed: true,
     })
+}
+
+fn copy_startup_profile(
+    path: &Path,
+    source_profile: &str,
+    target_profile: &str,
+) -> Result<TerminalStartupProfileCopy> {
+    let source_profile = normalize_startup_profile_name(source_profile)?;
+    let target_profile = normalize_startup_profile_name(target_profile)?;
+    let mut text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+
+    let mut copied_profile = startup_config
+        .profiles
+        .get(&source_profile)
+        .with_context(|| {
+            if startup_config.profiles.is_empty() {
+                format!("startup profile not found: {source_profile}")
+            } else {
+                format!(
+                    "startup profile not found: {source_profile}. Available profiles: {}",
+                    startup_config.profile_names().join(", ")
+                )
+            }
+        })?
+        .clone();
+    if startup_config.profiles.contains_key(&target_profile) {
+        bail!("startup profile already exists: {target_profile}");
+    }
+
+    rename_startup_tab_profile_references(
+        &mut copied_profile.tabs,
+        &source_profile,
+        &target_profile,
+    );
+    let copied_tab_count = 1 + copied_profile.tabs.len();
+
+    let mut updated_config = startup_config.clone();
+    updated_config
+        .profiles
+        .insert(target_profile.clone(), copied_profile.clone());
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to copy startup profile {source_profile:?} to {target_profile:?} because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let new_value = startup_profile_config_to_json_value(&copied_profile);
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &["profiles", target_profile.as_str()],
+        settings_json::infer_json_indent_size(&text),
+        Some(&new_value),
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because profile copy produced unexpected content",
+            path.display()
+        );
+    }
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupProfileCopy {
+        path: path.to_path_buf(),
+        source_profile,
+        profile: target_profile,
+        changed: true,
+        copied_tab_count,
+        total_profile_count: updated_config.profiles.len(),
+    })
+}
+
+fn startup_profile_config_to_json_value(
+    profile: &TerminalStartupProfileConfig,
+) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    if let Some(display_name) = &profile.display_name {
+        object.insert(
+            "display_name".into(),
+            serde_json::Value::String(display_name.clone()),
+        );
+    }
+    if let Some(description) = &profile.description {
+        object.insert(
+            "description".into(),
+            serde_json::Value::String(description.clone()),
+        );
+    }
+    if let Some(icon) = &profile.icon {
+        object.insert("icon".into(), serde_json::Value::String(icon.clone()));
+    }
+    if let Some(color) = &profile.color {
+        object.insert("color".into(), serde_json::Value::String(color.clone()));
+    }
+    if profile.hidden {
+        object.insert("hidden".into(), serde_json::Value::Bool(true));
+    }
+    if let Some(working_directory) = &profile.working_directory {
+        object.insert(
+            "working_directory".into(),
+            path_to_json_value(working_directory),
+        );
+    }
+    if let Some(command) = &profile.command {
+        object.insert("command".into(), serde_json::Value::String(command.clone()));
+    }
+    if let Some(title) = &profile.title {
+        object.insert("title".into(), serde_json::Value::String(title.clone()));
+    }
+    if let Some(shell) = &profile.shell {
+        object.insert("shell".into(), startup_shell_config_to_json_value(shell));
+    }
+    if !profile.env.is_empty() {
+        object.insert("env".into(), env_to_json_value(&profile.env));
+    }
+    if !profile.tabs.is_empty() {
+        object.insert(
+            "tabs".into(),
+            serde_json::Value::Array(
+                profile
+                    .tabs
+                    .iter()
+                    .map(startup_tab_config_to_json_value)
+                    .collect(),
+            ),
+        );
+    }
+    serde_json::Value::Object(object)
+}
+
+fn startup_tab_config_to_json_value(tab: &TerminalStartupTabConfig) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    if let Some(profile) = &tab.profile {
+        object.insert("profile".into(), serde_json::Value::String(profile.clone()));
+    }
+    if let Some(working_directory) = &tab.working_directory {
+        object.insert(
+            "working_directory".into(),
+            path_to_json_value(working_directory),
+        );
+    }
+    if let Some(command) = &tab.command {
+        object.insert("command".into(), serde_json::Value::String(command.clone()));
+    }
+    if let Some(title) = &tab.title {
+        object.insert("title".into(), serde_json::Value::String(title.clone()));
+    }
+    if let Some(shell) = &tab.shell {
+        object.insert("shell".into(), startup_shell_config_to_json_value(shell));
+    }
+    if !tab.env.is_empty() {
+        object.insert("env".into(), env_to_json_value(&tab.env));
+    }
+    if let Some(split) = tab.split {
+        object.insert(
+            "split".into(),
+            serde_json::Value::String(split.as_str().into()),
+        );
+    }
+    serde_json::Value::Object(object)
+}
+
+fn startup_shell_config_to_json_value(shell: &TerminalStartupShellConfig) -> serde_json::Value {
+    match shell {
+        TerminalStartupShellConfig::Program(program) => serde_json::Value::String(program.clone()),
+        TerminalStartupShellConfig::WithArguments(config) => {
+            let mut object = serde_json::Map::new();
+            object.insert(
+                "program".into(),
+                serde_json::Value::String(config.program.clone()),
+            );
+            if !config.args.is_empty() {
+                object.insert(
+                    "args".into(),
+                    serde_json::Value::Array(
+                        config
+                            .args
+                            .iter()
+                            .cloned()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            serde_json::Value::Object(object)
+        }
+    }
+}
+
+fn env_to_json_value(env: &HashMap<String, String>) -> serde_json::Value {
+    let mut entries = env.iter().collect::<Vec<_>>();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut object = serde_json::Map::new();
+    for (key, value) in entries {
+        object.insert(key.clone(), serde_json::Value::String(value.clone()));
+    }
+    serde_json::Value::Object(object)
+}
+
+fn path_to_json_value(path: &Path) -> serde_json::Value {
+    serde_json::Value::String(path.to_string_lossy().into_owned())
 }
 
 fn replace_startup_profile_metadata_field(
@@ -4948,6 +5322,38 @@ fn format_startup_profile_metadata_update_json(
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile metadata update as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_copy(copy: &TerminalStartupProfileCopy) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "startup_config_file: {}", copy.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "source_profile: {}", copy.source_profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", copy.profile).expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", copy.changed).expect("writing to string should not fail");
+    writeln!(&mut output, "copied_tabs: {}", copy.copied_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "total_profiles: {}", copy.total_profile_count)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_profile_copy_json(copy: &TerminalStartupProfileCopy) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": copy.path.display().to_string(),
+        "status": "ok",
+        "source_profile": copy.source_profile.as_str(),
+        "profile": copy.profile.as_str(),
+        "changed": copy.changed,
+        "copied_tab_count": copy.copied_tab_count,
+        "total_profile_count": copy.total_profile_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile copy as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -9377,6 +9783,47 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_profile_copy() {
+        let output = format_startup_profile_copy(&TerminalStartupProfileCopy {
+            path: PathBuf::from("terminal.json"),
+            source_profile: "old".into(),
+            profile: "new".into(),
+            changed: true,
+            copied_tab_count: 3,
+            total_profile_count: 4,
+        });
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nsource_profile: old\nprofile: new\nchanged: true\ncopied_tabs: 3\ntotal_profiles: 4\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_copy_json() {
+        let output = format_startup_profile_copy_json(&TerminalStartupProfileCopy {
+            path: PathBuf::from("terminal.json"),
+            source_profile: "old".into(),
+            profile: "new".into(),
+            changed: true,
+            copied_tab_count: 3,
+            total_profile_count: 4,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile copy json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source_profile"], "old");
+        assert_eq!(json["profile"], "new");
+        assert_eq!(json["changed"], true);
+        assert_eq!(json["copied_tab_count"], 3);
+        assert_eq!(json["total_profile_count"], 4);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_startup_profile_removal() {
         let output = format_startup_profile_removal(&TerminalStartupProfileRemoval {
             path: PathBuf::from("terminal.json"),
@@ -10895,6 +11342,222 @@ mod tests {
     }
 
     #[test]
+    fn copy_startup_profile_copies_jsonc_profile_config() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r##"// keep leading comment
+{
+  "default_profile": "work",
+  "tabs": [
+    { "title": "Root Work", "profile": "work" },
+    { "title": "Root Ops", "profile": "ops" }
+  ],
+  // keep profile map comment
+  "profiles": {
+    // keep work profile comment
+    "work": {
+      "display_name": "Work",
+      "description": "Project shell",
+      "icon": "terminal",
+      "color": "#0f766e",
+      "hidden": true,
+      "working_directory": ".",
+      "command": "cmd /C echo work",
+      "title": "Work Shell",
+      "env": {
+        "B": "2",
+        "A": "1"
+      },
+      "tabs": [
+        { "title": "Nested Self", "profile": "work", "split": "right" },
+        { "title": "Diagnostics", "command": "cmd /C echo diagnostics", "env": { "TAB": "1" }, "split": "down" },
+        { "title": "PowerShell", "shell": { "program": "pwsh.exe", "args": ["-NoLogo"] } }
+      ]
+    },
+    // keep ops profile comment
+    "ops": {
+      "display_name": "Ops",
+      "tabs": [
+        { "title": "Nested Work", "profile": "work" }
+      ]
+    }
+  }
+}
+"##,
+        )
+        .expect("failed to write startup config");
+
+        let copy = copy_startup_profile(&startup_config_file, " work ", " admin ")
+            .expect("startup profile should be copied");
+
+        assert_eq!(copy.path, startup_config_file);
+        assert_eq!(copy.source_profile, "work");
+        assert_eq!(copy.profile, "admin");
+        assert!(copy.changed);
+        assert_eq!(copy.copied_tab_count, 4);
+        assert_eq!(copy.total_profile_count, 3);
+
+        let content =
+            std_fs::read_to_string(&copy.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profile map comment"));
+        assert!(content.contains("// keep work profile comment"));
+        assert!(content.contains("// keep ops profile comment"));
+        assert!(content.contains(r#""admin": {"#));
+        assert!(content.contains(r#""profile": "admin""#));
+        assert!(content.contains(r#""default_profile": "work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.default_profile.as_deref(), Some("work"));
+        assert_eq!(updated_config.tabs[0].profile.as_deref(), Some("work"));
+        assert_eq!(updated_config.tabs[1].profile.as_deref(), Some("ops"));
+        assert!(updated_config.profiles.contains_key("work"));
+        assert!(updated_config.profiles.contains_key("admin"));
+        assert!(updated_config.profiles.contains_key("ops"));
+
+        let source = &updated_config.profiles["work"];
+        let copied = &updated_config.profiles["admin"];
+        assert_eq!(copied.display_name.as_deref(), Some("Work"));
+        assert_eq!(copied.description.as_deref(), Some("Project shell"));
+        assert_eq!(copied.icon.as_deref(), Some("terminal"));
+        assert_eq!(copied.color.as_deref(), Some("#0f766e"));
+        assert!(copied.hidden);
+        assert_eq!(copied.working_directory, Some(PathBuf::from(".")));
+        assert_eq!(copied.command.as_deref(), Some("cmd /C echo work"));
+        assert_eq!(copied.title.as_deref(), Some("Work Shell"));
+        assert_eq!(copied.env, test_env(&[("A", "1"), ("B", "2")]));
+        assert_eq!(copied.tabs.len(), source.tabs.len());
+        assert_eq!(copied.tabs[0].title.as_deref(), Some("Nested Self"));
+        assert_eq!(copied.tabs[0].profile.as_deref(), Some("admin"));
+        assert_eq!(
+            copied.tabs[0].split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+        assert_eq!(
+            copied.tabs[1].command.as_deref(),
+            Some("cmd /C echo diagnostics")
+        );
+        assert_eq!(copied.tabs[1].env, test_env(&[("TAB", "1")]));
+        assert_eq!(
+            copied.tabs[1].split,
+            Some(TerminalStartupSplitDirection::Down)
+        );
+        assert_eq!(copied.tabs[2].title.as_deref(), Some("PowerShell"));
+        assert_eq!(copied.tabs[2].shell, source.tabs[2].shell);
+        assert_eq!(
+            updated_config.profiles["ops"].tabs[0].profile.as_deref(),
+            Some("work")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn copy_startup_profile_rejects_missing_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = copy_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("missing source profile should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("startup profile not found: old"));
+        assert!(message.contains("Available profiles: work"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected copy"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn copy_startup_profile_rejects_existing_target_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "old": {},
+    "new": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = copy_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("existing target profile should be rejected");
+
+        assert!(format!("{error:#}").contains("startup profile already exists: new"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected copy"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn copy_startup_profile_rejects_blank_profiles_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{ "profiles": { "old": {} } }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = copy_startup_profile(&startup_config_file, "  ", "new")
+            .expect_err("blank source profile should be rejected");
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected copy"),
+            original
+        );
+
+        let error = copy_startup_profile(&startup_config_file, "old", "  ")
+            .expect_err("blank target profile should be rejected");
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected copy"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn copy_startup_profile_rejects_missing_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let error = copy_startup_profile(&startup_config_file, "old", "new")
+            .expect_err("missing startup config should be rejected when copying a profile");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to read terminal startup config"));
+        assert!(
+            !startup_config_file.exists(),
+            "copying in a missing startup config should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn remove_startup_profile_updates_jsonc_profiles_field() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -12093,6 +12756,54 @@ mod tests {
     }
 
     #[test]
+    fn copy_profile_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--copy-profile-format",
+            "json",
+        ])
+        .expect("failed to parse copy profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("copy profile json mode should resolve");
+
+        let TerminalCliCommand::CopyProfile {
+            source_profile,
+            target_profile,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected copy profile mode");
+        };
+        assert_eq!(source_profile, "old");
+        assert_eq!(target_profile, "new");
+        assert_eq!(format, TerminalStartupProfileCopyOutputFormat::Json);
+
+        let cli = Cli::try_parse_from(["zed-terminal", "--duplicate-profile", "old", "copy"])
+            .expect("failed to parse duplicate profile alias");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("duplicate profile alias should resolve");
+
+        let TerminalCliCommand::CopyProfile {
+            source_profile,
+            target_profile,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected copy profile mode from alias");
+        };
+        assert_eq!(source_profile, "old");
+        assert_eq!(target_profile, "copy");
+        assert_eq!(format, TerminalStartupProfileCopyOutputFormat::Text);
+    }
+
+    #[test]
     fn remove_profile_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -12377,6 +13088,48 @@ mod tests {
             }
         );
         assert_eq!(format, TerminalStartupProfileUpdateOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn copy_profile_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--copy-profile",
+            "old",
+            "new",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("copy-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::CopyProfile {
+            path_options,
+            source_profile,
+            target_profile,
+            format,
+        } = command
+        else {
+            panic!("expected copy profile mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(source_profile, "old");
+        assert_eq!(target_profile, "new");
+        assert_eq!(format, TerminalStartupProfileCopyOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -12766,6 +13519,108 @@ mod tests {
             "Work",
         ])
         .expect_err("profile creation should conflict with profile metadata updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn copy_profile_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with profile copy");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile copy");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile copy");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--copy-profile", "old", "new", "--paths"])
+                .expect_err("path inspection should conflict with profile copy");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with profile copy");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--copy-profile-format", "json"])
+            .expect_err("copy profile format should require copy profile mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "--copy-profile-format",
+            "json",
+        ])
+        .expect_err("copy profile mode should require source and target profile names");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--create-profile",
+            "work",
+        ])
+        .expect_err("profile copy should conflict with profile creation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--rename-profile",
+            "old",
+            "other",
+        ])
+        .expect_err("profile copy should conflict with profile rename");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--copy-profile",
+            "old",
+            "new",
+            "--hide-profile",
+            "old",
+        ])
+        .expect_err("profile copy should conflict with profile visibility updates");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
@@ -13293,6 +14148,7 @@ mod tests {
             "--clear-default-profile",
             "--create-profile",
             "--update-profile",
+            "--copy-profile",
             "--remove-profile",
             "--rename-profile",
             "--hide-profile",
@@ -13305,7 +14161,7 @@ mod tests {
                 | "--remove-profile"
                 | "--hide-profile"
                 | "--show-profile" => vec!["zed-terminal", mode, "work"],
-                "--rename-profile" => vec!["zed-terminal", mode, "old", "new"],
+                "--copy-profile" | "--rename-profile" => vec!["zed-terminal", mode, "old", "new"],
                 _ => vec!["zed-terminal", mode],
             };
 
@@ -13319,7 +14175,7 @@ mod tests {
                     | "--show-profile"
             ) {
                 vec!["zed-terminal", mode, "work", "--title", "Production"]
-            } else if mode == "--rename-profile" {
+            } else if matches!(mode, "--copy-profile" | "--rename-profile") {
                 vec!["zed-terminal", mode, "old", "new", "--title", "Production"]
             } else {
                 let mut args = mode_args.clone();
@@ -13338,7 +14194,7 @@ mod tests {
                     | "--show-profile"
             ) {
                 vec!["zed-terminal", mode, "work", "--new-tab-title", "Logs"]
-            } else if mode == "--rename-profile" {
+            } else if matches!(mode, "--copy-profile" | "--rename-profile") {
                 vec![
                     "zed-terminal",
                     mode,
@@ -13373,7 +14229,7 @@ mod tests {
                     "--new-tab-profile-title",
                     "Work",
                 ]
-            } else if mode == "--rename-profile" {
+            } else if matches!(mode, "--copy-profile" | "--rename-profile") {
                 vec![
                     "zed-terminal",
                     mode,
@@ -13408,7 +14264,7 @@ mod tests {
                     "--new-tab-profile-split",
                     "right",
                 ]
-            } else if mode == "--rename-profile" {
+            } else if matches!(mode, "--copy-profile" | "--rename-profile") {
                 vec![
                     "zed-terminal",
                     mode,
@@ -13443,7 +14299,7 @@ mod tests {
                     "--new-tab-command-title",
                     "Build",
                 ]
-            } else if mode == "--rename-profile" {
+            } else if matches!(mode, "--copy-profile" | "--rename-profile") {
                 vec![
                     "zed-terminal",
                     mode,
