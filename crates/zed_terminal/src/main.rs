@@ -51,6 +51,7 @@ actions!(
         OpenLogsDirectory,
         NewTerminalTab,
         DuplicateTerminalTab,
+        ToggleFullScreen,
         ResizePaneLeft,
         ResizePaneRight,
         ResizePaneUp,
@@ -2998,6 +2999,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ResizePaneRight>(),
         TypeId::of::<ResizePaneUp>(),
         TypeId::of::<SetDefaultStartupProfile>(),
+        TypeId::of::<ToggleFullScreen>(),
         TypeId::of::<editor::actions::SelectAll>(),
         TypeId::of::<terminal::Clear>(),
         TypeId::of::<terminal::Copy>(),
@@ -3439,6 +3441,7 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Resize Pane Down", ResizePaneDown),
             MenuItem::action("Reset Pane Sizes", ResetPaneSizes),
         ]),
+        Menu::new("Window").items(window_menu_items()),
     ]);
 }
 
@@ -3454,6 +3457,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Quit", zed_actions::Quit),
     ]
+}
+
+fn window_menu_items() -> Vec<MenuItem> {
+    vec![MenuItem::action("Toggle Full Screen", ToggleFullScreen)]
 }
 
 fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
@@ -3538,6 +3545,9 @@ fn open_terminal_window(
                         .detach_and_log_err(cx);
                     },
                 );
+                workspace.register_action(|_, _: &ToggleFullScreen, window, _| {
+                    window.toggle_fullscreen();
+                });
                 workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
                     workspace.resize_pane(Axis::Horizontal, -amount, window, cx);
@@ -4274,6 +4284,7 @@ mod tests {
             "ctrl-shift-d",
             "zed_terminal::DuplicateTerminalTab",
         );
+        assert_key_binding(&keymap, None, "f11", "zed_terminal::ToggleFullScreen");
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
         for tab_number in 1..=8 {
             assert_key_binding_with_param(
@@ -4331,6 +4342,12 @@ mod tests {
             Some("os == windows && Terminal"),
             "alt-shift-down",
             "zed_terminal::ResizePaneDown",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-enter",
+            "zed_terminal::ToggleFullScreen",
         );
     }
 
@@ -4426,6 +4443,7 @@ mod tests {
                 profile: "work".into(),
             },
         );
+        assert_command_palette_action_visible(&filter, &ToggleFullScreen);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
@@ -5052,6 +5070,17 @@ mod tests {
     }
 
     #[test]
+    fn window_menu_exposes_full_screen_action() {
+        let items = window_menu_items();
+
+        assert_menu_action(
+            &items,
+            "Toggle Full Screen",
+            "zed_terminal::ToggleFullScreen",
+        );
+    }
+
+    #[test]
     fn terminal_search_callbacks_use_zed_buffer_search() {
         let callbacks = terminal_search_callbacks();
 
@@ -5460,6 +5489,14 @@ mod tests {
             .expect("reset pane sizes action input should parse");
 
         assert!(action.as_any().downcast_ref::<ResetPaneSizes>().is_some());
+    }
+
+    #[test]
+    fn parses_toggle_full_screen_action_input() {
+        let action = <ToggleFullScreen as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("toggle full screen action input should parse");
+
+        assert!(action.as_any().downcast_ref::<ToggleFullScreen>().is_some());
     }
 
     #[test]
