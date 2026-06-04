@@ -484,6 +484,14 @@ struct Cli {
     validate_keymap: bool,
 
     #[arg(
+        long = "validate-keymap-format",
+        value_enum,
+        requires = "validate_keymap",
+        help = "Set the output format for --validate-keymap"
+    )]
+    validate_keymap_format: Option<TerminalKeymapValidationOutputFormat>,
+
+    #[arg(
         long = "print-default-keymap",
         conflicts_with_all = [
             "print_paths",
@@ -694,6 +702,7 @@ enum TerminalCliCommand {
     },
     ValidateKeymap {
         path_options: TerminalPathOptions,
+        format: TerminalKeymapValidationOutputFormat,
     },
     Launch(LaunchOptions),
 }
@@ -1022,6 +1031,12 @@ struct TerminalKeymapValidation {
     user_keymap_source: TerminalUserKeymapSource,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapValidationReport {
+    keymap_file: PathBuf,
+    validation: TerminalKeymapValidation,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalUserKeymapSource {
     File,
@@ -1057,6 +1072,13 @@ enum TerminalStartupLayoutOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigValidationOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapValidationOutputFormat {
     #[default]
     Text,
     Json,
@@ -1172,7 +1194,10 @@ impl TerminalCliCommand {
         }
 
         if cli.validate_keymap {
-            return Ok(Self::ValidateKeymap { path_options });
+            return Ok(Self::ValidateKeymap {
+                path_options,
+                format: cli.validate_keymap_format.unwrap_or_default(),
+            });
         }
 
         Ok(Self::Launch(LaunchOptions::from_cli_parts(
@@ -1194,7 +1219,7 @@ impl TerminalCliCommand {
             Self::PrintDefaultKeymap { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
             Self::Doctor { path_options, .. } => path_options,
-            Self::ValidateKeymap { path_options } => path_options,
+            Self::ValidateKeymap { path_options, .. } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
     }
@@ -1987,7 +2012,7 @@ fn main() {
             }
         }
         TerminalCliCommand::Doctor { .. } => unreachable!("doctor is handled before path install"),
-        TerminalCliCommand::ValidateKeymap { .. } => run_keymap_validation(),
+        TerminalCliCommand::ValidateKeymap { format, .. } => run_keymap_validation(format),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
 }
@@ -2020,16 +2045,15 @@ fn run_terminal_doctor(path_options: TerminalPathOptions, format: TerminalDoctor
         });
 }
 
-fn run_keymap_validation() {
+fn run_keymap_validation(format: TerminalKeymapValidationOutputFormat) {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
-            match validate_keymaps(paths::keymap_file(), cx) {
-                Ok(validation) => {
-                    print!(
-                        "{}",
-                        format_keymap_validation(paths::keymap_file(), &validation)
-                    );
+            match keymap_validation_report(paths::keymap_file(), cx)
+                .and_then(|report| format_keymap_validation_report(&report, format))
+            {
+                Ok(output) => {
+                    print!("{output}");
                     io::stdout()
                         .flush()
                         .expect("failed to flush keymap validation output");
@@ -2042,6 +2066,26 @@ fn run_keymap_validation() {
             }
             cx.quit();
         });
+}
+
+fn format_keymap_validation_report(
+    report: &TerminalKeymapValidationReport,
+    format: TerminalKeymapValidationOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalKeymapValidationOutputFormat::Text => Ok(format_keymap_validation(report)),
+        TerminalKeymapValidationOutputFormat::Json => format_keymap_validation_json(report),
+    }
+}
+
+fn keymap_validation_report(
+    keymap_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalKeymapValidationReport> {
+    Ok(TerminalKeymapValidationReport {
+        keymap_file: keymap_file.to_path_buf(),
+        validation: validate_keymaps(keymap_file, cx)?,
+    })
 }
 
 fn launch_terminal(launch_options: LaunchOptions) {
@@ -3404,30 +3448,44 @@ impl TerminalConfigFileInitializationStatus {
     }
 }
 
-fn format_keymap_validation(keymap_file: &Path, validation: &TerminalKeymapValidation) -> String {
+fn format_keymap_validation(report: &TerminalKeymapValidationReport) -> String {
     let mut output = String::new();
-    writeln!(&mut output, "keymap_file: {}", keymap_file.display())
+    writeln!(&mut output, "keymap_file: {}", report.keymap_file.display())
         .expect("writing to string should not fail");
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
     writeln!(
         &mut output,
         "default_bindings: {}",
-        validation.default_binding_count
+        report.validation.default_binding_count
     )
     .expect("writing to string should not fail");
     writeln!(
         &mut output,
         "user_keymap_source: {}",
-        validation.user_keymap_source.as_str()
+        report.validation.user_keymap_source.as_str()
     )
     .expect("writing to string should not fail");
     writeln!(
         &mut output,
         "user_bindings: {}",
-        validation.user_binding_count
+        report.validation.user_binding_count
     )
     .expect("writing to string should not fail");
     output
+}
+
+fn format_keymap_validation_json(report: &TerminalKeymapValidationReport) -> Result<String> {
+    let value = serde_json::json!({
+        "keymap_file": report.keymap_file.display().to_string(),
+        "status": "ok",
+        "default_binding_count": report.validation.default_binding_count,
+        "user_keymap_source": report.validation.user_keymap_source.as_str(),
+        "user_binding_count": report.validation.user_binding_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap validation as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 impl TerminalUserKeymapSource {
@@ -7988,19 +8046,44 @@ mod tests {
 
     #[test]
     fn formats_keymap_validation() {
-        let output = format_keymap_validation(
-            Path::new("keymap.json"),
-            &TerminalKeymapValidation {
+        let report = TerminalKeymapValidationReport {
+            keymap_file: PathBuf::from("keymap.json"),
+            validation: TerminalKeymapValidation {
                 default_binding_count: 31,
                 user_binding_count: 2,
                 user_keymap_source: TerminalUserKeymapSource::File,
             },
-        );
+        };
+
+        let output = format_keymap_validation(&report);
 
         assert_eq!(
             output,
             "keymap_file: keymap.json\nstatus: ok\ndefault_bindings: 31\nuser_keymap_source: file\nuser_bindings: 2\n"
         );
+    }
+
+    #[test]
+    fn formats_keymap_validation_json() {
+        let report = TerminalKeymapValidationReport {
+            keymap_file: PathBuf::from("keymap.json"),
+            validation: TerminalKeymapValidation {
+                default_binding_count: 31,
+                user_binding_count: 2,
+                user_keymap_source: TerminalUserKeymapSource::File,
+            },
+        };
+
+        let output = format_keymap_validation_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("keymap validation json should parse");
+
+        assert_eq!(json["keymap_file"], "keymap.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["default_binding_count"], 31);
+        assert_eq!(json["user_keymap_source"], "file");
+        assert_eq!(json["user_binding_count"], 2);
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
@@ -8328,6 +8411,25 @@ mod tests {
     }
 
     #[test]
+    fn validate_keymap_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-keymap",
+            "--validate-keymap-format",
+            "json",
+        ])
+        .expect("failed to parse keymap validation json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("keymap validation json mode should resolve");
+
+        let TerminalCliCommand::ValidateKeymap { format, .. } = command else {
+            panic!("expected keymap validation mode");
+        };
+        assert_eq!(format, TerminalKeymapValidationOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -8338,7 +8440,10 @@ mod tests {
         let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
             .expect("keymap validation should not resolve startup layout");
 
-        assert!(matches!(command, TerminalCliCommand::ValidateKeymap { .. }));
+        let TerminalCliCommand::ValidateKeymap { format, .. } = command else {
+            panic!("expected keymap validation mode");
+        };
+        assert_eq!(format, TerminalKeymapValidationOutputFormat::Text);
     }
 
     #[test]
@@ -9031,6 +9136,10 @@ mod tests {
                 .expect_err(
                     "startup config validation format should require startup config validation",
                 );
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap-format", "json"])
+            .expect_err("keymap validation format should require keymap validation");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
