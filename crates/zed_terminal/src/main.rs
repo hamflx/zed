@@ -1,4 +1,5 @@
 use std::{
+    any::TypeId,
     collections::BTreeMap,
     env,
     fmt::Write as _,
@@ -2674,6 +2675,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     load_user_themes_in_background(fs.clone(), cx);
     watch_themes(fs.clone(), cx);
     command_palette::init(cx);
+    configure_terminal_command_palette(cx);
     apply_rendering_settings(cx);
     observe_settings_for_rendering(cx);
 
@@ -2759,6 +2761,123 @@ fn register_terminal_font_size_actions(fs: Arc<dyn fs::Fs>, cx: &mut App) {
             }
         }
     });
+}
+
+fn configure_terminal_command_palette(cx: &mut App) {
+    command_palette_hooks::CommandPaletteFilter::update_global(cx, |filter, _| {
+        apply_terminal_command_palette_filter(filter);
+    });
+}
+
+fn apply_terminal_command_palette_filter(filter: &mut command_palette_hooks::CommandPaletteFilter) {
+    for namespace in terminal_command_palette_hidden_namespaces() {
+        filter.hide_namespace(namespace);
+    }
+    filter.show_action_types(terminal_command_palette_visible_action_types().iter());
+}
+
+fn terminal_command_palette_hidden_namespaces() -> &'static [&'static str] {
+    &[
+        "agent",
+        "agents",
+        "agents_sidebar",
+        "assistant",
+        "buffer_search",
+        "collab",
+        "command_palette",
+        "debug_panel",
+        "dev",
+        "diagnostics",
+        "edit_prediction",
+        "editor",
+        "feedback",
+        "file_finder",
+        "git",
+        "git_panel",
+        "icon_theme_selector",
+        "notebook",
+        "outline",
+        "outline_panel",
+        "preview",
+        "project_panel",
+        "project_symbols",
+        "projects",
+        "remote_debug",
+        "search",
+        "settings_profile_selector",
+        "pane",
+        "task",
+        "terminal",
+        "theme",
+        "theme_selector",
+        "vim",
+        "welcome",
+        "workspace",
+        "zed",
+        "zed_terminal",
+        "zed_predict_onboarding",
+    ]
+}
+
+fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
+    vec![
+        TypeId::of::<ClearDefaultStartupProfile>(),
+        TypeId::of::<NewTerminalTab>(),
+        TypeId::of::<OpenConfigDirectory>(),
+        TypeId::of::<OpenLogsDirectory>(),
+        TypeId::of::<OpenStartupConfigFile>(),
+        TypeId::of::<ResetPaneSizes>(),
+        TypeId::of::<ResizePaneDown>(),
+        TypeId::of::<ResizePaneLeft>(),
+        TypeId::of::<ResizePaneRight>(),
+        TypeId::of::<ResizePaneUp>(),
+        TypeId::of::<editor::actions::SelectAll>(),
+        TypeId::of::<terminal::Clear>(),
+        TypeId::of::<terminal::Copy>(),
+        TypeId::of::<terminal::Paste>(),
+        TypeId::of::<terminal::PasteText>(),
+        TypeId::of::<terminal::ScrollLineDown>(),
+        TypeId::of::<terminal::ScrollLineUp>(),
+        TypeId::of::<terminal::ScrollPageDown>(),
+        TypeId::of::<terminal::ScrollPageUp>(),
+        TypeId::of::<terminal::ScrollToBottom>(),
+        TypeId::of::<terminal::ScrollToTop>(),
+        TypeId::of::<terminal::ShowCharacterPalette>(),
+        TypeId::of::<terminal::ToggleViMode>(),
+        TypeId::of::<terminal_view::RenameTerminal>(),
+        TypeId::of::<terminal_view::RerunTask>(),
+        TypeId::of::<workspace::ActivateNextPane>(),
+        TypeId::of::<workspace::ActivatePaneDown>(),
+        TypeId::of::<workspace::ActivatePaneLeft>(),
+        TypeId::of::<workspace::ActivatePaneRight>(),
+        TypeId::of::<workspace::ActivatePaneUp>(),
+        TypeId::of::<workspace::ActivatePreviousPane>(),
+        TypeId::of::<workspace::FocusCenterPane>(),
+        TypeId::of::<workspace::ToggleZoom>(),
+        TypeId::of::<workspace::pane::ActivateItem>(),
+        TypeId::of::<workspace::pane::ActivateNextItem>(),
+        TypeId::of::<workspace::pane::ActivatePreviousItem>(),
+        TypeId::of::<workspace::pane::CloseActiveItem>(),
+        TypeId::of::<workspace::pane::CloseAllItems>(),
+        TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
+        TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
+        TypeId::of::<workspace::pane::CloseOtherItems>(),
+        TypeId::of::<workspace::pane::SplitDown>(),
+        TypeId::of::<workspace::pane::SplitLeft>(),
+        TypeId::of::<workspace::pane::SplitRight>(),
+        TypeId::of::<workspace::pane::SplitUp>(),
+        TypeId::of::<workspace::pane::SwapItemLeft>(),
+        TypeId::of::<workspace::pane::SwapItemRight>(),
+        TypeId::of::<zed_actions::buffer_search::Deploy>(),
+        TypeId::of::<zed_actions::command_palette::Toggle>(),
+        TypeId::of::<zed_actions::DecreaseBufferFontSize>(),
+        TypeId::of::<zed_actions::IncreaseBufferFontSize>(),
+        TypeId::of::<zed_actions::OpenKeymapFile>(),
+        TypeId::of::<zed_actions::OpenSettings>(),
+        TypeId::of::<zed_actions::OpenSettingsFile>(),
+        TypeId::of::<zed_actions::Quit>(),
+        TypeId::of::<zed_actions::ResetBufferFontSize>(),
+    ]
 }
 
 fn init_terminal_search(cx: &mut App) {
@@ -3916,6 +4035,68 @@ mod tests {
     }
 
     #[test]
+    fn terminal_command_palette_filter_keeps_terminal_product_actions() {
+        let filter = terminal_command_palette_filter_for_test();
+
+        assert_command_palette_action_visible(&filter, &NewTerminalTab);
+        assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
+        assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
+        assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
+        assert_command_palette_action_visible(&filter, &terminal::Copy);
+        assert_command_palette_action_visible(&filter, &terminal::Paste);
+        assert_command_palette_action_visible(&filter, &terminal::Clear);
+        assert_command_palette_action_visible(&filter, &terminal_view::RenameTerminal);
+        assert_command_palette_action_visible(&filter, &editor::actions::SelectAll);
+        assert_command_palette_action_visible(&filter, &zed_actions::buffer_search::Deploy::find());
+        assert_command_palette_action_visible(
+            &filter,
+            &zed_actions::IncreaseBufferFontSize { persist: false },
+        );
+        assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
+        assert_command_palette_action_visible(&filter, &workspace::SplitRight::default());
+        assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
+    }
+
+    #[test]
+    fn terminal_command_palette_filter_hides_non_terminal_product_actions() {
+        let filter = terminal_command_palette_filter_for_test();
+
+        assert_command_palette_action_hidden(&filter, &editor::actions::ToggleComments::default());
+        assert_command_palette_action_hidden(&filter, &workspace::NewFile);
+        assert_command_palette_action_hidden(&filter, &workspace::ToggleFileFinder::default());
+        assert_command_palette_action_hidden(&filter, &workspace::ToggleBottomDock);
+        assert_command_palette_action_hidden(&filter, &zed_actions::Extensions::default());
+        assert_command_palette_action_hidden(&filter, &zed_actions::agent::Chat);
+        assert_command_palette_action_hidden(&filter, &zed_actions::theme::ToggleMode);
+        assert_command_palette_action_hidden(&filter, &terminal::SearchTest);
+        assert_command_palette_action_hidden(&filter, &terminal::ScrollHalfPageUp);
+    }
+
+    #[test]
+    fn terminal_command_palette_filter_hides_broad_mixed_namespaces() {
+        let hidden_namespaces = terminal_command_palette_hidden_namespaces()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        for namespace in [
+            "buffer_search",
+            "command_palette",
+            "editor",
+            "pane",
+            "terminal",
+            "workspace",
+            "zed",
+            "zed_terminal",
+        ] {
+            assert!(
+                hidden_namespaces.contains(namespace),
+                "terminal command palette should hide broad namespace {namespace:?}"
+            );
+        }
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -3936,6 +4117,34 @@ mod tests {
         assert!(
             missing_action_names.is_empty(),
             "terminal keymap references unregistered actions: {missing_action_names:?}"
+        );
+    }
+
+    fn terminal_command_palette_filter_for_test() -> command_palette_hooks::CommandPaletteFilter {
+        let mut filter = command_palette_hooks::CommandPaletteFilter::default();
+        apply_terminal_command_palette_filter(&mut filter);
+        filter
+    }
+
+    fn assert_command_palette_action_visible(
+        filter: &command_palette_hooks::CommandPaletteFilter,
+        action: &dyn Action,
+    ) {
+        assert!(
+            !filter.is_hidden(action),
+            "{} should be visible in zed terminal command palette",
+            action.name()
+        );
+    }
+
+    fn assert_command_palette_action_hidden(
+        filter: &command_palette_hooks::CommandPaletteFilter,
+        action: &dyn Action,
+    ) {
+        assert!(
+            filter.is_hidden(action),
+            "{} should be hidden from zed terminal command palette",
+            action.name()
         );
     }
 
