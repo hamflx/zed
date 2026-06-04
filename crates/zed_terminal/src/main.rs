@@ -88,6 +88,7 @@ const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
+const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -2767,6 +2768,13 @@ fn configure_terminal_command_palette(cx: &mut App) {
     command_palette_hooks::CommandPaletteFilter::update_global(cx, |filter, _| {
         apply_terminal_command_palette_filter(filter);
     });
+    command_palette_hooks::GlobalCommandPaletteInterceptor::set(cx, |query, _, cx| {
+        let query = query.to_string();
+        let startup_config_file = active_terminal_startup_config_file();
+        cx.background_spawn(async move {
+            terminal_profile_command_palette_result(&query, &startup_config_file)
+        })
+    });
 }
 
 fn apply_terminal_command_palette_filter(filter: &mut command_palette_hooks::CommandPaletteFilter) {
@@ -2823,6 +2831,8 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
     vec![
         TypeId::of::<ClearDefaultStartupProfile>(),
         TypeId::of::<NewTerminalTab>(),
+        TypeId::of::<NewTerminalSplitWithProfile>(),
+        TypeId::of::<NewTerminalTabWithProfile>(),
         TypeId::of::<OpenConfigDirectory>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
@@ -2831,6 +2841,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ResizePaneLeft>(),
         TypeId::of::<ResizePaneRight>(),
         TypeId::of::<ResizePaneUp>(),
+        TypeId::of::<SetDefaultStartupProfile>(),
         TypeId::of::<editor::actions::SelectAll>(),
         TypeId::of::<terminal::Clear>(),
         TypeId::of::<terminal::Copy>(),
@@ -2878,6 +2889,129 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<zed_actions::Quit>(),
         TypeId::of::<zed_actions::ResetBufferFontSize>(),
     ]
+}
+
+fn terminal_profile_command_palette_result(
+    query: &str,
+    startup_config_file: &Path,
+) -> command_palette_hooks::CommandInterceptResult {
+    let profiles = match TerminalStartupConfig::load(startup_config_file) {
+        Ok(startup_config) => startup_config.profile_summaries(false),
+        Err(error) => {
+            log::warn!("failed to load startup profile command palette entries: {error:#}");
+            Vec::new()
+        }
+    };
+
+    terminal_profile_command_palette_result_from_summaries(query, profiles)
+}
+
+fn terminal_profile_command_palette_result_from_summaries(
+    query: &str,
+    profiles: Vec<TerminalStartupProfileSummary>,
+) -> command_palette_hooks::CommandInterceptResult {
+    let query = command_palette::normalize_action_query(query);
+    let results = terminal_profile_command_palette_items(&query, profiles);
+
+    command_palette_hooks::CommandInterceptResult {
+        results,
+        exclusive: false,
+    }
+}
+
+fn terminal_profile_command_palette_items(
+    query: &str,
+    profiles: Vec<TerminalStartupProfileSummary>,
+) -> Vec<command_palette_hooks::CommandInterceptItem> {
+    let mut items = Vec::new();
+
+    for profile in profiles {
+        let label = profile_menu_label(&profile);
+        let profile_name = profile.name.clone();
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("New Tab With Profile: {label}"),
+            NewTerminalTabWithProfile {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Split Right With Profile: {label}"),
+            NewTerminalSplitWithProfile {
+                profile: profile_name.clone(),
+                direction: TerminalStartupSplitDirection::Right,
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Split Down With Profile: {label}"),
+            NewTerminalSplitWithProfile {
+                profile: profile_name.clone(),
+                direction: TerminalStartupSplitDirection::Down,
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Set Default Profile: {label}"),
+            SetDefaultStartupProfile {
+                profile: profile_name,
+            }
+            .boxed_clone(),
+        ));
+    }
+
+    items
+        .into_iter()
+        .flatten()
+        .take(TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS)
+        .collect()
+}
+
+fn terminal_profile_command_palette_item(
+    query: &str,
+    string: String,
+    action: Box<dyn Action>,
+) -> Option<command_palette_hooks::CommandInterceptItem> {
+    terminal_command_palette_match_positions(&string, query).map(|positions| {
+        command_palette_hooks::CommandInterceptItem {
+            action,
+            string,
+            positions,
+        }
+    })
+}
+
+fn terminal_command_palette_match_positions(string: &str, query: &str) -> Option<Vec<usize>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut positions = Vec::new();
+    let mut string_chars = string.char_indices();
+
+    for query_char in query.chars().flat_map(char::to_lowercase) {
+        let mut matched = false;
+        for (index, string_char) in string_chars.by_ref() {
+            if string_char
+                .to_lowercase()
+                .any(|string_char| string_char == query_char)
+            {
+                positions.push(index);
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return None;
+        }
+    }
+
+    Some(positions)
 }
 
 fn init_terminal_search(cx: &mut App) {
@@ -4039,6 +4173,25 @@ mod tests {
         let filter = terminal_command_palette_filter_for_test();
 
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
+        assert_command_palette_action_visible(
+            &filter,
+            &NewTerminalTabWithProfile {
+                profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
+            &NewTerminalSplitWithProfile {
+                profile: "work".into(),
+                direction: TerminalStartupSplitDirection::Right,
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
+            &SetDefaultStartupProfile {
+                profile: "work".into(),
+            },
+        );
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
@@ -4097,6 +4250,146 @@ mod tests {
     }
 
     #[test]
+    fn terminal_profile_command_palette_exposes_visible_profile_actions() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "work",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: Some("#0f766e".into()),
+                hidden: false,
+                is_default: true,
+                tab_count: 2,
+            }],
+        );
+
+        assert!(!result.exclusive);
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "New Tab With Profile: Work Shell (work) - Default",
+                "Split Right With Profile: Work Shell (work) - Default",
+                "Split Down With Profile: Work Shell (work) - Default",
+                "Set Default Profile: Work Shell (work) - Default",
+            ]
+        );
+
+        assert_profile_tab_action(&result.results[0], "work");
+        assert_profile_split_action(
+            &result.results[1],
+            "work",
+            TerminalStartupSplitDirection::Right,
+        );
+        assert_profile_split_action(
+            &result.results[2],
+            "work",
+            TerminalStartupSplitDirection::Down,
+        );
+        assert_set_default_profile_action(&result.results[3], "work");
+        assert!(result.results.iter().all(|item| !item.positions.is_empty()));
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_uses_visible_startup_profiles() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "hidden".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Hidden Shell".into()),
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Work Shell".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "",
+            config.profile_summaries(false),
+        );
+
+        assert_eq!(result.results.len(), 4);
+        assert!(
+            result
+                .results
+                .iter()
+                .all(|item| item.string.contains("Work Shell"))
+        );
+        assert!(
+            result
+                .results
+                .iter()
+                .all(|item| !item.string.contains("Hidden Shell"))
+        );
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_filters_by_query() {
+        let profiles = vec![
+            TerminalStartupProfileSummary {
+                name: "build".into(),
+                display_name: "Build Shell".into(),
+                description: None,
+                icon: None,
+                color: None,
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+            },
+            TerminalStartupProfileSummary {
+                name: "logs".into(),
+                display_name: "Log Tail".into(),
+                description: None,
+                icon: None,
+                color: None,
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+            },
+        ];
+
+        let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
+
+        assert_eq!(result.results.len(), 4);
+        assert!(
+            result
+                .results
+                .iter()
+                .all(|item| item.string.contains("Log Tail"))
+        );
+    }
+
+    #[test]
+    fn terminal_command_palette_match_positions_are_subsequence_matches() {
+        assert_eq!(
+            terminal_command_palette_match_positions("New Tab With Profile: Work", "ntwp")
+                .expect("query should match"),
+            vec![0, 4, 8, 13]
+        );
+        assert!(terminal_command_palette_match_positions("New Tab", "zzz").is_none());
+        assert_eq!(
+            terminal_command_palette_match_positions("New Tab", "   ")
+                .expect("blank query matches"),
+            Vec::<usize>::new()
+        );
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -4118,6 +4411,44 @@ mod tests {
             missing_action_names.is_empty(),
             "terminal keymap references unregistered actions: {missing_action_names:?}"
         );
+    }
+
+    fn assert_profile_tab_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<NewTerminalTabWithProfile>()
+            .expect("expected profile tab action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_profile_split_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+        expected_direction: TerminalStartupSplitDirection,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<NewTerminalSplitWithProfile>()
+            .expect("expected profile split action");
+        assert_eq!(action.profile, expected_profile);
+        assert_eq!(action.direction, expected_direction);
+    }
+
+    fn assert_set_default_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<SetDefaultStartupProfile>()
+            .expect("expected set default profile action");
+        assert_eq!(action.profile, expected_profile);
     }
 
     fn terminal_command_palette_filter_for_test() -> command_palette_hooks::CommandPaletteFilter {
