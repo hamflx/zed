@@ -53,6 +53,7 @@ actions!(
         ResizePaneRight,
         ResizePaneUp,
         ResizePaneDown,
+        ResetPaneSizes,
         ClearDefaultStartupProfile
     ]
 );
@@ -2919,6 +2920,7 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Resize Pane Right", ResizePaneRight),
             MenuItem::action("Resize Pane Up", ResizePaneUp),
             MenuItem::action("Resize Pane Down", ResizePaneDown),
+            MenuItem::action("Reset Pane Sizes", ResetPaneSizes),
         ]),
     ]);
 }
@@ -3028,6 +3030,9 @@ fn open_terminal_window(
                 workspace.register_action(|workspace, _: &ResizePaneDown, window, cx| {
                     let amount = terminal_pane_resize_height(cx);
                     workspace.resize_pane(Axis::Vertical, -amount, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ResetPaneSizes, _, cx| {
+                    workspace.reset_pane_sizes(cx);
                 });
                 let profile_project = project.clone();
                 workspace.register_action(
@@ -4078,6 +4083,14 @@ mod tests {
                 .downcast_ref::<ClearDefaultStartupProfile>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn parses_reset_pane_sizes_action_input() {
+        let action = <ResetPaneSizes as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("reset pane sizes action input should parse");
+
+        assert!(action.as_any().downcast_ref::<ResetPaneSizes>().is_some());
     }
 
     #[test]
