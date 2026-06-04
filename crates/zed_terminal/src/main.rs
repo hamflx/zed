@@ -129,6 +129,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
         .args(["add_startup_tab"])
 ))]
 #[command(group(
+    ArgGroup::new("startup_tab_remove_command")
+        .args(["remove_startup_tab"])
+))]
+#[command(group(
     ArgGroup::new("profile_metadata_command")
         .args(["create_profile", "update_profile"])
 ))]
@@ -323,6 +327,7 @@ struct Cli {
             "update_profile_startup",
             "update_startup",
             "update_startup_env",
+            "remove_startup_tab",
             "update_profile_env",
             "copy_profile",
             "remove_profile",
@@ -750,9 +755,68 @@ struct Cli {
         long = "add-startup-tab-format",
         value_enum,
         requires = "add_startup_tab",
+        conflicts_with_all = ["remove_startup_tab", "remove_startup_tab_format"],
         help = "Set the output format for --add-startup-tab"
     )]
     add_startup_tab_format: Option<TerminalStartupTabAppendOutputFormat>,
+
+    #[arg(
+        long = "remove-startup-tab",
+        value_name = "TAB",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Remove one root startup tab from terminal.json by 1-based root tabs[] number without opening a terminal window"
+    )]
+    remove_startup_tab: Option<usize>,
+
+    #[arg(
+        long = "remove-startup-tab-format",
+        value_enum,
+        requires = "remove_startup_tab",
+        conflicts_with_all = ["add_startup_tab", "add_startup_tab_format"],
+        help = "Set the output format for --remove-startup-tab"
+    )]
+    remove_startup_tab_format: Option<TerminalStartupTabRemovalOutputFormat>,
 
     #[arg(
         long = "set-default-profile",
@@ -1889,6 +1953,11 @@ enum TerminalCliCommand {
         tab: TerminalStartupTabConfig,
         format: TerminalStartupTabAppendOutputFormat,
     },
+    RemoveStartupTab {
+        path_options: TerminalPathOptions,
+        tab_number: usize,
+        format: TerminalStartupTabRemovalOutputFormat,
+    },
     UpdateProfileEnv {
         path_options: TerminalPathOptions,
         profile: String,
@@ -2276,6 +2345,16 @@ struct TerminalStartupTabAppend {
     changed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupTabRemoval {
+    path: PathBuf,
+    tab_number: usize,
+    previous_tab_count: usize,
+    tab_count: usize,
+    tab: Option<TerminalStartupProfileTabDescription>,
+    changed: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TerminalProfileSplitDirectionEntry {
     label: &'static str,
@@ -2595,6 +2674,13 @@ enum TerminalStartupTabAppendOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupTabRemovalOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileEnvUpdateOutputFormat {
     #[default]
     Text,
@@ -2672,6 +2758,7 @@ impl TerminalCliCommand {
             || cli.update_startup
             || cli.update_startup_env
             || cli.add_startup_tab
+            || cli.remove_startup_tab.is_some()
             || cli.update_profile_env.is_some()
             || !cli.copy_profile.is_empty()
             || cli.remove_profile.is_some()
@@ -2809,6 +2896,15 @@ impl TerminalCliCommand {
                 path_options,
                 tab,
                 format: cli.add_startup_tab_format.unwrap_or_default(),
+            });
+        }
+
+        if let Some(tab_number) = cli.remove_startup_tab {
+            validate_root_startup_tab_number(tab_number, "--remove-startup-tab")?;
+            return Ok(Self::RemoveStartupTab {
+                path_options,
+                tab_number,
+                format: cli.remove_startup_tab_format.unwrap_or_default(),
             });
         }
 
@@ -3041,6 +3137,7 @@ impl TerminalCliCommand {
             Self::UpdateStartup { path_options, .. } => path_options,
             Self::UpdateStartupEnv { path_options, .. } => path_options,
             Self::AddStartupTab { path_options, .. } => path_options,
+            Self::RemoveStartupTab { path_options, .. } => path_options,
             Self::UpdateProfileEnv { path_options, .. } => path_options,
             Self::CopyProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
@@ -3904,6 +4001,14 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::RemoveStartupTab {
+            tab_number, format, ..
+        } => {
+            if let Err(error) = print_startup_tab_removal(tab_number, format) {
+                eprintln!("failed to remove root startup tab: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::UpdateProfileEnv {
             profile,
             update,
@@ -4377,6 +4482,22 @@ fn print_startup_tab_append(
     Ok(())
 }
 
+fn print_startup_tab_removal(
+    tab_number: usize,
+    format: TerminalStartupTabRemovalOutputFormat,
+) -> Result<()> {
+    let removal = remove_root_startup_tab(&active_terminal_startup_config_file(), tab_number)?;
+    match format {
+        TerminalStartupTabRemovalOutputFormat::Text => {
+            print!("{}", format_startup_tab_removal(&removal))
+        }
+        TerminalStartupTabRemovalOutputFormat::Json => {
+            print!("{}", format_startup_tab_removal_json(&removal)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_profile_env_update(
     profile: &str,
     update: &TerminalStartupProfileEnvUpdateRequest,
@@ -4834,6 +4955,13 @@ fn validate_startup_tab_config_shape(tab: &TerminalStartupTabConfig, label: &str
     }
     if tab.command.is_some() && tab.shell.is_some() {
         bail!("shell selection requires a shell tab for {label}");
+    }
+    Ok(())
+}
+
+fn validate_root_startup_tab_number(tab_number: usize, flag: &'static str) -> Result<()> {
+    if tab_number == 0 {
+        bail!("{flag} uses 1-based root tabs[] numbering and must be at least 1");
     }
     Ok(())
 }
@@ -5743,6 +5871,95 @@ fn append_root_startup_tab(
         previous_tab_count,
         tab_count: previous_tab_count + 1,
         tab: startup_profile_tab_description(tab),
+        changed: true,
+    })
+}
+
+fn remove_root_startup_tab(path: &Path, tab_number: usize) -> Result<TerminalStartupTabRemoval> {
+    validate_root_startup_tab_number(tab_number, "--remove-startup-tab")?;
+    let mut text = match std_fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalStartupTabRemoval {
+                path: path.to_path_buf(),
+                tab_number,
+                previous_tab_count: 0,
+                tab_count: 0,
+                tab: None,
+                changed: false,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    let previous_tab_count = startup_config.tabs.len();
+    let Some(remove_index) = tab_number.checked_sub(1) else {
+        unreachable!("root startup tab number is already validated")
+    };
+    let Some(removed_tab) = startup_config.tabs.get(remove_index).cloned() else {
+        return Ok(TerminalStartupTabRemoval {
+            path: path.to_path_buf(),
+            tab_number,
+            previous_tab_count,
+            tab_count: previous_tab_count,
+            tab: None,
+            changed: false,
+        });
+    };
+
+    let mut updated_config = startup_config.clone();
+    updated_config.tabs.remove(remove_index);
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to remove root startup tab {tab_number} because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let key_path = vec!["tabs".to_string(), format!("#{remove_index}")];
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &key_path,
+        settings_json::infer_json_indent_size(&text),
+        None,
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because startup tab removal produced unexpected content",
+            path.display()
+        );
+    }
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupTabRemoval {
+        path: path.to_path_buf(),
+        tab_number,
+        previous_tab_count,
+        tab_count: previous_tab_count - 1,
+        tab: Some(startup_profile_tab_description(&removed_tab)),
         changed: true,
     })
 }
@@ -8305,6 +8522,51 @@ fn format_startup_tab_append_json(append: &TerminalStartupTabAppend) -> Result<S
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup tab append as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_tab_removal(removal: &TerminalStartupTabRemoval) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        removal.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "tab: {}", removal.tab_number)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "previous_tabs: {}", removal.previous_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", removal.tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", removal.changed)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "removed_tab_config:").expect("writing to string should not fail");
+    if let Some(tab) = &removal.tab {
+        format_startup_profile_tab_description_body(&mut output, "  ", tab);
+    } else {
+        writeln!(&mut output, "  none").expect("writing to string should not fail");
+    }
+    output
+}
+
+fn format_startup_tab_removal_json(removal: &TerminalStartupTabRemoval) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": removal.path.display().to_string(),
+        "status": "ok",
+        "tab": removal.tab_number,
+        "previous_tab_count": removal.previous_tab_count,
+        "tab_count": removal.tab_count,
+        "changed": removal.changed,
+        "removed_tab_config": removal
+            .tab
+            .as_ref()
+            .map(|tab| startup_profile_tab_description_json(removal.tab_number, tab)),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup tab removal as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -13643,6 +13905,126 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_tab_removal() {
+        let output = format_startup_tab_removal(&TerminalStartupTabRemoval {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 2,
+            previous_tab_count: 3,
+            tab_count: 2,
+            tab: Some(TerminalStartupProfileTabDescription {
+                profile: None,
+                working_directory: Some(PathBuf::from("work")),
+                command: Some("cmd /C echo build".into()),
+                title: Some("Build".into()),
+                shell: None,
+                env_keys: vec!["MODE".into(), "TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Right),
+            }),
+            changed: true,
+        });
+
+        assert_eq!(
+            output,
+            concat!(
+                "startup_config_file: terminal.json\n",
+                "status: ok\n",
+                "tab: 2\n",
+                "previous_tabs: 3\n",
+                "tabs: 2\n",
+                "changed: true\n",
+                "removed_tab_config:\n",
+                "  profile: none\n",
+                "  working_directory: work\n",
+                "  command: cmd /C echo build\n",
+                "  title: Build\n",
+                "  shell: default\n",
+                "  env: 2 variables\n",
+                "    - MODE\n",
+                "    - TOKEN\n",
+                "  split: right\n",
+            )
+        );
+        assert!(!output.contains("secret"));
+
+        let output = format_startup_tab_removal(&TerminalStartupTabRemoval {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 4,
+            previous_tab_count: 2,
+            tab_count: 2,
+            tab: None,
+            changed: false,
+        });
+
+        assert_eq!(
+            output,
+            concat!(
+                "startup_config_file: terminal.json\n",
+                "status: ok\n",
+                "tab: 4\n",
+                "previous_tabs: 2\n",
+                "tabs: 2\n",
+                "changed: false\n",
+                "removed_tab_config:\n",
+                "  none\n",
+            )
+        );
+    }
+
+    #[test]
+    fn formats_startup_tab_removal_json_without_env_values() {
+        let output = format_startup_tab_removal_json(&TerminalStartupTabRemoval {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 3,
+            previous_tab_count: 4,
+            tab_count: 3,
+            tab: Some(TerminalStartupProfileTabDescription {
+                profile: Some("work".into()),
+                working_directory: None,
+                command: None,
+                title: Some("Work".into()),
+                shell: None,
+                env_keys: vec!["TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Down),
+            }),
+            changed: true,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup tab removal json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tab"], 3);
+        assert_eq!(json["previous_tab_count"], 4);
+        assert_eq!(json["tab_count"], 3);
+        assert_eq!(json["changed"], true);
+        assert_eq!(json["removed_tab_config"]["tab"], 3);
+        assert_eq!(json["removed_tab_config"]["profile"], "work");
+        assert_eq!(json["removed_tab_config"]["title"], "Work");
+        assert_eq!(json["removed_tab_config"]["env_count"], 1);
+        assert_eq!(
+            json["removed_tab_config"]["env_keys"],
+            serde_json::json!(["TOKEN"])
+        );
+        assert_eq!(json["removed_tab_config"]["split"], "down");
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("secret"));
+
+        let output = format_startup_tab_removal_json(&TerminalStartupTabRemoval {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 8,
+            previous_tab_count: 1,
+            tab_count: 1,
+            tab: None,
+            changed: false,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup tab removal noop json should parse");
+        assert_eq!(json["removed_tab_config"], serde_json::Value::Null);
+    }
+
+    #[test]
     fn formats_startup_profile_env_update() {
         let output = format_startup_profile_env_update(&TerminalStartupProfileEnvUpdate {
             path: PathBuf::from("terminal.json"),
@@ -16556,6 +16938,204 @@ mod tests {
     }
 
     #[test]
+    fn remove_root_startup_tab_preserves_jsonc_comments_and_removes() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  // keep tabs comment
+  "tabs": [
+    { "title": "Logs" },
+    {
+      // keep removed tab comment
+      "command": "cmd /C echo build",
+      "title": "Build",
+      "env": {
+        "TOKEN": "secret",
+        "MODE": "test"
+      },
+      "split": "right"
+    },
+    { "title": "Shell" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let removal = remove_root_startup_tab(&startup_config_file, 2)
+            .expect("root startup tab should be removed");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.tab_number, 2);
+        assert_eq!(removal.previous_tab_count, 3);
+        assert_eq!(removal.tab_count, 2);
+        assert!(removal.changed);
+        let removed_tab = removal
+            .tab
+            .as_ref()
+            .expect("removed tab should be reported");
+        assert_eq!(removed_tab.command.as_deref(), Some("cmd /C echo build"));
+        assert_eq!(removed_tab.title.as_deref(), Some("Build"));
+        assert_eq!(removed_tab.env_keys, vec!["MODE", "TOKEN"]);
+        assert_eq!(
+            removed_tab.split,
+            Some(TerminalStartupSplitDirection::Right)
+        );
+
+        let text_output = format_startup_tab_removal(&removal);
+        let json_output =
+            format_startup_tab_removal_json(&removal).expect("json output should format");
+        for output in [&text_output, &json_output] {
+            assert!(!output.contains("secret"));
+            assert!(output.contains("TOKEN"));
+        }
+
+        let content =
+            std_fs::read_to_string(&removal.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep tabs comment"));
+        assert!(content.contains(r#""title": "Logs""#));
+        assert!(content.contains(r#""title": "Shell""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+        assert!(!content.contains(r#""title": "Build""#));
+        assert!(!content.contains("secret"));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.tabs.len(), 2);
+        assert_eq!(updated_config.tabs[0].title.as_deref(), Some("Logs"));
+        assert_eq!(updated_config.tabs[1].title.as_deref(), Some("Shell"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_root_startup_tab_reports_unchanged_when_out_of_range() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "tabs": [
+    { "title": "Logs" }
+  ]
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let removal = remove_root_startup_tab(&startup_config_file, 2)
+            .expect("out-of-range startup tab removal should be a no-op");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.tab_number, 2);
+        assert_eq!(removal.previous_tab_count, 1);
+        assert_eq!(removal.tab_count, 1);
+        assert!(removal.tab.is_none());
+        assert!(!removal.changed);
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after no-op removal"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_root_startup_tab_reports_unchanged_when_file_is_missing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("config").join("terminal.json");
+
+        let removal = remove_root_startup_tab(&startup_config_file, 1)
+            .expect("missing startup config removal should be a no-op");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.tab_number, 1);
+        assert_eq!(removal.previous_tab_count, 0);
+        assert_eq!(removal.tab_count, 0);
+        assert!(removal.tab.is_none());
+        assert!(!removal.changed);
+        assert!(
+            !removal.path.exists(),
+            "removing from a missing startup config should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_root_startup_tab_rejects_zero() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let error = remove_root_startup_tab(&startup_config_file, 0)
+            .expect_err("zero startup tab number should be rejected");
+        assert!(format!("{error:#}").contains("uses 1-based root tabs[] numbering"));
+        assert!(
+            !startup_config_file.exists(),
+            "rejected removal should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_root_startup_tab_repairs_invalid_removed_profile_reference() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "tabs": [
+    { "profile": "missing", "title": "Broken" },
+    { "title": "Shell" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let removal = remove_root_startup_tab(&startup_config_file, 1)
+            .expect("removing the invalid root startup tab should repair the config");
+
+        assert_eq!(removal.tab_number, 1);
+        assert_eq!(removal.previous_tab_count, 2);
+        assert_eq!(removal.tab_count, 1);
+        assert!(removal.changed);
+        let removed_tab = removal.tab.expect("removed tab should be reported");
+        assert_eq!(removed_tab.profile.as_deref(), Some("missing"));
+        assert_eq!(removed_tab.title.as_deref(), Some("Broken"));
+
+        let content =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read updated config");
+        assert!(!content.contains("missing"));
+        assert!(content.contains(r#""title": "Shell""#));
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.tabs.len(), 1);
+        assert_eq!(updated_config.tabs[0].title.as_deref(), Some("Shell"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn update_startup_profile_env_updates_jsonc_fields_without_reporting_values() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -18665,6 +19245,45 @@ mod tests {
     }
 
     #[test]
+    fn remove_startup_tab_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-startup-tab",
+            "2",
+            "--remove-startup-tab-format",
+            "json",
+        ])
+        .expect("failed to parse remove startup tab json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("remove startup tab json mode should resolve");
+
+        let TerminalCliCommand::RemoveStartupTab {
+            tab_number, format, ..
+        } = command
+        else {
+            panic!("expected remove startup tab mode");
+        };
+        assert_eq!(tab_number, 2);
+        assert_eq!(format, TerminalStartupTabRemovalOutputFormat::Json);
+
+        let cli = Cli::try_parse_from(["zed-terminal", "--remove-startup-tab", "1"])
+            .expect("failed to parse remove startup tab args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("remove startup tab mode should resolve");
+
+        let TerminalCliCommand::RemoveStartupTab {
+            tab_number, format, ..
+        } = command
+        else {
+            panic!("expected remove startup tab mode");
+        };
+        assert_eq!(tab_number, 1);
+        assert_eq!(format, TerminalStartupTabRemovalOutputFormat::Text);
+    }
+
+    #[test]
     fn update_profile_env_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -19249,6 +19868,45 @@ mod tests {
         assert_eq!(path_options.config_dir, config_dir);
         assert_eq!(tab.title.as_deref(), Some("Logs"));
         assert_eq!(format, TerminalStartupTabAppendOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_tab_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--remove-startup-tab",
+            "2",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("remove-startup-tab mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::RemoveStartupTab {
+            path_options,
+            tab_number,
+            format,
+        } = command
+        else {
+            panic!("expected remove startup tab mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(tab_number, 2);
+        assert_eq!(format, TerminalStartupTabRemovalOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -20226,6 +20884,15 @@ mod tests {
             .expect_err("add startup tab format should require startup tab append mode");
         assert!(error.to_string().contains("required"));
 
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--remove-startup-tab-format",
+            "json",
+        ])
+        .expect_err("startup tab removal format should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
         let error = Cli::try_parse_from(["zed-terminal", "--startup-tab-title", "Logs"])
             .expect_err("startup tab title should require startup tab append mode");
         assert!(error.to_string().contains("required"));
@@ -21090,6 +21757,67 @@ mod tests {
     }
 
     #[test]
+    fn remove_startup_tab_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-startup-tab",
+            "1",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with startup tab removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-startup-tab",
+            "1",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with startup tab removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-startup-tab",
+            "1",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with startup tab removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-startup-tab", "1", "--paths"])
+            .expect_err("path inspection should conflict with startup tab removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-startup-tab-format", "json"])
+            .expect_err("remove startup tab format should require startup tab removal mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-startup-tab",
+            "1",
+            "--add-startup-tab-format",
+            "json",
+        ])
+        .expect_err("startup tab append format should conflict with startup tab removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let cli = Cli::try_parse_from(["zed-terminal", "--remove-startup-tab", "0"])
+            .expect("zero tab number should parse as a usize");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("zero tab number should fail command resolution");
+        assert!(format!("{error:#}").contains("uses 1-based root tabs[] numbering"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn non_launch_modes_reject_startup_title_arguments() {
         for mode in [
             "--init-config",
@@ -21108,6 +21836,7 @@ mod tests {
             "--update-startup",
             "--update-startup-env",
             "--add-startup-tab",
+            "--remove-startup-tab",
             "--update-profile-startup",
             "--update-profile-env",
             "--copy-profile",
@@ -21126,6 +21855,7 @@ mod tests {
                 | "--remove-profile"
                 | "--hide-profile"
                 | "--show-profile" => vec!["zed-terminal", mode, "work"],
+                "--remove-startup-tab" => vec!["zed-terminal", mode, "1"],
                 "--copy-profile" | "--rename-profile" => vec!["zed-terminal", mode, "old", "new"],
                 _ => vec!["zed-terminal", mode],
             };
