@@ -125,6 +125,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
         .args(["update_startup_env"])
 ))]
 #[command(group(
+    ArgGroup::new("startup_tab_append_command")
+        .args(["add_startup_tab"])
+))]
+#[command(group(
     ArgGroup::new("profile_metadata_command")
         .args(["create_profile", "update_profile"])
 ))]
@@ -616,6 +620,139 @@ struct Cli {
         help = "Set the output format for --update-startup-env"
     )]
     update_startup_env_format: Option<TerminalStartupEnvUpdateOutputFormat>,
+
+    #[arg(
+        long = "add-startup-tab",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Append one root startup tab to terminal.json without opening a terminal window"
+    )]
+    add_startup_tab: bool,
+
+    #[arg(
+        long = "startup-tab-profile",
+        value_name = "NAME",
+        requires = "startup_tab_append_command",
+        conflicts_with_all = [
+            "startup_tab_working_directory",
+            "startup_tab_command",
+            "startup_tab_shell",
+            "startup_tab_shell_args",
+            "startup_tab_env"
+        ],
+        help = "Append a root startup tab from a named profile"
+    )]
+    startup_tab_profile: Option<String>,
+
+    #[arg(
+        long = "startup-tab-working-directory",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath,
+        requires = "startup_tab_append_command",
+        conflicts_with = "startup_tab_profile",
+        help = "Set working_directory for the appended root startup tab"
+    )]
+    startup_tab_working_directory: Option<PathBuf>,
+
+    #[arg(
+        long = "startup-tab-command",
+        value_name = "COMMAND",
+        requires = "startup_tab_append_command",
+        conflicts_with_all = ["startup_tab_profile", "startup_tab_shell", "startup_tab_shell_args"],
+        help = "Set command for the appended root startup tab"
+    )]
+    startup_tab_command: Option<String>,
+
+    #[arg(
+        long = "startup-tab-title",
+        value_name = "TITLE",
+        requires = "startup_tab_append_command",
+        help = "Set title for the appended root startup tab"
+    )]
+    startup_tab_title: Option<String>,
+
+    #[arg(
+        long = "startup-tab-shell",
+        value_name = "PROGRAM",
+        requires = "startup_tab_append_command",
+        conflicts_with_all = ["startup_tab_profile", "startup_tab_command"],
+        help = "Set shell program for the appended root startup tab"
+    )]
+    startup_tab_shell: Option<String>,
+
+    #[arg(
+        long = "startup-tab-shell-arg",
+        value_name = "ARG",
+        requires = "startup_tab_shell",
+        allow_hyphen_values = true,
+        help = "Append one shell argument for --startup-tab-shell"
+    )]
+    startup_tab_shell_args: Vec<String>,
+
+    #[arg(
+        long = "startup-tab-env",
+        value_name = "KEY=VALUE",
+        requires = "startup_tab_command",
+        conflicts_with = "startup_tab_profile",
+        help = "Set one environment variable for a command-backed appended startup tab; repeat to set multiple"
+    )]
+    startup_tab_env: Vec<String>,
+
+    #[arg(
+        long = "startup-tab-split",
+        value_name = "DIRECTION",
+        value_enum,
+        requires = "startup_tab_append_command",
+        help = "Set split direction for the appended root startup tab"
+    )]
+    startup_tab_split: Option<TerminalStartupSplitDirection>,
+
+    #[arg(
+        long = "add-startup-tab-format",
+        value_enum,
+        requires = "add_startup_tab",
+        help = "Set the output format for --add-startup-tab"
+    )]
+    add_startup_tab_format: Option<TerminalStartupTabAppendOutputFormat>,
 
     #[arg(
         long = "set-default-profile",
@@ -1747,6 +1884,11 @@ enum TerminalCliCommand {
         update: TerminalStartupEnvUpdateRequest,
         format: TerminalStartupEnvUpdateOutputFormat,
     },
+    AddStartupTab {
+        path_options: TerminalPathOptions,
+        tab: TerminalStartupTabConfig,
+        format: TerminalStartupTabAppendOutputFormat,
+    },
     UpdateProfileEnv {
         path_options: TerminalPathOptions,
         profile: String,
@@ -2124,6 +2266,16 @@ struct TerminalStartupEnvUpdateRequest {
     clear: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupTabAppend {
+    path: PathBuf,
+    tab_number: usize,
+    previous_tab_count: usize,
+    tab_count: usize,
+    tab: TerminalStartupProfileTabDescription,
+    changed: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TerminalProfileSplitDirectionEntry {
     label: &'static str,
@@ -2436,6 +2588,13 @@ enum TerminalStartupEnvUpdateOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupTabAppendOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileEnvUpdateOutputFormat {
     #[default]
     Text,
@@ -2512,6 +2671,7 @@ impl TerminalCliCommand {
             || cli.update_profile_startup.is_some()
             || cli.update_startup
             || cli.update_startup_env
+            || cli.add_startup_tab
             || cli.update_profile_env.is_some()
             || !cli.copy_profile.is_empty()
             || cli.remove_profile.is_some()
@@ -2640,6 +2800,15 @@ impl TerminalCliCommand {
                 path_options,
                 update,
                 format: cli.update_startup_env_format.unwrap_or_default(),
+            });
+        }
+
+        if cli.add_startup_tab {
+            let tab = startup_tab_config_from_cli(&cli)?;
+            return Ok(Self::AddStartupTab {
+                path_options,
+                tab,
+                format: cli.add_startup_tab_format.unwrap_or_default(),
             });
         }
 
@@ -2871,6 +3040,7 @@ impl TerminalCliCommand {
             Self::UpdateProfileStartup { path_options, .. } => path_options,
             Self::UpdateStartup { path_options, .. } => path_options,
             Self::UpdateStartupEnv { path_options, .. } => path_options,
+            Self::AddStartupTab { path_options, .. } => path_options,
             Self::UpdateProfileEnv { path_options, .. } => path_options,
             Self::CopyProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
@@ -3728,6 +3898,12 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::AddStartupTab { tab, format, .. } => {
+            if let Err(error) = print_startup_tab_append(&tab, format) {
+                eprintln!("failed to append root startup tab: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::UpdateProfileEnv {
             profile,
             update,
@@ -4185,6 +4361,22 @@ fn print_startup_env_update(
     Ok(())
 }
 
+fn print_startup_tab_append(
+    tab: &TerminalStartupTabConfig,
+    format: TerminalStartupTabAppendOutputFormat,
+) -> Result<()> {
+    let append = append_root_startup_tab(&active_terminal_startup_config_file(), tab)?;
+    match format {
+        TerminalStartupTabAppendOutputFormat::Text => {
+            print!("{}", format_startup_tab_append(&append))
+        }
+        TerminalStartupTabAppendOutputFormat::Json => {
+            print!("{}", format_startup_tab_append_json(&append)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_profile_env_update(
     profile: &str,
     update: &TerminalStartupProfileEnvUpdateRequest,
@@ -4599,6 +4791,53 @@ impl TerminalStartupEnvUpdateRequest {
     }
 }
 
+fn startup_tab_config_from_cli(cli: &Cli) -> Result<TerminalStartupTabConfig> {
+    let env = cli
+        .startup_tab_env
+        .iter()
+        .map(|assignment| parse_startup_tab_env_assignment(assignment))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+    let shell = terminal_shell_config_value(
+        cli.startup_tab_shell.as_deref(),
+        &cli.startup_tab_shell_args,
+        "--startup-tab-shell",
+    )?;
+    let tab = TerminalStartupTabConfig {
+        profile: cli
+            .startup_tab_profile
+            .as_deref()
+            .map(normalize_startup_profile_name)
+            .transpose()?,
+        working_directory: cli.startup_tab_working_directory.clone(),
+        command: terminal_command_config_value(
+            cli.startup_tab_command.as_deref(),
+            "--startup-tab-command",
+        )?,
+        title: normalize_terminal_title(cli.startup_tab_title.as_deref()),
+        shell,
+        env,
+        split: cli.startup_tab_split,
+    };
+
+    validate_startup_tab_config_shape(&tab, "appended root startup tab")?;
+    Ok(tab)
+}
+
+fn validate_startup_tab_config_shape(tab: &TerminalStartupTabConfig, label: &str) -> Result<()> {
+    if tab.profile.is_some() {
+        TerminalStartupConfig::validate_profile_tab_fields(tab, label)?;
+    }
+    if tab.command.is_none() && !tab.env.is_empty() {
+        bail!("environment variables require a command for {label}");
+    }
+    if tab.command.is_some() && tab.shell.is_some() {
+        bail!("shell selection requires a shell tab for {label}");
+    }
+    Ok(())
+}
+
 fn normalized_profile_metadata_update_value(
     value: &Option<Option<String>>,
 ) -> Option<Option<String>> {
@@ -4686,6 +4925,13 @@ fn parse_startup_env_assignment(assignment: &str) -> Result<(String, String)> {
     Ok((normalize_startup_env_key(key)?, value.into()))
 }
 
+fn parse_startup_tab_env_assignment(assignment: &str) -> Result<(String, String)> {
+    let (key, value) = assignment
+        .split_once('=')
+        .with_context(|| "--startup-tab-env requires KEY=VALUE")?;
+    Ok((normalize_startup_tab_env_key(key)?, value.into()))
+}
+
 fn normalize_profile_env_key(key: &str) -> Result<String> {
     let key = key.trim();
     if key.is_empty() {
@@ -4706,6 +4952,56 @@ fn normalize_startup_env_key(key: &str) -> Result<String> {
         bail!("startup environment variable key must not contain '='");
     }
     Ok(key.into())
+}
+
+fn normalize_startup_tab_env_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        bail!("startup tab environment variable key is empty");
+    }
+    if key.contains('=') {
+        bail!("startup tab environment variable key must not contain '='");
+    }
+    Ok(key.into())
+}
+
+fn terminal_command_config_value(
+    value: Option<&str>,
+    flag: &'static str,
+) -> Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(command) = normalize_profile_text(Some(value)) else {
+        bail!("{flag} is empty");
+    };
+    LaunchCommand::from_command_line(&command)
+        .with_context(|| format!("failed to parse {flag}"))?;
+    Ok(Some(command))
+}
+
+fn terminal_shell_config_value(
+    program: Option<&str>,
+    args: &[String],
+    flag: &'static str,
+) -> Result<Option<TerminalStartupShellConfig>> {
+    let Some(program) = program else {
+        return Ok(None);
+    };
+    let program = normalize_terminal_shell_program(program)
+        .with_context(|| format!("failed to parse {flag}"))?;
+    let shell = if args.is_empty() {
+        TerminalStartupShellConfig::Program(program)
+    } else {
+        TerminalStartupShellConfig::WithArguments(TerminalStartupShellWithArgumentsConfig {
+            program,
+            args: args.to_vec(),
+        })
+    };
+    shell
+        .to_shell()
+        .with_context(|| format!("failed to parse {flag}"))?;
+    Ok(Some(shell))
 }
 
 fn create_startup_profile(
@@ -5371,6 +5667,83 @@ fn update_root_startup_env(
         removed_env_keys,
         cleared,
         changed: previous_env != env || created_from_initial,
+    })
+}
+
+fn append_root_startup_tab(
+    path: &Path,
+    tab: &TerminalStartupTabConfig,
+) -> Result<TerminalStartupTabAppend> {
+    validate_startup_tab_config_shape(tab, "appended root startup tab")?;
+    let mut text = match std_fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            initial_terminal_startup_config_content().into()
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    let previous_tab_count = startup_config.tabs.len();
+
+    let mut updated_config = startup_config.clone();
+    updated_config.tabs.push(tab.clone());
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to append root startup tab because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let new_value = startup_tab_config_to_json_value(tab);
+    let key_path = vec!["tabs".to_string(), format!("#{previous_tab_count}")];
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &key_path,
+        settings_json::infer_json_indent_size(&text),
+        Some(&new_value),
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because startup tab append produced unexpected content",
+            path.display()
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupTabAppend {
+        path: path.to_path_buf(),
+        tab_number: previous_tab_count + 1,
+        previous_tab_count,
+        tab_count: previous_tab_count + 1,
+        tab: startup_profile_tab_description(tab),
+        changed: true,
     })
 }
 
@@ -6860,15 +7233,23 @@ fn format_startup_profile_tab_description(
     tab: &TerminalStartupProfileTabDescription,
 ) {
     writeln!(output, "- tab {tab_number}").expect("writing to string should not fail");
+    format_startup_profile_tab_description_body(output, "  ", tab);
+}
+
+fn format_startup_profile_tab_description_body(
+    output: &mut String,
+    prefix: &str,
+    tab: &TerminalStartupProfileTabDescription,
+) {
     writeln!(
         output,
-        "  profile: {}",
+        "{prefix}profile: {}",
         tab.profile.as_deref().unwrap_or("none")
     )
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  working_directory: {}",
+        "{prefix}working_directory: {}",
         tab.working_directory
             .as_ref()
             .map(|path| path.display().to_string())
@@ -6877,26 +7258,26 @@ fn format_startup_profile_tab_description(
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  command: {}",
+        "{prefix}command: {}",
         tab.command.as_deref().unwrap_or("none")
     )
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  title: {}",
+        "{prefix}title: {}",
         tab.title.as_deref().unwrap_or("dynamic")
     )
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  shell: {}",
+        "{prefix}shell: {}",
         format_startup_shell_config(tab.shell.as_ref())
     )
     .expect("writing to string should not fail");
-    format_env_key_list(output, "  ", &tab.env_keys);
+    format_env_key_list(output, prefix, &tab.env_keys);
     writeln!(
         output,
-        "  split: {}",
+        "{prefix}split: {}",
         tab.split
             .map(TerminalStartupSplitDirection::as_str)
             .unwrap_or("tab")
@@ -7888,6 +8269,42 @@ fn format_startup_env_update_json(update: &TerminalStartupEnvUpdate) -> Result<S
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup environment update as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_tab_append(append: &TerminalStartupTabAppend) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        append.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "tab: {}", append.tab_number).expect("writing to string should not fail");
+    writeln!(&mut output, "previous_tabs: {}", append.previous_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", append.tab_count).expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", append.changed)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tab_config:").expect("writing to string should not fail");
+    format_startup_profile_tab_description_body(&mut output, "  ", &append.tab);
+    output
+}
+
+fn format_startup_tab_append_json(append: &TerminalStartupTabAppend) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": append.path.display().to_string(),
+        "status": "ok",
+        "tab": append.tab_number,
+        "previous_tab_count": append.previous_tab_count,
+        "tab_count": append.tab_count,
+        "changed": append.changed,
+        "tab_config": startup_profile_tab_description_json(append.tab_number, &append.tab),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup tab append as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -13145,6 +13562,87 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_tab_append() {
+        let output = format_startup_tab_append(&TerminalStartupTabAppend {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 2,
+            previous_tab_count: 1,
+            tab_count: 2,
+            tab: TerminalStartupProfileTabDescription {
+                profile: None,
+                working_directory: Some(PathBuf::from("work")),
+                command: Some("cmd /C echo build".into()),
+                title: Some("Build".into()),
+                shell: None,
+                env_keys: vec!["MODE".into(), "TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Right),
+            },
+            changed: true,
+        });
+
+        assert_eq!(
+            output,
+            concat!(
+                "startup_config_file: terminal.json\n",
+                "status: ok\n",
+                "tab: 2\n",
+                "previous_tabs: 1\n",
+                "tabs: 2\n",
+                "changed: true\n",
+                "tab_config:\n",
+                "  profile: none\n",
+                "  working_directory: work\n",
+                "  command: cmd /C echo build\n",
+                "  title: Build\n",
+                "  shell: default\n",
+                "  env: 2 variables\n",
+                "    - MODE\n",
+                "    - TOKEN\n",
+                "  split: right\n",
+            )
+        );
+        assert!(!output.contains("secret"));
+    }
+
+    #[test]
+    fn formats_startup_tab_append_json_without_env_values() {
+        let output = format_startup_tab_append_json(&TerminalStartupTabAppend {
+            path: PathBuf::from("terminal.json"),
+            tab_number: 3,
+            previous_tab_count: 2,
+            tab_count: 3,
+            tab: TerminalStartupProfileTabDescription {
+                profile: Some("work".into()),
+                working_directory: None,
+                command: None,
+                title: Some("Work".into()),
+                shell: None,
+                env_keys: vec!["TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Down),
+            },
+            changed: true,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup tab append json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tab"], 3);
+        assert_eq!(json["previous_tab_count"], 2);
+        assert_eq!(json["tab_count"], 3);
+        assert_eq!(json["changed"], true);
+        assert_eq!(json["tab_config"]["tab"], 3);
+        assert_eq!(json["tab_config"]["profile"], "work");
+        assert_eq!(json["tab_config"]["title"], "Work");
+        assert_eq!(json["tab_config"]["env_count"], 1);
+        assert_eq!(json["tab_config"]["env_keys"], serde_json::json!(["TOKEN"]));
+        assert_eq!(json["tab_config"]["split"], "down");
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("secret"));
+    }
+
+    #[test]
     fn formats_startup_profile_env_update() {
         let output = format_startup_profile_env_update(&TerminalStartupProfileEnvUpdate {
             path: PathBuf::from("terminal.json"),
@@ -15875,6 +16373,189 @@ mod tests {
     }
 
     #[test]
+    fn append_root_startup_tab_initializes_missing_config_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("config").join("terminal.json");
+        let work_dir = root_dir.join("work");
+        std_fs::create_dir_all(&work_dir).expect("failed to create work dir");
+
+        let append = append_root_startup_tab(
+            &startup_config_file,
+            &TerminalStartupTabConfig {
+                working_directory: Some(work_dir.clone()),
+                command: Some("cmd /C echo tab".into()),
+                title: Some("Build".into()),
+                env: test_env(&[("TOKEN", "secret"), ("MODE", "test")]),
+                split: Some(TerminalStartupSplitDirection::Right),
+                ..TerminalStartupTabConfig::default()
+            },
+        )
+        .expect("missing startup config should initialize and append tab");
+
+        assert_eq!(append.path, startup_config_file);
+        assert_eq!(append.tab_number, 1);
+        assert_eq!(append.previous_tab_count, 0);
+        assert_eq!(append.tab_count, 1);
+        assert_eq!(append.tab.command.as_deref(), Some("cmd /C echo tab"));
+        assert_eq!(append.tab.title.as_deref(), Some("Build"));
+        assert_eq!(append.tab.env_keys, vec!["MODE", "TOKEN"]);
+        assert_eq!(append.tab.split, Some(TerminalStartupSplitDirection::Right));
+        assert!(append.changed);
+
+        let text_output = format_startup_tab_append(&append);
+        let json_output =
+            format_startup_tab_append_json(&append).expect("json output should format");
+        for output in [&text_output, &json_output] {
+            assert!(!output.contains("secret"));
+        }
+
+        let content =
+            std_fs::read_to_string(&append.path).expect("failed to read created startup config");
+        assert!(content.contains("// Zed Terminal startup layout."));
+        assert!(content.contains(r#""command": "cmd /C echo tab""#));
+        assert!(content.contains(r#""title": "Build""#));
+        assert!(content.contains(r#""TOKEN": "secret""#));
+        assert!(content.contains(r#""MODE": "test""#));
+        assert!(content.contains(r#""split": "right""#));
+        assert!(content.contains(r#""profiles": {}"#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("created config should parse");
+        updated_config
+            .validate()
+            .expect("created config should validate");
+        assert_eq!(updated_config.tabs.len(), 1);
+        assert_eq!(
+            updated_config.tabs[0].working_directory.as_deref(),
+            Some(work_dir.as_path())
+        );
+        assert_eq!(updated_config.tabs[0].env["TOKEN"], "secret");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn append_root_startup_tab_preserves_jsonc_comments_and_appends() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  // keep tabs comment
+  "tabs": [
+    { "title": "Logs" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let append = append_root_startup_tab(
+            &startup_config_file,
+            &TerminalStartupTabConfig {
+                title: Some("Shell".into()),
+                split: Some(TerminalStartupSplitDirection::Down),
+                ..TerminalStartupTabConfig::default()
+            },
+        )
+        .expect("root startup tab should append");
+
+        assert_eq!(append.tab_number, 2);
+        assert_eq!(append.previous_tab_count, 1);
+        assert_eq!(append.tab_count, 2);
+        assert_eq!(append.tab.title.as_deref(), Some("Shell"));
+        assert_eq!(append.tab.split, Some(TerminalStartupSplitDirection::Down));
+
+        let content =
+            std_fs::read_to_string(&append.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep tabs comment"));
+        assert!(content.contains(r#""title": "Logs""#));
+        assert!(content.contains(r#""title": "Shell""#));
+        assert!(content.contains(r#""split": "down""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.tabs.len(), 2);
+        assert_eq!(updated_config.tabs[0].title.as_deref(), Some("Logs"));
+        assert_eq!(updated_config.tabs[1].title.as_deref(), Some("Shell"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn append_root_startup_tab_rejects_invalid_profile_reference_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "tabs": []
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = append_root_startup_tab(
+            &startup_config_file,
+            &TerminalStartupTabConfig {
+                profile: Some("missing".into()),
+                title: Some("Missing".into()),
+                ..TerminalStartupTabConfig::default()
+            },
+        )
+        .expect_err("missing profile reference should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("refusing to append root startup tab"));
+        assert!(message.contains("failed to resolve profile for tab 2 for root startup layout"));
+        assert!(message.contains("startup profile not found: missing"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected append"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn append_root_startup_tab_rejects_env_without_command() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{ "tabs": [] }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = append_root_startup_tab(
+            &startup_config_file,
+            &TerminalStartupTabConfig {
+                env: test_env(&[("TOKEN", "secret")]),
+                ..TerminalStartupTabConfig::default()
+            },
+        )
+        .expect_err("environment without command should be rejected");
+
+        assert!(
+            format!("{error:#}")
+                .contains("environment variables require a command for appended root startup tab")
+        );
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected append"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn update_startup_profile_env_updates_jsonc_fields_without_reporting_values() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -17893,6 +18574,97 @@ mod tests {
     }
 
     #[test]
+    fn add_startup_tab_format_json_is_carried_through_cli_resolution() {
+        let work_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-working-directory",
+            work_dir.to_str().unwrap(),
+            "--startup-tab-command",
+            "cmd /C echo tab",
+            "--startup-tab-title",
+            " Build ",
+            "--startup-tab-env",
+            " MODE=dev ",
+            "--startup-tab-env",
+            "TOKEN=secret",
+            "--startup-tab-split",
+            "right",
+            "--add-startup-tab-format",
+            "json",
+        ])
+        .expect("failed to parse add startup tab json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("add startup tab json mode should resolve");
+
+        let TerminalCliCommand::AddStartupTab { tab, format, .. } = command else {
+            panic!("expected add startup tab mode");
+        };
+        assert_eq!(tab.working_directory, Some(work_dir.clone()));
+        assert_eq!(tab.command.as_deref(), Some("cmd /C echo tab"));
+        assert_eq!(tab.title.as_deref(), Some("Build"));
+        assert_eq!(tab.env, test_env(&[("MODE", "dev "), ("TOKEN", "secret")]));
+        assert_eq!(tab.split, Some(TerminalStartupSplitDirection::Right));
+        assert_eq!(format, TerminalStartupTabAppendOutputFormat::Json);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-shell",
+            "pwsh.exe",
+            "--startup-tab-shell-arg",
+            "-NoLogo",
+            "--startup-tab-shell-arg",
+            "-NoProfile",
+        ])
+        .expect("failed to parse add startup tab shell args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("add startup tab shell mode should resolve");
+
+        let TerminalCliCommand::AddStartupTab { tab, format, .. } = command else {
+            panic!("expected add startup tab shell mode");
+        };
+        assert_eq!(
+            tab.shell,
+            Some(TerminalStartupShellConfig::WithArguments(
+                TerminalStartupShellWithArgumentsConfig {
+                    program: "pwsh.exe".into(),
+                    args: vec!["-NoLogo".into(), "-NoProfile".into()],
+                },
+            ))
+        );
+        assert_eq!(format, TerminalStartupTabAppendOutputFormat::Text);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-profile",
+            " work ",
+            "--startup-tab-title",
+            " Work ",
+            "--startup-tab-split",
+            "down",
+        ])
+        .expect("failed to parse add startup tab profile args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("add startup tab profile mode should resolve");
+
+        let TerminalCliCommand::AddStartupTab { tab, format, .. } = command else {
+            panic!("expected add startup tab profile mode");
+        };
+        assert_eq!(tab.profile.as_deref(), Some("work"));
+        assert_eq!(tab.title.as_deref(), Some("Work"));
+        assert_eq!(tab.split, Some(TerminalStartupSplitDirection::Down));
+        assert_eq!(format, TerminalStartupTabAppendOutputFormat::Text);
+
+        std_fs::remove_dir_all(work_dir).ok();
+    }
+
+    #[test]
     fn update_profile_env_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -18437,6 +19209,46 @@ mod tests {
             }
         );
         assert_eq!(format, TerminalStartupEnvUpdateOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn add_startup_tab_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--add-startup-tab",
+            "--startup-tab-title",
+            "Logs",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("add-startup-tab mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::AddStartupTab {
+            path_options,
+            tab,
+            format,
+        } = command
+        else {
+            panic!("expected add startup tab mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(tab.title.as_deref(), Some("Logs"));
+        assert_eq!(format, TerminalStartupTabAppendOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -19381,6 +20193,161 @@ mod tests {
     }
 
     #[test]
+    fn add_startup_tab_rejects_startup_only_arguments() {
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--add-startup-tab", "--profile", "admin"])
+                .expect_err("profile selection should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--add-startup-tab", "--paths"])
+            .expect_err("path inspection should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--add-startup-tab-format", "json"])
+            .expect_err("add startup tab format should require startup tab append mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--startup-tab-title", "Logs"])
+            .expect_err("startup tab title should require startup tab append mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-env",
+            "TOKEN=secret",
+        ])
+        .expect_err("startup tab env should require a command-backed tab");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-profile",
+            "work",
+            "--startup-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("profile startup tab should conflict with command fields");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-command",
+            "cmd /C echo tab",
+            "--startup-tab-shell",
+            "pwsh.exe",
+        ])
+        .expect_err("command-backed startup tab should conflict with shell fields");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-shell-arg",
+            "-NoLogo",
+        ])
+        .expect_err("startup tab shell args should require a shell");
+        assert!(error.to_string().contains("required"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-command",
+            "   ",
+        ])
+        .expect("blank startup tab command should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("blank startup tab command should be rejected");
+        assert!(format!("{error:#}").contains("--startup-tab-command is empty"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-command",
+            "\"unterminated",
+        ])
+        .expect("unclosed startup tab command should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("unclosed startup tab command quote should be rejected");
+        assert!(format!("{error:#}").contains("failed to parse --startup-tab-command"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-profile",
+            "   ",
+        ])
+        .expect("blank startup tab profile should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("blank startup tab profile should be rejected");
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-command",
+            "cmd /C echo tab",
+            "--startup-tab-env",
+            "TOKEN",
+        ])
+        .expect("startup tab env assignment without separator should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("startup tab env assignment without separator should be rejected");
+        assert!(format!("{error:#}").contains("--startup-tab-env requires KEY=VALUE"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--add-startup-tab",
+            "--startup-tab-command",
+            "cmd /C echo tab",
+            "--startup-tab-env",
+            " =secret",
+        ])
+        .expect("startup tab env assignment with blank key should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("blank startup tab env key should be rejected");
+        assert!(format!("{error:#}").contains("startup tab environment variable key is empty"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "--add-startup-tab",
+        ])
+        .expect_err("root environment updates should conflict with startup tab append");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn update_profile_env_rejects_startup_only_arguments() {
         let error = Cli::try_parse_from([
             "zed-terminal",
@@ -20140,6 +21107,7 @@ mod tests {
             "--update-profile",
             "--update-startup",
             "--update-startup-env",
+            "--add-startup-tab",
             "--update-profile-startup",
             "--update-profile-env",
             "--copy-profile",
