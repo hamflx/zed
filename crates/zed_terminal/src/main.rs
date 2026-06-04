@@ -523,7 +523,7 @@ struct LaunchOptions {
     path_options: TerminalPathOptions,
     initial_tab: LaunchTab,
     additional_tabs: Vec<LaunchTab>,
-    new_terminal_shell: Option<Shell>,
+    new_terminal_tab: LaunchTab,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -915,11 +915,13 @@ impl LaunchOptions {
         let inherited_shell = startup_config
             .inherited_shell(profile)
             .context("failed to resolve configured startup shell")?;
-        let mut initial_tab = startup_config
+        let mut new_terminal_tab = startup_config
             .initial_tab(profile)
-            .context("failed to resolve configured initial startup tab")?;
+            .context("failed to resolve configured new terminal tab")?;
+        let mut initial_tab = new_terminal_tab.clone();
         if let Some(working_directory) = working_directory {
-            initial_tab.working_directory = Some(working_directory);
+            initial_tab.working_directory = Some(working_directory.clone());
+            new_terminal_tab.working_directory = Some(working_directory);
         }
         if let Some(command) = command {
             initial_tab.command = Some(command);
@@ -946,13 +948,16 @@ impl LaunchOptions {
             path_options,
             initial_tab,
             additional_tabs,
-            new_terminal_shell: inherited_shell,
+            new_terminal_tab,
         })
     }
 
     fn startup_working_directories(&self) -> Vec<PathBuf> {
         let mut directories = Vec::new();
-        for tab in std::iter::once(&self.initial_tab).chain(self.additional_tabs.iter()) {
+        for tab in std::iter::once(&self.initial_tab)
+            .chain(std::iter::once(&self.new_terminal_tab))
+            .chain(self.additional_tabs.iter())
+        {
             let Some(working_directory) = tab.working_directory.as_ref() else {
                 continue;
             };
@@ -2252,12 +2257,8 @@ fn format_startup_layout(launch_options: &LaunchOptions, startup_config_file: &P
         1 + launch_options.additional_tabs.len()
     )
     .expect("writing to string should not fail");
-    writeln!(
-        &mut output,
-        "new_terminal_shell: {}",
-        format_optional_shell(launch_options.new_terminal_shell.as_ref())
-    )
-    .expect("writing to string should not fail");
+    writeln!(&mut output, "new_terminal_tab:").expect("writing to string should not fail");
+    format_startup_layout_tab_body(&mut output, "  ", &launch_options.new_terminal_tab);
 
     for (index, tab) in std::iter::once(&launch_options.initial_tab)
         .chain(launch_options.additional_tabs.iter())
@@ -2270,16 +2271,20 @@ fn format_startup_layout(launch_options: &LaunchOptions, startup_config_file: &P
 }
 
 fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &LaunchTab) {
+    writeln!(output, "- tab {tab_number}").expect("writing to string should not fail");
+    format_startup_layout_tab_body(output, "  ", tab);
+}
+
+fn format_startup_layout_tab_body(output: &mut String, prefix: &str, tab: &LaunchTab) {
     let kind = if tab.command.is_some() {
         "command"
     } else {
         "shell"
     };
-    writeln!(output, "- tab {tab_number}").expect("writing to string should not fail");
-    writeln!(output, "  kind: {kind}").expect("writing to string should not fail");
+    writeln!(output, "{prefix}kind: {kind}").expect("writing to string should not fail");
     writeln!(
         output,
-        "  placement: {}",
+        "{prefix}placement: {}",
         tab.split
             .map(|direction| format!("split {}", direction.as_str()))
             .unwrap_or_else(|| "tab".into())
@@ -2287,13 +2292,13 @@ fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &Launc
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  title: {}",
+        "{prefix}title: {}",
         tab.title.as_deref().unwrap_or("dynamic")
     )
     .expect("writing to string should not fail");
     writeln!(
         output,
-        "  working_directory: {}",
+        "{prefix}working_directory: {}",
         tab.working_directory
             .as_ref()
             .map(|path| path.display().to_string())
@@ -2302,18 +2307,18 @@ fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &Launc
     .expect("writing to string should not fail");
 
     if let Some(command) = &tab.command {
-        writeln!(output, "  command: {}", command.display_label())
+        writeln!(output, "{prefix}command: {}", command.display_label())
             .expect("writing to string should not fail");
     } else {
         writeln!(
             output,
-            "  shell: {}",
+            "{prefix}shell: {}",
             format_optional_shell(tab.shell.as_ref())
         )
         .expect("writing to string should not fail");
     }
 
-    writeln!(output, "  env: {} variables", tab.env.len())
+    writeln!(output, "{prefix}env: {} variables", tab.env.len())
         .expect("writing to string should not fail");
 }
 
@@ -2952,8 +2957,7 @@ fn open_terminal_window(
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let bounds = Bounds::centered(None, window_size, cx);
     let startup_working_directories = launch_options.startup_working_directories();
-    let new_terminal_working_directory = launch_options.initial_tab.working_directory.clone();
-    let new_terminal_shell = launch_options.new_terminal_shell.clone();
+    let new_terminal_tab = launch_options.new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
 
@@ -2993,27 +2997,8 @@ fn open_terminal_window(
                 let mut workspace =
                     Workspace::new(None, project.clone(), app_state.clone(), window, cx);
                 workspace.register_action(move |workspace, _: &NewTerminalTab, window, cx| {
-                    let working_directory = new_terminal_working_directory
-                        .clone()
-                        .or_else(|| default_working_directory(workspace, cx));
-                    let shell = new_terminal_shell.clone();
-                    TerminalPanel::add_center_terminal(
-                        workspace,
-                        window,
-                        cx,
-                        move |project, cx| {
-                            if let Some(shell) = shell {
-                                project.create_terminal_shell_with_shell(
-                                    working_directory,
-                                    shell,
-                                    cx,
-                                )
-                            } else {
-                                project.create_terminal_shell(working_directory, cx)
-                            }
-                        },
-                    )
-                    .detach_and_log_err(cx);
+                    add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
+                        .detach_and_log_err(cx);
                 });
                 workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
@@ -3114,6 +3099,18 @@ fn open_terminal_window(
     .context("failed to open terminal window")?;
 
     Ok(())
+}
+
+fn add_new_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    mut tab: LaunchTab,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    if tab.working_directory.is_none() {
+        tab.working_directory = default_working_directory(workspace, cx);
+    }
+    add_launch_tab(workspace, window, cx, tab)
 }
 
 fn add_launch_tab(
@@ -4188,7 +4185,9 @@ mod tests {
         assert!(output.contains("startup_config_file: terminal.json"));
         assert!(output.contains("status: ok"));
         assert!(output.contains("tabs: 2"));
-        assert!(output.contains("new_terminal_shell: pwsh.exe -NoLogo"));
+        assert!(output.contains("new_terminal_tab:"));
+        assert!(output.contains("  title: Configured"));
+        assert!(output.contains("  shell: pwsh.exe -NoLogo"));
         assert!(output.contains("- tab 1"));
         assert!(output.contains("  kind: shell"));
         assert!(output.contains("  placement: tab"));
@@ -5934,6 +5933,12 @@ mod tests {
             })
         );
         assert_eq!(options.initial_tab.title.as_deref(), Some("Configured"));
+        assert_tab_working_directory(&options.new_terminal_tab, &initial_dir);
+        assert_eq!(
+            options.new_terminal_tab.command,
+            options.initial_tab.command
+        );
+        assert_eq!(options.new_terminal_tab.title, options.initial_tab.title);
         assert_eq!(options.additional_tabs.len(), 1);
         assert_tab_working_directory(&options.additional_tabs[0], &second_dir);
         assert_eq!(
@@ -5984,10 +5989,55 @@ mod tests {
             })
         );
         assert_eq!(options.initial_tab.title.as_deref(), Some("Configured"));
+        assert_tab_working_directory(&options.new_terminal_tab, &cli_dir);
+        assert_eq!(
+            options.new_terminal_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "configured".into()],
+            })
+        );
+        assert_eq!(
+            options.new_terminal_tab.title.as_deref(),
+            Some("Configured")
+        );
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
         std_fs::remove_dir_all(cli_dir).ok();
+    }
+
+    #[test]
+    fn cli_startup_title_and_command_do_not_replace_new_terminal_tab_template() {
+        let config = TerminalStartupConfig {
+            command: Some("cmd /C configured".into()),
+            title: Some("Configured".into()),
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from(["zed-terminal", "--title", "CLI", "--", "pwsh", "-NoLogo"])
+            .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+
+        assert_eq!(options.initial_tab.title.as_deref(), Some("CLI"));
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+        assert_eq!(
+            options.new_terminal_tab.title.as_deref(),
+            Some("Configured")
+        );
+        assert_eq!(
+            options.new_terminal_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "configured".into()],
+            })
+        );
     }
 
     #[test]
@@ -6002,6 +6052,10 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(options.initial_tab.title.as_deref(), Some("CLI"));
+        assert_eq!(
+            options.new_terminal_tab.title.as_deref(),
+            Some("Configured")
+        );
     }
 
     #[test]
@@ -6091,9 +6145,10 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(
-            options.new_terminal_shell,
+            options.new_terminal_tab.shell,
             Some(Shell::Program("pwsh.exe".into()))
         );
+        assert_eq!(options.new_terminal_tab.command, None);
         assert_eq!(options.initial_tab.command, None);
         assert_eq!(
             options.initial_tab.shell,
@@ -6148,11 +6203,12 @@ mod tests {
     }
 
     #[test]
-    fn profile_shell_is_selected_for_shell_tabs_and_new_terminal_tabs() {
+    fn profile_initial_tab_is_selected_for_shell_tabs_and_new_terminal_tabs() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "work".into(),
             TerminalStartupProfileConfig {
+                title: Some("Work".into()),
                 shell: Some(TerminalStartupShellConfig::WithArguments(
                     TerminalStartupShellWithArgumentsConfig {
                         program: "pwsh.exe".into(),
@@ -6173,9 +6229,11 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(
-            options.new_terminal_shell,
+            options.new_terminal_tab.shell,
             Some(shell_with_args("pwsh.exe", &["-NoLogo"]))
         );
+        assert_eq!(options.new_terminal_tab.title.as_deref(), Some("Work"));
+        assert_eq!(options.new_terminal_tab.command, None);
         assert_eq!(
             options.initial_tab.shell,
             Some(shell_with_args("pwsh.exe", &["-NoLogo"]))
@@ -6215,9 +6273,10 @@ mod tests {
             .expect("failed to build launch options");
 
         assert_eq!(
-            options.new_terminal_shell,
+            options.new_terminal_tab.shell,
             Some(Shell::Program("pwsh.exe".into()))
         );
+        assert_eq!(options.new_terminal_tab.command, None);
         assert_eq!(
             options.initial_tab.command,
             Some(LaunchCommand {
@@ -6289,7 +6348,10 @@ mod tests {
         assert_eq!(options.initial_tab.command, None);
         assert_eq!(options.initial_tab.title, None);
         assert_eq!(options.initial_tab.shell, None);
-        assert_eq!(options.new_terminal_shell, None);
+        assert_eq!(options.new_terminal_tab.working_directory, None);
+        assert_eq!(options.new_terminal_tab.command, None);
+        assert_eq!(options.new_terminal_tab.title, None);
+        assert_eq!(options.new_terminal_tab.shell, None);
         assert!(options.additional_tabs.is_empty());
 
         std_fs::remove_dir_all(configured_dir).ok();
@@ -6420,6 +6482,15 @@ mod tests {
 
         assert_eq!(options.initial_tab.env, profile_env);
         assert_eq!(options.initial_tab.title.as_deref(), Some("Work"));
+        assert_eq!(options.new_terminal_tab.env, options.initial_tab.env);
+        assert_eq!(
+            options.new_terminal_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "profile".into()],
+            })
+        );
+        assert_eq!(options.new_terminal_tab.title.as_deref(), Some("Work"));
         assert_eq!(options.additional_tabs.len(), 1);
         assert_eq!(options.additional_tabs[0].env, options.initial_tab.env);
         assert_eq!(
@@ -6794,7 +6865,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("failed to resolve configured initial startup tab")
+                .contains("failed to resolve configured new terminal tab")
         );
     }
 
@@ -7242,6 +7313,56 @@ mod tests {
         );
         std_fs::remove_dir_all(initial_dir).ok();
         std_fs::remove_dir_all(second_dir).ok();
+    }
+
+    #[test]
+    fn startup_working_directories_include_new_terminal_tab_template() {
+        let initial_dir = temp_test_dir();
+        let new_terminal_dir = temp_test_dir();
+        let additional_dir = temp_test_dir();
+        let options = LaunchOptions {
+            path_options: TerminalPathOptions {
+                data_dir: PathBuf::from("data"),
+                config_dir: PathBuf::from("config"),
+            },
+            initial_tab: LaunchTab {
+                working_directory: Some(initial_dir.clone()),
+                command: None,
+                env: HashMap::default(),
+                title: None,
+                shell: None,
+                split: None,
+            },
+            additional_tabs: vec![LaunchTab {
+                working_directory: Some(additional_dir.clone()),
+                command: None,
+                env: HashMap::default(),
+                title: None,
+                shell: None,
+                split: None,
+            }],
+            new_terminal_tab: LaunchTab {
+                working_directory: Some(new_terminal_dir.clone()),
+                command: None,
+                env: HashMap::default(),
+                title: None,
+                shell: None,
+                split: None,
+            },
+        };
+
+        assert_eq!(
+            options.startup_working_directories(),
+            vec![
+                initial_dir.clone(),
+                new_terminal_dir.clone(),
+                additional_dir.clone()
+            ]
+        );
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(new_terminal_dir).ok();
+        std_fs::remove_dir_all(additional_dir).ok();
     }
 
     #[test]
