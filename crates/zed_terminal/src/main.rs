@@ -48,6 +48,7 @@ actions!(
         OpenStartupConfigFile,
         OpenStartupConfigSchemaFile,
         OpenKeymapFile,
+        OpenDefaultKeymapReferenceFile,
         OpenConfigDirectory,
         OpenLogsDirectory,
         NewTerminalWindow,
@@ -96,6 +97,7 @@ const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
+const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -132,6 +134,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor"
         ]
@@ -147,6 +150,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -156,6 +160,9 @@ struct Cli {
             "title",
             "new_tabs",
             "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
             "new_tab_command_directories",
             "new_tab_command_titles",
             "new_tab_commands",
@@ -175,6 +182,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor"
         ],
@@ -192,6 +200,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor"
         ]
@@ -209,6 +218,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor"
         ],
@@ -228,6 +238,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -237,6 +248,9 @@ struct Cli {
             "title",
             "new_tabs",
             "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
             "new_tab_command_directories",
             "new_tab_command_titles",
             "new_tab_commands",
@@ -257,6 +271,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -266,6 +281,9 @@ struct Cli {
             "title",
             "new_tabs",
             "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
             "new_tab_command_directories",
             "new_tab_command_titles",
             "new_tab_commands",
@@ -285,6 +303,7 @@ struct Cli {
             "clear_default_profile",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -313,6 +332,7 @@ struct Cli {
             "clear_default_profile",
             "validate_startup_config",
             "validate_keymap",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -341,6 +361,7 @@ struct Cli {
             "clear_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
+            "print_default_keymap",
             "validate_keymap",
             "doctor",
             "no_startup_config",
@@ -370,6 +391,7 @@ struct Cli {
             "clear_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "validate_keymap",
             "no_startup_config",
@@ -398,6 +420,7 @@ struct Cli {
             "clear_default_profile",
             "validate_startup_config",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config",
@@ -415,6 +438,36 @@ struct Cli {
         help = "Validate the standalone default keymap and active keymap.json without opening a terminal window"
     )]
     validate_keymap: bool,
+
+    #[arg(
+        long = "print-default-keymap",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "validate_startup_config",
+            "print_startup_config_schema",
+            "init_config",
+            "doctor",
+            "validate_keymap",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Print the standalone default keymap without opening a terminal window"
+    )]
+    print_default_keymap: bool,
 
     #[arg(long = "profile", value_name = "NAME")]
     profile: Option<String>,
@@ -468,6 +521,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config"
@@ -487,6 +541,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config"
@@ -507,6 +562,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
+            "print_default_keymap",
             "init_config",
             "doctor",
             "no_startup_config"
@@ -572,6 +628,9 @@ enum TerminalCliCommand {
     },
     PrintStartupLayout(LaunchOptions),
     PrintStartupConfigSchema {
+        path_options: TerminalPathOptions,
+    },
+    PrintDefaultKeymap {
         path_options: TerminalPathOptions,
     },
     InitConfig {
@@ -840,6 +899,7 @@ impl TerminalCliCommand {
             || cli.clear_default_profile
             || cli.validate_keymap
             || cli.print_startup_config_schema
+            || cli.print_default_keymap
             || cli.init_config
             || cli.doctor
         {
@@ -910,6 +970,10 @@ impl TerminalCliCommand {
             return Ok(Self::PrintStartupConfigSchema { path_options });
         }
 
+        if cli.print_default_keymap {
+            return Ok(Self::PrintDefaultKeymap { path_options });
+        }
+
         if cli.init_config {
             return Ok(Self::InitConfig { path_options });
         }
@@ -938,6 +1002,7 @@ impl TerminalCliCommand {
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout(launch_options) => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
+            Self::PrintDefaultKeymap { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
             Self::Doctor { path_options } => path_options,
             Self::ValidateKeymap { path_options } => path_options,
@@ -1699,6 +1764,9 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::PrintDefaultKeymap { .. } => {
+            print_default_keymap();
+        }
         TerminalCliCommand::InitConfig { .. } => {
             if let Err(error) = print_config_initialization() {
                 eprintln!("failed to initialize terminal config files: {error:#}");
@@ -1816,6 +1884,10 @@ fn print_terminal_paths() {
         paths::global_settings_file().display()
     );
     println!("keymap_file: {}", paths::keymap_file().display());
+    println!(
+        "default_keymap_reference_file: {}",
+        active_terminal_default_keymap_reference_file().display()
+    );
     println!("themes_dir: {}", paths::themes_dir().display());
     println!("log_file: {}", terminal_log_file().display());
 }
@@ -1855,6 +1927,10 @@ fn print_startup_config_schema() -> Result<()> {
     Ok(())
 }
 
+fn print_default_keymap() {
+    print!("{}", default_keymap_content());
+}
+
 fn print_config_initialization() -> Result<()> {
     let initialization = initialize_terminal_config_files()?;
     print!("{}", format_config_initialization(&initialization));
@@ -1888,6 +1964,7 @@ struct TerminalConfigFilePaths {
     settings_file: PathBuf,
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
+    default_keymap_reference_file: PathBuf,
     startup_config_file: PathBuf,
     startup_config_schema_file: PathBuf,
 }
@@ -1898,6 +1975,9 @@ impl TerminalConfigFilePaths {
             settings_file: path_options.config_dir.join("settings.json"),
             global_settings_file: path_options.config_dir.join("global_settings.json"),
             keymap_file: path_options.config_dir.join("keymap.json"),
+            default_keymap_reference_file: terminal_default_keymap_reference_file(
+                &path_options.config_dir,
+            ),
             startup_config_file: terminal_startup_config_file(&path_options.config_dir),
             startup_config_schema_file: terminal_startup_config_schema_file(
                 &path_options.config_dir,
@@ -1926,6 +2006,11 @@ fn initialize_terminal_config_files_at(
                 "keymap_file",
                 file_paths.keymap_file,
                 settings::initial_keymap_content().as_ref(),
+            )?,
+            initialize_terminal_config_file(
+                "default_keymap_reference_file",
+                file_paths.default_keymap_reference_file,
+                default_keymap_content(),
             )?,
             initialize_terminal_config_file(
                 "startup_config_file",
@@ -2138,6 +2223,11 @@ fn diagnose_terminal_config_files(
         diagnose_path(
             "keymap_file",
             file_paths.keymap_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
+            "default_keymap_reference_file",
+            file_paths.default_keymap_reference_file,
             TerminalDoctorPathKind::File,
         ),
         diagnose_path(
@@ -2550,6 +2640,24 @@ fn write_startup_config_schema_file(path: &Path) -> Result<()> {
         .with_context(|| format!("failed to write startup config schema {}", path.display()))
 }
 
+fn default_keymap_content() -> &'static str {
+    include_str!("../../../assets/keymaps/zed-terminal.json")
+}
+
+fn write_default_keymap_reference_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    std_fs::write(path, default_keymap_content()).with_context(|| {
+        format!(
+            "failed to write default keymap reference {}",
+            path.display()
+        )
+    })
+}
+
 fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
     let mut output = String::new();
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
@@ -2839,6 +2947,14 @@ fn active_terminal_startup_config_schema_file() -> PathBuf {
     terminal_startup_config_schema_file(paths::config_dir())
 }
 
+fn terminal_default_keymap_reference_file(config_dir: &Path) -> PathBuf {
+    config_dir.join(TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE)
+}
+
+fn active_terminal_default_keymap_reference_file() -> PathBuf {
+    terminal_default_keymap_reference_file(paths::config_dir())
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -2849,6 +2965,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_config_file);
     cx.on_action(open_startup_config_schema_file);
     cx.on_action(open_keymap_file);
+    cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_logs_directory);
     cx.on_action(set_default_startup_profile_action);
@@ -3051,6 +3168,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<NewTerminalSplitWithProfile>(),
         TypeId::of::<NewTerminalTabWithProfile>(),
         TypeId::of::<OpenConfigDirectory>(),
+        TypeId::of::<OpenDefaultKeymapReferenceFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
@@ -3518,6 +3636,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupConfigSchemaFile,
         ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+        MenuItem::action(
+            "Open Default Keymap Reference File",
+            OpenDefaultKeymapReferenceFile,
+        ),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
         MenuItem::separator(),
@@ -4142,6 +4264,16 @@ fn open_keymap_file(_: &OpenKeymapFile, cx: &mut App) {
     cx.open_with_system(paths::keymap_file());
 }
 
+fn open_default_keymap_reference_file(_: &OpenDefaultKeymapReferenceFile, cx: &mut App) {
+    let default_keymap_reference_file = active_terminal_default_keymap_reference_file();
+    if let Err(error) = write_default_keymap_reference_file(&default_keymap_reference_file) {
+        log::warn!("failed to write default keymap reference file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&default_keymap_reference_file);
+}
+
 fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
     open_directory(paths::config_dir(), "config", cx);
 }
@@ -4591,6 +4723,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
+        assert_command_palette_action_visible(&filter, &OpenDefaultKeymapReferenceFile);
         assert_command_palette_action_visible(&filter, &terminal::Copy);
         assert_command_palette_action_visible(&filter, &terminal::Paste);
         assert_command_palette_action_visible(&filter, &terminal::Clear);
@@ -5216,6 +5349,11 @@ mod tests {
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
         );
+        assert_menu_action(
+            &items,
+            "Open Default Keymap Reference File",
+            "zed_terminal::OpenDefaultKeymapReferenceFile",
+        );
     }
 
     #[test]
@@ -5720,6 +5858,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_open_default_keymap_reference_file_action_input() {
+        let action =
+            <OpenDefaultKeymapReferenceFile as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open default keymap reference file action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenDefaultKeymapReferenceFile>()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn formats_startup_profile_list() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
@@ -6141,6 +6293,42 @@ mod tests {
     }
 
     #[test]
+    fn default_keymap_content_matches_bundled_keymap_asset() {
+        assert_eq!(
+            default_keymap_content(),
+            include_str!("../../../assets/keymaps/zed-terminal.json")
+        );
+        settings::KeymapFile::parse(default_keymap_content())
+            .expect("default keymap reference should parse as a keymap");
+    }
+
+    #[test]
+    fn writes_default_keymap_reference_file_without_touching_user_keymap() {
+        let root_dir = temp_test_dir();
+        let config_dir = root_dir.join("config");
+        let keymap_file = config_dir.join("keymap.json");
+        let reference_file = config_dir.join("default-keymap.json");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(&keymap_file, "custom keymap\n").expect("failed to write user keymap");
+        std_fs::write(&reference_file, "{ stale reference }\n")
+            .expect("failed to write stale reference");
+
+        write_default_keymap_reference_file(&reference_file)
+            .expect("default keymap reference should write");
+
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file).expect("failed to read user keymap"),
+            "custom keymap\n"
+        );
+        assert_eq!(
+            std_fs::read_to_string(&reference_file).expect("failed to read reference keymap"),
+            default_keymap_content()
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_config_initialization() {
         let output = format_config_initialization(&TerminalConfigInitialization {
             files: vec![
@@ -6381,7 +6569,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnose_terminal_config_files_reports_startup_config_schema_file() {
+    fn diagnose_terminal_config_files_reports_support_reference_files() {
         let root_dir = temp_test_dir();
         let config_dir = root_dir.join("config");
         let path_options = TerminalPathOptions {
@@ -6400,6 +6588,14 @@ mod tests {
                     && check.status == TerminalDoctorCheckStatus::Missing
             }),
             "doctor config checks should include startup config schema file: {checks:#?}"
+        );
+        assert!(
+            checks.iter().any(|check| {
+                check.label == "default_keymap_reference_file"
+                    && check.path == terminal_default_keymap_reference_file(&config_dir)
+                    && check.status == TerminalDoctorCheckStatus::Missing
+            }),
+            "doctor config checks should include default keymap reference file: {checks:#?}"
         );
 
         std_fs::remove_dir_all(root_dir).ok();
@@ -6455,6 +6651,7 @@ mod tests {
         let settings_file = config_dir.join("settings.json");
         let global_settings_file = config_dir.join("global_settings.json");
         let keymap_file = config_dir.join("keymap.json");
+        let default_keymap_reference_file = config_dir.join("default-keymap.json");
         let startup_config_file = config_dir.join("terminal.json");
         let startup_config_schema_file = config_dir.join("terminal.schema.json");
         std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
@@ -6464,6 +6661,7 @@ mod tests {
             settings_file: settings_file.clone(),
             global_settings_file: global_settings_file.clone(),
             keymap_file: keymap_file.clone(),
+            default_keymap_reference_file: default_keymap_reference_file.clone(),
             startup_config_file: startup_config_file.clone(),
             startup_config_schema_file: startup_config_schema_file.clone(),
         })
@@ -6489,6 +6687,10 @@ mod tests {
                     TerminalConfigFileInitializationStatus::Existing
                 ),
                 (
+                    "default_keymap_reference_file",
+                    TerminalConfigFileInitializationStatus::Created
+                ),
+                (
                     "startup_config_file",
                     TerminalConfigFileInitializationStatus::Created
                 ),
@@ -6503,6 +6705,11 @@ mod tests {
         assert_eq!(
             std_fs::read_to_string(&keymap_file).expect("failed to read keymap"),
             "custom keymap\n"
+        );
+        assert_eq!(
+            std_fs::read_to_string(&default_keymap_reference_file)
+                .expect("failed to read default keymap reference"),
+            default_keymap_content()
         );
         let startup_config: TerminalStartupConfig = settings::parse_json_with_comments(
             &std_fs::read_to_string(&startup_config_file).expect("failed to read startup config"),
@@ -6963,6 +7170,35 @@ mod tests {
         assert!(matches!(
             command,
             TerminalCliCommand::PrintStartupConfigSchema { .. }
+        ));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn print_default_keymap_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--print-default-keymap",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("default keymap printing should not load terminal.json");
+
+        assert!(matches!(
+            command,
+            TerminalCliCommand::PrintDefaultKeymap { .. }
         ));
 
         std_fs::remove_dir_all(data_dir).ok();
@@ -7457,12 +7693,80 @@ mod tests {
     }
 
     #[test]
+    fn print_default_keymap_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-default-keymap",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-default-keymap",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-default-keymap",
+            "--new-tab-profile",
+            "work",
+        ])
+        .expect_err("startup profile tab should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-default-keymap",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-default-keymap",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--print-default-keymap", "--", "cmd"])
+            .expect_err("startup command should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--print-default-keymap"])
+            .expect_err("path inspection should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--print-default-keymap",
+        ])
+        .expect_err("startup schema printing should conflict with default keymap printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn non_launch_modes_reject_startup_title_arguments() {
         for mode in [
             "--init-config",
             "--doctor",
             "--validate-startup-config",
             "--print-startup-config-schema",
+            "--print-default-keymap",
             "--validate-keymap",
             "--list-profiles",
             "--set-default-profile",
