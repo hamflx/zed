@@ -115,6 +115,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -164,6 +165,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -185,6 +187,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -206,6 +209,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -228,6 +232,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -249,6 +254,7 @@ struct Cli {
             "working_directory",
             "directory",
             "new_tabs",
+            "new_tab_command_directories",
             "new_tab_commands",
             "command"
         ],
@@ -290,6 +296,15 @@ struct Cli {
         allow_hyphen_values = true
     )]
     new_tab_commands: Vec<String>,
+
+    #[arg(
+        long = "new-tab-command-directory",
+        visible_alias = "tab-command-directory",
+        value_name = "DIRECTORY",
+        value_hint = ValueHint::DirPath,
+        help = "Set the working directory for a --new-tab-command by order"
+    )]
+    new_tab_command_directories: Vec<PathBuf>,
 
     #[arg(
         value_name = "COMMAND",
@@ -698,6 +713,7 @@ impl LaunchOptions {
         additional_tabs.extend(LaunchTab::additional_from_cli(
             &cli.new_tabs,
             &cli.new_tab_commands,
+            &cli.new_tab_command_directories,
             &inherited_env,
             inherited_shell.as_ref(),
         )?);
@@ -748,10 +764,15 @@ impl LaunchTab {
     fn additional_from_cli(
         directories: &[PathBuf],
         commands: &[String],
+        command_directories: &[PathBuf],
         inherited_env: &HashMap<String, String>,
         inherited_shell: Option<&Shell>,
     ) -> Result<Vec<Self>> {
         let mut tabs = Vec::with_capacity(directories.len() + commands.len());
+
+        if command_directories.len() > commands.len() {
+            bail!("startup command tab directory requires a matching --new-tab-command");
+        }
 
         for directory in directories {
             tabs.push(Self {
@@ -765,13 +786,22 @@ impl LaunchTab {
             });
         }
 
-        for command in commands {
+        for (command_index, command) in commands.iter().enumerate() {
+            let tab_number = tabs.len() + 2;
+            let working_directory = command_directories
+                .get(command_index)
+                .map(|directory| {
+                    resolve_working_directory(directory).with_context(|| {
+                        format!("failed to resolve startup tab {tab_number} working directory")
+                    })
+                })
+                .transpose()?;
+
             tabs.push(Self {
-                working_directory: None,
+                working_directory,
                 command: Some(
-                    LaunchCommand::from_command_line(command).with_context(|| {
-                        format!("failed to parse startup tab {}", tabs.len() + 2)
-                    })?,
+                    LaunchCommand::from_command_line(command)
+                        .with_context(|| format!("failed to parse startup tab {tab_number}"))?,
                 ),
                 env: inherited_env.clone(),
                 title: None,
@@ -3797,6 +3827,15 @@ mod tests {
         .expect_err("startup tab command should conflict with config initialization");
         assert!(error.to_string().contains("cannot be used with"));
 
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--init-config",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
         let error = Cli::try_parse_from(["zed-terminal", "--init-config", "--", "cmd"])
             .expect_err("startup command should conflict with config initialization");
         assert!(error.to_string().contains("cannot be used with"));
@@ -3835,6 +3874,15 @@ mod tests {
             "cmd /C echo tab",
         ])
         .expect_err("startup tab command should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--doctor",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with doctor");
         assert!(error.to_string().contains("cannot be used with"));
 
         let error = Cli::try_parse_from(["zed-terminal", "--doctor", "--", "cmd"])
@@ -3880,6 +3928,15 @@ mod tests {
             "cmd /C echo tab",
         ])
         .expect_err("startup tab command should conflict with config validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-startup-config",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with config validation");
         assert!(error.to_string().contains("cannot be used with"));
 
         let error = Cli::try_parse_from(["zed-terminal", "--validate-startup-config", "--", "cmd"])
@@ -3931,6 +3988,15 @@ mod tests {
         .expect_err("startup tab command should conflict with schema printing");
         assert!(error.to_string().contains("cannot be used with"));
 
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
         let error =
             Cli::try_parse_from(["zed-terminal", "--print-startup-config-schema", "--", "cmd"])
                 .expect_err("startup command should conflict with schema printing");
@@ -3975,6 +4041,15 @@ mod tests {
             "cmd /C echo tab",
         ])
         .expect_err("startup tab command should conflict with keymap validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-keymap",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with keymap validation");
         assert!(error.to_string().contains("cannot be used with"));
 
         let error = Cli::try_parse_from(["zed-terminal", "--validate-keymap", "--", "cmd"])
@@ -4061,6 +4136,15 @@ mod tests {
             "cmd /C echo tab",
         ])
         .expect_err("startup tab command should conflict with profile listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profiles",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with profile listing");
         assert!(error.to_string().contains("cannot be used with"));
 
         let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--", "cmd"])
@@ -5082,6 +5166,74 @@ mod tests {
     }
 
     #[test]
+    fn parses_additional_startup_tab_command_directories() {
+        let first_dir = temp_test_dir();
+        let command_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab",
+            first_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C \"echo one\"",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_tab_working_directory(&options.additional_tabs[0], &first_dir);
+        assert_eq!(options.additional_tabs[0].command, None);
+        assert_tab_working_directory(&options.additional_tabs[1], &command_dir);
+        assert_eq!(
+            options.additional_tabs[1].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "echo one".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(first_dir).ok();
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
+    fn maps_fewer_command_directories_to_first_command_tabs() {
+        let command_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab-command",
+            "cmd /C one",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+            "--new-tab-command",
+            "pwsh -NoLogo",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli(cli).expect("failed to build launch options");
+
+        assert_eq!(options.additional_tabs.len(), 2);
+        assert_tab_working_directory(&options.additional_tabs[0], &command_dir);
+        assert_eq!(
+            options.additional_tabs[0].command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "one".into()],
+            })
+        );
+        assert_eq!(options.additional_tabs[1].working_directory, None);
+        assert_eq!(
+            options.additional_tabs[1].command,
+            Some(LaunchCommand {
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            })
+        );
+
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
     fn parses_command_only_additional_startup_tab() {
         let cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", "cargo --version"])
             .expect("failed to parse cli args");
@@ -5110,6 +5262,54 @@ mod tests {
         let error = LaunchOptions::from_cli(cli).expect_err("empty command should be rejected");
 
         assert!(error.to_string().contains("failed to parse startup tab 2"));
+    }
+
+    #[test]
+    fn rejects_unmatched_additional_startup_tab_command_directory() {
+        let command_dir = temp_test_dir();
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+
+        let error =
+            LaunchOptions::from_cli(cli).expect_err("unmatched command directory should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("startup command tab directory requires a matching --new-tab-command")
+        );
+
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
+    fn rejects_invalid_additional_startup_tab_command_directory() {
+        let file = env::temp_dir().join(format!(
+            "zed-terminal-test-command-dir-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std_fs::write(&file, "not a directory").expect("failed to create temp file");
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--new-tab-command",
+            "cmd /C one",
+            "--new-tab-command-directory",
+            file.to_str().unwrap(),
+        ])
+        .expect("failed to parse cli args");
+
+        let error =
+            LaunchOptions::from_cli(cli).expect_err("non-directory command cwd should fail");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to resolve startup tab 2 working directory"));
+        assert!(message.contains("working directory is not a directory"));
+
+        std_fs::remove_file(file).ok();
     }
 
     #[test]
