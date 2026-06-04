@@ -18,9 +18,9 @@ use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    Action, App, AppContext as _, Bounds, Context, KeyBinding, Menu, MenuItem, SharedString,
-    SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, px, size,
+    Action, App, AppContext as _, Axis, Bounds, Context, KeyBinding, Menu, MenuItem, Pixels,
+    SharedString, SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -36,7 +36,7 @@ use task::{
 use terminal::Terminal;
 use terminal_view::{default_working_directory, terminal_panel::TerminalPanel};
 use theme::{ActiveTheme, ThemeRegistry};
-use theme_settings::load_user_theme;
+use theme_settings::{ThemeSettings, load_user_theme};
 use workspace::WorkspaceSettings;
 use workspace::{AppState, Event as WorkspaceEvent, Workspace, WorkspaceStore};
 
@@ -49,6 +49,10 @@ actions!(
         OpenConfigDirectory,
         OpenLogsDirectory,
         NewTerminalTab,
+        ResizePaneLeft,
+        ResizePaneRight,
+        ResizePaneUp,
+        ResizePaneDown,
         ClearDefaultStartupProfile
     ]
 );
@@ -2910,12 +2914,32 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Next Pane", workspace::ActivateNextPane),
             MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
             MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
+            MenuItem::separator(),
+            MenuItem::action("Resize Pane Left", ResizePaneLeft),
+            MenuItem::action("Resize Pane Right", ResizePaneRight),
+            MenuItem::action("Resize Pane Up", ResizePaneUp),
+            MenuItem::action("Resize Pane Down", ResizePaneDown),
         ]),
     ]);
 }
 
 fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
     WindowOptions::default()
+}
+
+fn terminal_pane_resize_width(window: &mut Window, cx: &App) -> Pixels {
+    let theme = ThemeSettings::get_global(cx);
+    let font_id = window.text_system().resolve_font(&theme.buffer_font);
+    window
+        .text_system()
+        .advance(font_id, theme.buffer_font_size(cx), 'm')
+        .map(|width| width.width)
+        .unwrap_or_else(|_| theme.buffer_font_size(cx))
+}
+
+fn terminal_pane_resize_height(cx: &App) -> Pixels {
+    let theme = ThemeSettings::get_global(cx);
+    theme.buffer_font_size(cx) * theme.buffer_line_height.value()
 }
 
 fn open_terminal_window(
@@ -2988,6 +3012,22 @@ fn open_terminal_window(
                         },
                     )
                     .detach_and_log_err(cx);
+                });
+                workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
+                    let amount = terminal_pane_resize_width(window, cx);
+                    workspace.resize_pane(Axis::Horizontal, -amount, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ResizePaneRight, window, cx| {
+                    let amount = terminal_pane_resize_width(window, cx);
+                    workspace.resize_pane(Axis::Horizontal, amount, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ResizePaneUp, window, cx| {
+                    let amount = terminal_pane_resize_height(cx);
+                    workspace.resize_pane(Axis::Vertical, amount, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ResizePaneDown, window, cx| {
+                    let amount = terminal_pane_resize_height(cx);
+                    workspace.resize_pane(Axis::Vertical, -amount, window, cx);
                 });
                 let profile_project = project.clone();
                 workspace.register_action(
@@ -3623,6 +3663,30 @@ mod tests {
             Some("os == windows && Terminal"),
             "alt-down",
             "workspace::ActivatePaneDown",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-shift-left",
+            "zed_terminal::ResizePaneLeft",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-shift-right",
+            "zed_terminal::ResizePaneRight",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-shift-up",
+            "zed_terminal::ResizePaneUp",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-shift-down",
+            "zed_terminal::ResizePaneDown",
         );
     }
 
