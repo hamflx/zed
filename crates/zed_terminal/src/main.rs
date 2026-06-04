@@ -2807,9 +2807,8 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn set_app_menus(cx: &mut App) {
+fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Vec<MenuItem> {
     let mut shell_items = vec![MenuItem::action("New Tab", NewTerminalTab)];
-    let profile_entries = startup_profile_menu_entries();
     if !profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
             profile_entries.iter().cloned().map(|entry| {
@@ -2870,10 +2869,42 @@ fn set_app_menus(cx: &mut App) {
                 save_intent: None,
             },
         ),
+        MenuItem::action(
+            "Close Other Tabs",
+            workspace::CloseOtherItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
+        MenuItem::action(
+            "Close Tabs to the Right",
+            workspace::CloseItemsToTheRight {
+                close_pinned: false,
+            },
+        ),
+        MenuItem::action(
+            "Close Tabs to the Left",
+            workspace::CloseItemsToTheLeft {
+                close_pinned: false,
+            },
+        ),
+        MenuItem::action(
+            "Close All Tabs",
+            workspace::CloseAllItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
         MenuItem::separator(),
         MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
         MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
     ]);
+
+    shell_items
+}
+
+fn set_app_menus(cx: &mut App) {
+    let shell_items = shell_menu_items(startup_profile_menu_entries());
 
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(vec![
@@ -3583,6 +3614,21 @@ mod tests {
         assert!(error.to_string().contains("cannot be used with"));
     }
 
+    fn assert_menu_action(menu_items: &[MenuItem], label: &str, action_name: &str) {
+        let item = menu_items
+            .iter()
+            .find(|item| match item {
+                MenuItem::Action { name, .. } => name.as_ref() == label,
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("missing menu action {label:?}"));
+
+        let MenuItem::Action { action, .. } = item else {
+            panic!("menu item {label:?} should be an action");
+        };
+        assert_eq!(action.name(), action_name);
+    }
+
     #[test]
     fn parses_path_options() {
         let data_dir = temp_test_dir();
@@ -3855,6 +3901,25 @@ mod tests {
                 label: "Work Shell (work) - Default".into(),
             }]
         );
+    }
+
+    #[test]
+    fn shell_menu_exposes_bulk_tab_close_actions() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Close Tab", "pane::CloseActiveItem");
+        assert_menu_action(&items, "Close Other Tabs", "pane::CloseOtherItems");
+        assert_menu_action(
+            &items,
+            "Close Tabs to the Right",
+            "pane::CloseItemsToTheRight",
+        );
+        assert_menu_action(
+            &items,
+            "Close Tabs to the Left",
+            "pane::CloseItemsToTheLeft",
+        );
+        assert_menu_action(&items, "Close All Tabs", "pane::CloseAllItems");
     }
 
     #[test]
