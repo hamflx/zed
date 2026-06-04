@@ -35,7 +35,7 @@ use task::{
     HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
 };
 use terminal::Terminal;
-use terminal_view::{default_working_directory, terminal_panel::TerminalPanel};
+use terminal_view::{TerminalView, default_working_directory, terminal_panel::TerminalPanel};
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::{ThemeSettings, load_user_theme};
 use workspace::WorkspaceSettings;
@@ -50,6 +50,7 @@ actions!(
         OpenConfigDirectory,
         OpenLogsDirectory,
         NewTerminalTab,
+        DuplicateTerminalTab,
         ResizePaneLeft,
         ResizePaneRight,
         ResizePaneUp,
@@ -2984,6 +2985,7 @@ fn terminal_command_palette_hidden_namespaces() -> &'static [&'static str] {
 fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
     vec![
         TypeId::of::<ClearDefaultStartupProfile>(),
+        TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<NewTerminalTab>(),
         TypeId::of::<NewTerminalSplitWithProfile>(),
         TypeId::of::<NewTerminalTabWithProfile>(),
@@ -3282,7 +3284,10 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
 }
 
 fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Vec<MenuItem> {
-    let mut shell_items = vec![MenuItem::action("New Tab", NewTerminalTab)];
+    let mut shell_items = vec![
+        MenuItem::action("New Tab", NewTerminalTab),
+        MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
+    ];
     if !profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
             profile_entries.iter().cloned().map(|entry| {
@@ -3479,6 +3484,7 @@ fn open_terminal_window(
     let bounds = Bounds::centered(None, window_size, cx);
     let startup_working_directories = launch_options.startup_working_directories();
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
+    let duplicate_terminal_tab_fallback = new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
 
@@ -3521,6 +3527,17 @@ fn open_terminal_window(
                     add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
                         .detach_and_log_err(cx);
                 });
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalTab, window, cx| {
+                        duplicate_terminal_tab(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_tab_fallback.clone(),
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
                 workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
                     workspace.resize_pane(Axis::Horizontal, -amount, window, cx);
@@ -3632,6 +3649,43 @@ fn add_new_terminal_tab(
         tab.working_directory = default_working_directory(workspace, cx);
     }
     add_launch_tab(workspace, window, cx, tab)
+}
+
+fn duplicate_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    fallback_tab: LaunchTab,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    let active_terminal_view = workspace
+        .active_pane()
+        .read(cx)
+        .active_item()
+        .and_then(|item| item.downcast::<TerminalView>());
+
+    let Some(active_terminal_view) = active_terminal_view else {
+        return add_new_terminal_tab(workspace, window, cx, fallback_tab);
+    };
+
+    let (terminal, custom_title) = {
+        let active_terminal_view = active_terminal_view.read(cx);
+        (
+            active_terminal_view.terminal().clone(),
+            active_terminal_view.custom_title().map(str::to_owned),
+        )
+    };
+    let working_directory = terminal
+        .read(cx)
+        .working_directory()
+        .or_else(|| default_working_directory(workspace, cx));
+
+    TerminalPanel::add_center_terminal_with_custom_title(
+        workspace,
+        window,
+        cx,
+        custom_title,
+        move |project, cx| project.clone_terminal(&terminal, cx, working_directory),
+    )
 }
 
 fn add_launch_tab(
@@ -4214,6 +4268,12 @@ mod tests {
         )
         .expect("terminal keymap asset should parse as json");
 
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-shift-d",
+            "zed_terminal::DuplicateTerminalTab",
+        );
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
         for tab_number in 1..=8 {
             assert_key_binding_with_param(
@@ -4345,6 +4405,7 @@ mod tests {
     fn terminal_command_palette_filter_keeps_terminal_product_actions() {
         let filter = terminal_command_palette_filter_for_test();
 
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
         assert_command_palette_action_visible(
             &filter,
@@ -4889,6 +4950,17 @@ mod tests {
                 profile: "work".into(),
                 label: "Work Shell (work) - Default".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn shell_menu_exposes_duplicate_tab_action() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(
+            &items,
+            "Duplicate Tab",
+            "zed_terminal::DuplicateTerminalTab",
         );
     }
 
