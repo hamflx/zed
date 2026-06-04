@@ -50,7 +50,9 @@ actions!(
         OpenKeymapFile,
         OpenDefaultKeymapReferenceFile,
         OpenConfigDirectory,
+        OpenDataDirectory,
         OpenLogsDirectory,
+        OpenThemesDirectory,
         NewTerminalWindow,
         CloseTerminalWindow,
         MinimizeTerminalWindow,
@@ -2967,7 +2969,9 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_keymap_file);
     cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
+    cx.on_action(open_data_directory);
     cx.on_action(open_logs_directory);
+    cx.on_action(open_themes_directory);
     cx.on_action(set_default_startup_profile_action);
     cx.on_action(clear_default_startup_profile_action);
     cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
@@ -3168,10 +3172,12 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<NewTerminalSplitWithProfile>(),
         TypeId::of::<NewTerminalTabWithProfile>(),
         TypeId::of::<OpenConfigDirectory>(),
+        TypeId::of::<OpenDataDirectory>(),
         TypeId::of::<OpenDefaultKeymapReferenceFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
+        TypeId::of::<OpenThemesDirectory>(),
         TypeId::of::<ResetPaneSizes>(),
         TypeId::of::<ResizePaneDown>(),
         TypeId::of::<ResizePaneLeft>(),
@@ -3641,7 +3647,9 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenDefaultKeymapReferenceFile,
         ),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
+        MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
+        MenuItem::action("Open Themes Directory", OpenThemesDirectory),
         MenuItem::separator(),
         MenuItem::action("Quit", zed_actions::Quit),
     ]
@@ -4278,8 +4286,16 @@ fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
     open_directory(paths::config_dir(), "config", cx);
 }
 
+fn open_data_directory(_: &OpenDataDirectory, cx: &mut App) {
+    open_directory(paths::data_dir(), "data", cx);
+}
+
 fn open_logs_directory(_: &OpenLogsDirectory, cx: &mut App) {
     open_directory(paths::logs_dir(), "logs", cx);
+}
+
+fn open_themes_directory(_: &OpenThemesDirectory, cx: &mut App) {
+    open_directory(paths::themes_dir(), "themes", cx);
 }
 
 fn set_default_startup_profile_action(action: &SetDefaultStartupProfile, cx: &mut App) {
@@ -4721,8 +4737,12 @@ mod tests {
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
+        assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
+        assert_command_palette_action_visible(&filter, &OpenDataDirectory);
+        assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
+        assert_command_palette_action_visible(&filter, &OpenThemesDirectory);
         assert_command_palette_action_visible(&filter, &OpenDefaultKeymapReferenceFile);
         assert_command_palette_action_visible(&filter, &terminal::Copy);
         assert_command_palette_action_visible(&filter, &terminal::Paste);
@@ -5354,6 +5374,26 @@ mod tests {
             "Open Default Keymap Reference File",
             "zed_terminal::OpenDefaultKeymapReferenceFile",
         );
+        assert_menu_action(
+            &items,
+            "Open Config Directory",
+            "zed_terminal::OpenConfigDirectory",
+        );
+        assert_menu_action(
+            &items,
+            "Open Data Directory",
+            "zed_terminal::OpenDataDirectory",
+        );
+        assert_menu_action(
+            &items,
+            "Open Logs Directory",
+            "zed_terminal::OpenLogsDirectory",
+        );
+        assert_menu_action(
+            &items,
+            "Open Themes Directory",
+            "zed_terminal::OpenThemesDirectory",
+        );
     }
 
     #[test]
@@ -5867,6 +5907,45 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenDefaultKeymapReferenceFile>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_support_directory_action_inputs() {
+        let action = <OpenConfigDirectory as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open config directory action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenConfigDirectory>()
+                .is_some()
+        );
+
+        let action = <OpenDataDirectory as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open data directory action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenDataDirectory>()
+                .is_some()
+        );
+
+        let action = <OpenLogsDirectory as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open logs directory action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenLogsDirectory>()
+                .is_some()
+        );
+
+        let action = <OpenThemesDirectory as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open themes directory action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenThemesDirectory>()
                 .is_some()
         );
     }
