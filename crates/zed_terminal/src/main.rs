@@ -96,7 +96,8 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
-            "init_config"
+            "init_config",
+            "doctor"
         ]
     )]
     print_paths: bool,
@@ -108,6 +109,7 @@ struct Cli {
             "validate_keymap",
             "print_startup_config_schema",
             "init_config",
+            "doctor",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -127,7 +129,8 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
-            "init_config"
+            "init_config",
+            "doctor"
         ],
         help = "Include hidden startup profiles when listing profiles"
     )]
@@ -141,7 +144,8 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
-            "init_config"
+            "init_config",
+            "doctor"
         ]
     )]
     no_startup_config: bool,
@@ -154,6 +158,7 @@ struct Cli {
             "validate_keymap",
             "print_startup_config_schema",
             "init_config",
+            "doctor",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -174,6 +179,7 @@ struct Cli {
             "validate_startup_config",
             "validate_keymap",
             "init_config",
+            "doctor",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -194,6 +200,7 @@ struct Cli {
             "validate_startup_config",
             "print_startup_config_schema",
             "validate_keymap",
+            "doctor",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -207,6 +214,28 @@ struct Cli {
     init_config: bool,
 
     #[arg(
+        long = "doctor",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "validate_startup_config",
+            "print_startup_config_schema",
+            "init_config",
+            "validate_keymap",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "new_tabs",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Run read-only standalone terminal diagnostics without opening a terminal window"
+    )]
+    doctor: bool,
+
+    #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
             "print_paths",
@@ -214,6 +243,7 @@ struct Cli {
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
+            "doctor",
             "no_startup_config",
             "profile",
             "working_directory",
@@ -287,6 +317,9 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
     },
     InitConfig {
+        path_options: TerminalPathOptions,
+    },
+    Doctor {
         path_options: TerminalPathOptions,
     },
     ValidateKeymap {
@@ -445,6 +478,53 @@ enum TerminalConfigFileInitializationStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalDoctorReport {
+    directories: Vec<TerminalDoctorPathCheck>,
+    config_files: Vec<TerminalDoctorPathCheck>,
+    startup_config: TerminalDoctorStartupConfigCheck,
+    keymap: TerminalDoctorKeymapCheck,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalDoctorPathCheck {
+    label: &'static str,
+    path: PathBuf,
+    status: TerminalDoctorCheckStatus,
+    message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalDoctorStartupConfigCheck {
+    path: PathBuf,
+    status: TerminalDoctorCheckStatus,
+    source: Option<TerminalDoctorConfigSource>,
+    validation: Option<TerminalStartupConfigValidation>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalDoctorKeymapCheck {
+    path: PathBuf,
+    status: TerminalDoctorCheckStatus,
+    source: Option<TerminalUserKeymapSource>,
+    validation: Option<TerminalKeymapValidation>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalDoctorCheckStatus {
+    Ok,
+    Missing,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalDoctorConfigSource {
+    File,
+    Initial,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalKeymapValidation {
     default_binding_count: usize,
     user_binding_count: usize,
@@ -457,6 +537,12 @@ enum TerminalUserKeymapSource {
     Initial,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalDoctorPathKind {
+    Directory,
+    File,
+}
+
 impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
         let path_options =
@@ -467,6 +553,7 @@ impl TerminalCliCommand {
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.init_config
+            || cli.doctor
         {
             TerminalStartupConfig::default()
         } else {
@@ -520,6 +607,10 @@ impl TerminalCliCommand {
             return Ok(Self::InitConfig { path_options });
         }
 
+        if cli.doctor {
+            return Ok(Self::Doctor { path_options });
+        }
+
         if cli.validate_keymap {
             return Ok(Self::ValidateKeymap { path_options });
         }
@@ -538,6 +629,7 @@ impl TerminalCliCommand {
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
+            Self::Doctor { path_options } => path_options,
             Self::ValidateKeymap { path_options } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
@@ -1092,6 +1184,11 @@ fn main() {
         }
     };
 
+    if let TerminalCliCommand::Doctor { path_options } = command {
+        run_terminal_doctor(path_options);
+        return;
+    }
+
     if let Err(error) = install_terminal_paths(command.path_options()) {
         eprintln!("failed to run zed terminal: {error:#}");
         process::exit(2);
@@ -1122,16 +1219,34 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::Doctor { .. } => unreachable!("doctor is handled before path install"),
         TerminalCliCommand::ValidateKeymap { .. } => run_keymap_validation(),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
+}
+
+fn run_terminal_doctor(path_options: TerminalPathOptions) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let report = diagnose_terminal(&path_options, cx);
+            print!("{}", format_doctor_report(&report));
+            io::stdout()
+                .flush()
+                .expect("failed to flush terminal doctor output");
+            if report.has_errors() {
+                cx.quit();
+                process::exit(2);
+            }
+            cx.quit();
+        });
 }
 
 fn run_keymap_validation() {
     gpui_platform::application()
         .with_assets(Assets)
         .run(move |cx| {
-            match validate_keymaps(cx) {
+            match validate_keymaps(paths::keymap_file(), cx) {
                 Ok(validation) => {
                     print!(
                         "{}",
@@ -1247,11 +1362,13 @@ fn print_config_initialization() -> Result<()> {
 }
 
 fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
-    initialize_terminal_config_files_at(TerminalConfigFilePaths {
-        settings_file: paths::settings_file().clone(),
-        global_settings_file: paths::global_settings_file().clone(),
-        keymap_file: paths::keymap_file().clone(),
-        startup_config_file: active_terminal_startup_config_file(),
+    initialize_terminal_config_files_at(active_terminal_config_file_paths())
+}
+
+fn active_terminal_config_file_paths() -> TerminalConfigFilePaths {
+    TerminalConfigFilePaths::from_path_options(&TerminalPathOptions {
+        data_dir: paths::data_dir().clone(),
+        config_dir: paths::config_dir().clone(),
     })
 }
 
@@ -1260,6 +1377,17 @@ struct TerminalConfigFilePaths {
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
     startup_config_file: PathBuf,
+}
+
+impl TerminalConfigFilePaths {
+    fn from_path_options(path_options: &TerminalPathOptions) -> Self {
+        Self {
+            settings_file: path_options.config_dir.join("settings.json"),
+            global_settings_file: path_options.config_dir.join("global_settings.json"),
+            keymap_file: path_options.config_dir.join("keymap.json"),
+            startup_config_file: terminal_startup_config_file(&path_options.config_dir),
+        }
+    }
 }
 
 fn initialize_terminal_config_files_at(
@@ -1348,12 +1476,222 @@ fn initialize_terminal_config_file(
     }
 }
 
-fn validate_keymaps(cx: &mut App) -> Result<TerminalKeymapValidation> {
+fn diagnose_terminal(path_options: &TerminalPathOptions, cx: &mut App) -> TerminalDoctorReport {
+    let file_paths = TerminalConfigFilePaths::from_path_options(path_options);
+    let startup_config_file = file_paths.startup_config_file.clone();
+    let keymap_file = file_paths.keymap_file.clone();
+
+    TerminalDoctorReport {
+        directories: diagnose_terminal_directories(path_options),
+        config_files: diagnose_terminal_config_files(file_paths),
+        startup_config: diagnose_startup_config_file(startup_config_file),
+        keymap: diagnose_keymap(keymap_file, cx),
+    }
+}
+
+fn diagnose_terminal_directories(
+    path_options: &TerminalPathOptions,
+) -> Vec<TerminalDoctorPathCheck> {
+    vec![
+        diagnose_path(
+            "data_dir",
+            path_options.data_dir.clone(),
+            TerminalDoctorPathKind::Directory,
+        ),
+        diagnose_path(
+            "config_dir",
+            path_options.config_dir.clone(),
+            TerminalDoctorPathKind::Directory,
+        ),
+        diagnose_path(
+            "logs_dir",
+            path_options.data_dir.join("logs"),
+            TerminalDoctorPathKind::Directory,
+        ),
+        diagnose_path(
+            "themes_dir",
+            path_options.config_dir.join("themes"),
+            TerminalDoctorPathKind::Directory,
+        ),
+    ]
+}
+
+fn diagnose_terminal_config_files(
+    file_paths: TerminalConfigFilePaths,
+) -> Vec<TerminalDoctorPathCheck> {
+    vec![
+        diagnose_path(
+            "settings_file",
+            file_paths.settings_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
+            "global_settings_file",
+            file_paths.global_settings_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
+            "keymap_file",
+            file_paths.keymap_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
+            "startup_config_file",
+            file_paths.startup_config_file,
+            TerminalDoctorPathKind::File,
+        ),
+    ]
+}
+
+fn diagnose_path(
+    label: &'static str,
+    path: PathBuf,
+    expected_kind: TerminalDoctorPathKind,
+) -> TerminalDoctorPathCheck {
+    match std_fs::metadata(&path) {
+        Ok(metadata) if matches_expected_path_kind(&metadata, expected_kind) => {
+            TerminalDoctorPathCheck {
+                label,
+                path,
+                status: TerminalDoctorCheckStatus::Ok,
+                message: None,
+            }
+        }
+        Ok(_) => TerminalDoctorPathCheck {
+            label,
+            path,
+            status: TerminalDoctorCheckStatus::Error,
+            message: Some(match expected_kind {
+                TerminalDoctorPathKind::Directory => "expected a directory".into(),
+                TerminalDoctorPathKind::File => "expected a file".into(),
+            }),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => TerminalDoctorPathCheck {
+            label,
+            path,
+            status: TerminalDoctorCheckStatus::Missing,
+            message: None,
+        },
+        Err(error) => TerminalDoctorPathCheck {
+            label,
+            path,
+            status: TerminalDoctorCheckStatus::Error,
+            message: Some(format!("failed to inspect path: {error}")),
+        },
+    }
+}
+
+fn matches_expected_path_kind(
+    metadata: &std_fs::Metadata,
+    expected_kind: TerminalDoctorPathKind,
+) -> bool {
+    match expected_kind {
+        TerminalDoctorPathKind::Directory => metadata.is_dir(),
+        TerminalDoctorPathKind::File => metadata.is_file(),
+    }
+}
+
+fn diagnose_startup_config_file(path: PathBuf) -> TerminalDoctorStartupConfigCheck {
+    match std_fs::metadata(&path) {
+        Ok(metadata) if !metadata.is_file() => TerminalDoctorStartupConfigCheck {
+            path,
+            status: TerminalDoctorCheckStatus::Error,
+            source: None,
+            validation: None,
+            message: Some("expected a file".into()),
+        },
+        Ok(_) => match TerminalStartupConfig::load(&path).and_then(|config| config.validate()) {
+            Ok(validation) => TerminalDoctorStartupConfigCheck {
+                path,
+                status: TerminalDoctorCheckStatus::Ok,
+                source: Some(TerminalDoctorConfigSource::File),
+                validation: Some(validation),
+                message: None,
+            },
+            Err(error) => TerminalDoctorStartupConfigCheck {
+                path,
+                status: TerminalDoctorCheckStatus::Error,
+                source: Some(TerminalDoctorConfigSource::File),
+                validation: None,
+                message: Some(format!("{error:#}")),
+            },
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let validation = TerminalStartupConfig::default()
+                .validate()
+                .expect("default startup config should validate");
+            TerminalDoctorStartupConfigCheck {
+                path,
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalDoctorConfigSource::Initial),
+                validation: Some(validation),
+                message: None,
+            }
+        }
+        Err(error) => TerminalDoctorStartupConfigCheck {
+            path,
+            status: TerminalDoctorCheckStatus::Error,
+            source: None,
+            validation: None,
+            message: Some(format!("failed to inspect startup config: {error}")),
+        },
+    }
+}
+
+fn diagnose_keymap(path: PathBuf, cx: &mut App) -> TerminalDoctorKeymapCheck {
+    let source = match std_fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Some(TerminalUserKeymapSource::File),
+        Ok(_) => {
+            return TerminalDoctorKeymapCheck {
+                path,
+                status: TerminalDoctorCheckStatus::Error,
+                source: None,
+                validation: None,
+                message: Some("expected a file".into()),
+            };
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Some(TerminalUserKeymapSource::Initial)
+        }
+        Err(error) => {
+            return TerminalDoctorKeymapCheck {
+                path,
+                status: TerminalDoctorCheckStatus::Error,
+                source: None,
+                validation: None,
+                message: Some(format!("failed to inspect keymap: {error}")),
+            };
+        }
+    };
+
+    match validate_keymaps(&path, cx) {
+        Ok(validation) => TerminalDoctorKeymapCheck {
+            path,
+            status: if validation.user_keymap_source == TerminalUserKeymapSource::Initial {
+                TerminalDoctorCheckStatus::Missing
+            } else {
+                TerminalDoctorCheckStatus::Ok
+            },
+            source,
+            validation: Some(validation),
+            message: None,
+        },
+        Err(error) => TerminalDoctorKeymapCheck {
+            path,
+            status: TerminalDoctorCheckStatus::Error,
+            source,
+            validation: None,
+            message: Some(format!("{error:#}")),
+        },
+    }
+}
+
+fn validate_keymaps(keymap_file: &Path, cx: &mut App) -> Result<TerminalKeymapValidation> {
     let default_binding_count =
         KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
             .context("failed to validate zed terminal default keymap")?
             .len();
-    let (user_keymap_content, user_keymap_source) = read_user_keymap_content()?;
+    let (user_keymap_content, user_keymap_source) = read_user_keymap_content(keymap_file)?;
     let user_binding_count =
         load_keymap_content_for_validation("terminal keymap file", &user_keymap_content, cx)?;
 
@@ -1364,8 +1702,7 @@ fn validate_keymaps(cx: &mut App) -> Result<TerminalKeymapValidation> {
     })
 }
 
-fn read_user_keymap_content() -> Result<(String, TerminalUserKeymapSource)> {
-    let keymap_file = paths::keymap_file();
+fn read_user_keymap_content(keymap_file: &Path) -> Result<(String, TerminalUserKeymapSource)> {
     match std_fs::read_to_string(keymap_file) {
         Ok(content) => Ok((content, TerminalUserKeymapSource::File)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((
@@ -1510,6 +1847,130 @@ fn format_config_initialization(initialization: &TerminalConfigInitialization) -
         .expect("writing to string should not fail");
     }
     output
+}
+
+fn format_doctor_report(report: &TerminalDoctorReport) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "status: {}",
+        if report.has_errors() { "error" } else { "ok" }
+    )
+    .expect("writing to string should not fail");
+
+    writeln!(&mut output, "directories:").expect("writing to string should not fail");
+    for directory in &report.directories {
+        format_doctor_path_check(&mut output, directory);
+    }
+
+    writeln!(&mut output, "config_files:").expect("writing to string should not fail");
+    for file in &report.config_files {
+        format_doctor_path_check(&mut output, file);
+    }
+
+    writeln!(&mut output, "startup_config:").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "  startup_config_file: {} {}",
+        report.startup_config.status.as_str(),
+        report.startup_config.path.display()
+    )
+    .expect("writing to string should not fail");
+    if let Some(source) = report.startup_config.source {
+        writeln!(&mut output, "  source: {}", source.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(validation) = &report.startup_config.validation {
+        writeln!(&mut output, "  layouts: {}", validation.layout_count)
+            .expect("writing to string should not fail");
+        writeln!(&mut output, "  tabs: {}", validation.tab_count)
+            .expect("writing to string should not fail");
+    }
+    if let Some(message) = &report.startup_config.message {
+        writeln!(&mut output, "  message: {message}").expect("writing to string should not fail");
+    }
+
+    writeln!(&mut output, "keymap:").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "  keymap_file: {} {}",
+        report.keymap.status.as_str(),
+        report.keymap.path.display()
+    )
+    .expect("writing to string should not fail");
+    if let Some(source) = report.keymap.source {
+        writeln!(&mut output, "  source: {}", source.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(validation) = &report.keymap.validation {
+        writeln!(
+            &mut output,
+            "  default_bindings: {}",
+            validation.default_binding_count
+        )
+        .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "  user_bindings: {}",
+            validation.user_binding_count
+        )
+        .expect("writing to string should not fail");
+    }
+    if let Some(message) = &report.keymap.message {
+        writeln!(&mut output, "  message: {message}").expect("writing to string should not fail");
+    }
+
+    output
+}
+
+fn format_doctor_path_check(output: &mut String, check: &TerminalDoctorPathCheck) {
+    writeln!(
+        output,
+        "  {}: {} {}",
+        check.label,
+        check.status.as_str(),
+        check.path.display()
+    )
+    .expect("writing to string should not fail");
+    if let Some(message) = &check.message {
+        writeln!(output, "    message: {message}").expect("writing to string should not fail");
+    }
+}
+
+impl TerminalDoctorReport {
+    fn has_errors(&self) -> bool {
+        self.directories
+            .iter()
+            .chain(self.config_files.iter())
+            .any(TerminalDoctorPathCheck::has_error)
+            || self.startup_config.status == TerminalDoctorCheckStatus::Error
+            || self.keymap.status == TerminalDoctorCheckStatus::Error
+    }
+}
+
+impl TerminalDoctorPathCheck {
+    fn has_error(&self) -> bool {
+        self.status == TerminalDoctorCheckStatus::Error
+    }
+}
+
+impl TerminalDoctorCheckStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Missing => "missing",
+            Self::Error => "error",
+        }
+    }
+}
+
+impl TerminalDoctorConfigSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Initial => "initial",
+        }
+    }
 }
 
 impl TerminalConfigFileInitializationStatus {
@@ -2878,6 +3339,232 @@ mod tests {
     }
 
     #[test]
+    fn formats_doctor_report() {
+        let output = format_doctor_report(&TerminalDoctorReport {
+            directories: vec![
+                TerminalDoctorPathCheck {
+                    label: "data_dir",
+                    path: PathBuf::from("data"),
+                    status: TerminalDoctorCheckStatus::Ok,
+                    message: None,
+                },
+                TerminalDoctorPathCheck {
+                    label: "logs_dir",
+                    path: PathBuf::from("logs"),
+                    status: TerminalDoctorCheckStatus::Missing,
+                    message: None,
+                },
+            ],
+            config_files: vec![TerminalDoctorPathCheck {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Error,
+                message: Some("expected a file".into()),
+            }],
+            startup_config: TerminalDoctorStartupConfigCheck {
+                path: PathBuf::from("terminal.json"),
+                status: TerminalDoctorCheckStatus::Ok,
+                source: Some(TerminalDoctorConfigSource::File),
+                validation: Some(TerminalStartupConfigValidation {
+                    layout_count: 2,
+                    tab_count: 4,
+                }),
+                message: None,
+            },
+            keymap: TerminalDoctorKeymapCheck {
+                path: PathBuf::from("keymap.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalUserKeymapSource::Initial),
+                validation: Some(TerminalKeymapValidation {
+                    default_binding_count: 31,
+                    user_binding_count: 0,
+                    user_keymap_source: TerminalUserKeymapSource::Initial,
+                }),
+                message: None,
+            },
+        });
+
+        assert_eq!(
+            output,
+            concat!(
+                "status: error\n",
+                "directories:\n",
+                "  data_dir: ok data\n",
+                "  logs_dir: missing logs\n",
+                "config_files:\n",
+                "  settings_file: error settings.json\n",
+                "    message: expected a file\n",
+                "startup_config:\n",
+                "  startup_config_file: ok terminal.json\n",
+                "  source: file\n",
+                "  layouts: 2\n",
+                "  tabs: 4\n",
+                "keymap:\n",
+                "  keymap_file: missing keymap.json\n",
+                "  source: initial\n",
+                "  default_bindings: 31\n",
+                "  user_bindings: 0\n",
+            )
+        );
+    }
+
+    #[test]
+    fn doctor_report_treats_missing_as_non_fatal() {
+        let report = TerminalDoctorReport {
+            directories: vec![TerminalDoctorPathCheck {
+                label: "data_dir",
+                path: PathBuf::from("data"),
+                status: TerminalDoctorCheckStatus::Missing,
+                message: None,
+            }],
+            config_files: vec![TerminalDoctorPathCheck {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                message: None,
+            }],
+            startup_config: TerminalDoctorStartupConfigCheck {
+                path: PathBuf::from("terminal.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalDoctorConfigSource::Initial),
+                validation: Some(TerminalStartupConfigValidation {
+                    layout_count: 1,
+                    tab_count: 1,
+                }),
+                message: None,
+            },
+            keymap: TerminalDoctorKeymapCheck {
+                path: PathBuf::from("keymap.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalUserKeymapSource::Initial),
+                validation: Some(TerminalKeymapValidation {
+                    default_binding_count: 31,
+                    user_binding_count: 0,
+                    user_keymap_source: TerminalUserKeymapSource::Initial,
+                }),
+                message: None,
+            },
+        };
+
+        assert!(!report.has_errors());
+        assert!(format_doctor_report(&report).starts_with("status: ok\n"));
+    }
+
+    #[test]
+    fn diagnose_path_reports_kind_mismatches() {
+        let root_dir = temp_test_dir();
+        let file_path = root_dir.join("settings.json");
+        let directory_path = root_dir.join("config");
+        std_fs::write(&file_path, "{}\n").expect("failed to write test file");
+        std_fs::create_dir_all(&directory_path).expect("failed to create test directory");
+
+        assert_eq!(
+            diagnose_path(
+                "settings_file",
+                file_path.clone(),
+                TerminalDoctorPathKind::File
+            )
+            .status,
+            TerminalDoctorCheckStatus::Ok
+        );
+        let file_as_directory =
+            diagnose_path("data_dir", file_path, TerminalDoctorPathKind::Directory);
+        assert_eq!(file_as_directory.status, TerminalDoctorCheckStatus::Error);
+        assert_eq!(
+            file_as_directory.message.as_deref(),
+            Some("expected a directory")
+        );
+
+        let directory_as_file = diagnose_path(
+            "settings_file",
+            directory_path,
+            TerminalDoctorPathKind::File,
+        );
+        assert_eq!(directory_as_file.status, TerminalDoctorCheckStatus::Error);
+        assert_eq!(
+            directory_as_file.message.as_deref(),
+            Some("expected a file")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn diagnose_terminal_directories_does_not_create_missing_paths() {
+        let root_dir = env::temp_dir().join(format!(
+            "zed-terminal-doctor-read-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let path_options = TerminalPathOptions {
+            data_dir: root_dir.join("data"),
+            config_dir: root_dir.join("config"),
+        };
+        assert!(!path_options.data_dir.exists());
+        assert!(!path_options.config_dir.exists());
+
+        let directories = diagnose_terminal_directories(&path_options);
+
+        assert_eq!(
+            directories
+                .iter()
+                .map(|check| (check.label, check.status))
+                .collect::<Vec<_>>(),
+            vec![
+                ("data_dir", TerminalDoctorCheckStatus::Missing),
+                ("config_dir", TerminalDoctorCheckStatus::Missing),
+                ("logs_dir", TerminalDoctorCheckStatus::Missing),
+                ("themes_dir", TerminalDoctorCheckStatus::Missing),
+            ]
+        );
+        assert!(!path_options.data_dir.exists());
+        assert!(!path_options.config_dir.exists());
+        assert!(!root_dir.exists());
+    }
+
+    #[test]
+    fn diagnose_startup_config_file_uses_initial_config_when_missing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let check = diagnose_startup_config_file(startup_config_file);
+
+        assert_eq!(check.status, TerminalDoctorCheckStatus::Missing);
+        assert_eq!(check.source, Some(TerminalDoctorConfigSource::Initial));
+        assert_eq!(
+            check.validation,
+            Some(TerminalStartupConfigValidation {
+                layout_count: 1,
+                tab_count: 1,
+            })
+        );
+        assert_eq!(check.message, None);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn diagnose_startup_config_file_reports_invalid_config() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(&startup_config_file, "{ broken terminal config")
+            .expect("failed to write broken startup config");
+
+        let check = diagnose_startup_config_file(startup_config_file);
+
+        assert_eq!(check.status, TerminalDoctorCheckStatus::Error);
+        assert_eq!(check.source, Some(TerminalDoctorConfigSource::File));
+        assert_eq!(check.validation, None);
+        assert!(
+            check
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("failed to parse terminal startup config"))
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn initializes_missing_config_files_without_overwriting_existing_files() {
         let root_dir = temp_test_dir();
         let config_dir = root_dir.join("config");
@@ -3050,6 +3737,32 @@ mod tests {
     }
 
     #[test]
+    fn doctor_mode_does_not_load_startup_config_file_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--doctor",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("doctor mode should not load terminal.json during cli resolution");
+
+        assert!(matches!(command, TerminalCliCommand::Doctor { .. }));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -3099,6 +3812,41 @@ mod tests {
             "--init-config",
         ])
         .expect_err("hidden profile listing should conflict with config initialization");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn doctor_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from(["zed-terminal", "--doctor", "--profile", "work"])
+            .expect_err("profile selection should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from(["zed-terminal", "--doctor", "-d", dir.to_str().unwrap()])
+            .expect_err("startup directory should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--doctor",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--doctor", "--", "cmd"])
+            .expect_err("startup command should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--doctor"])
+            .expect_err("path inspection should conflict with doctor");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--doctor"])
+            .expect_err("profile listing should conflict with doctor");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
