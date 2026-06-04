@@ -2899,6 +2899,17 @@ fn set_app_menus(cx: &mut App) {
         Menu::new("Pane").items(vec![
             MenuItem::action("Split Right", workspace::SplitRight::default()),
             MenuItem::action("Split Down", workspace::SplitDown::default()),
+            MenuItem::action("Split Left", workspace::SplitLeft::default()),
+            MenuItem::action("Split Up", workspace::SplitUp::default()),
+            MenuItem::separator(),
+            MenuItem::action("Focus Left", workspace::ActivatePaneLeft),
+            MenuItem::action("Focus Right", workspace::ActivatePaneRight),
+            MenuItem::action("Focus Up", workspace::ActivatePaneUp),
+            MenuItem::action("Focus Down", workspace::ActivatePaneDown),
+            MenuItem::separator(),
+            MenuItem::action("Next Pane", workspace::ActivateNextPane),
+            MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
+            MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
         ]),
     ]);
 }
@@ -3582,6 +3593,40 @@ mod tests {
     }
 
     #[test]
+    fn terminal_keymap_includes_pane_workflow_bindings() {
+        let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
+            include_str!("../../../assets/keymaps/zed-terminal.json"),
+        )
+        .expect("terminal keymap asset should parse as json");
+
+        assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-left",
+            "workspace::ActivatePaneLeft",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-right",
+            "workspace::ActivatePaneRight",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-up",
+            "workspace::ActivatePaneUp",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("os == windows && Terminal"),
+            "alt-down",
+            "workspace::ActivatePaneDown",
+        );
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -3603,6 +3648,33 @@ mod tests {
             missing_action_names.is_empty(),
             "terminal keymap references unregistered actions: {missing_action_names:?}"
         );
+    }
+
+    fn assert_key_binding(
+        keymap: &gpui::private::serde_json::Value,
+        context: Option<&str>,
+        keystroke: &str,
+        expected_action: &str,
+    ) {
+        let entries = keymap
+            .as_array()
+            .expect("terminal keymap should be a JSON array");
+        let entry = entries
+            .iter()
+            .find(|entry| {
+                entry
+                    .get("context")
+                    .and_then(gpui::private::serde_json::Value::as_str)
+                    == context
+            })
+            .unwrap_or_else(|| panic!("missing keymap context {context:?}"));
+        let action = entry
+            .get("bindings")
+            .and_then(|bindings| bindings.get(keystroke))
+            .and_then(gpui::private::serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("missing key binding {keystroke:?} in context {context:?}"));
+
+        assert_eq!(action, expected_action);
     }
 
     fn collect_action_names(

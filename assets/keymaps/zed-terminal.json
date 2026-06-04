@@ -10,6 +10,7 @@
       "alt-shift-d": "pane::SplitRight",
       "alt-shift-plus": "pane::SplitDown",
       "alt-shift-minus": "pane::SplitDown",
+      "shift-escape": "workspace::ToggleZoom",
       "ctrl-,": "zed::OpenSettingsFile",
     },
   },
@@ -45,6 +46,10 @@
   {
     "context": "os == windows && Terminal",
     "bindings": {
+      "alt-left": "workspace::ActivatePaneLeft",
+      "alt-right": "workspace::ActivatePaneRight",
+      "alt-up": "workspace::ActivatePaneUp",
+      "alt-down": "workspace::ActivatePaneDown",
       "ctrl-v": "terminal::Paste",
     },
   },
