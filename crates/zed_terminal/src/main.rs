@@ -63,6 +63,14 @@ struct NewTerminalTabWithProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct NewTerminalSplitWithProfile {
+    profile: String,
+    direction: TerminalStartupSplitDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct SetDefaultStartupProfile {
     profile: String,
 }
@@ -1433,12 +1441,22 @@ impl TerminalStartupConfig {
     }
 
     fn profile_initial_tab(&self, profile: &str) -> Result<LaunchTab> {
+        self.profile_launch_tab(profile, None)
+    }
+
+    fn profile_launch_tab(
+        &self,
+        profile: &str,
+        split: Option<TerminalStartupSplitDirection>,
+    ) -> Result<LaunchTab> {
         let profile = profile.trim();
         if profile.is_empty() {
             bail!("startup profile name is empty");
         }
 
-        self.initial_tab(Some(profile))
+        let mut tab = self.initial_tab(Some(profile))?;
+        tab.split = split;
+        Ok(tab)
     }
 
     fn profile_names(&self) -> Vec<String> {
@@ -2568,10 +2586,16 @@ fn startup_profile_menu_entries() -> Vec<TerminalStartupProfileMenuEntry> {
     }
 }
 
-fn launch_tab_for_profile(profile: &str) -> Result<LaunchTab> {
-    TerminalStartupConfig::load(&active_terminal_startup_config_file())?
-        .profile_initial_tab(profile)
-        .with_context(|| format!("failed to resolve startup profile {profile:?}"))
+fn launch_tab_for_profile(
+    profile: &str,
+    split: Option<TerminalStartupSplitDirection>,
+) -> Result<LaunchTab> {
+    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
+    match split {
+        Some(split) => startup_config.profile_launch_tab(profile, Some(split)),
+        None => startup_config.profile_initial_tab(profile),
+    }
+    .with_context(|| format!("failed to resolve startup profile {profile:?}"))
 }
 
 fn terminal_log_file() -> &'static PathBuf {
@@ -2787,6 +2811,32 @@ fn set_app_menus(cx: &mut App) {
                 )
             }),
         )));
+        shell_items.push(MenuItem::submenu(
+            Menu::new("Split Right With Profile").items(profile_entries.iter().cloned().map(
+                |entry| {
+                    MenuItem::action(
+                        entry.label,
+                        NewTerminalSplitWithProfile {
+                            profile: entry.profile,
+                            direction: TerminalStartupSplitDirection::Right,
+                        },
+                    )
+                },
+            )),
+        ));
+        shell_items.push(MenuItem::submenu(
+            Menu::new("Split Down With Profile").items(profile_entries.iter().cloned().map(
+                |entry| {
+                    MenuItem::action(
+                        entry.label,
+                        NewTerminalSplitWithProfile {
+                            profile: entry.profile,
+                            direction: TerminalStartupSplitDirection::Down,
+                        },
+                    )
+                },
+            )),
+        ));
         shell_items.push(MenuItem::submenu(Menu::new("Set Default Profile").items(
             profile_entries.into_iter().map(|entry| {
                 MenuItem::action(
@@ -2931,7 +2981,7 @@ fn open_terminal_window(
                 let profile_project = project.clone();
                 workspace.register_action(
                     move |workspace, action: &NewTerminalTabWithProfile, window, cx| {
-                        match launch_tab_for_profile(&action.profile) {
+                        match launch_tab_for_profile(&action.profile, None) {
                             Ok(tab) => {
                                 if let Some(working_directory) = tab.working_directory.clone() {
                                     profile_project.update(cx, |project, cx| {
@@ -2945,6 +2995,29 @@ fn open_terminal_window(
                             Err(error) => {
                                 log::warn!(
                                     "failed to create terminal tab for profile {:?}: {error:#}",
+                                    action.profile
+                                );
+                            }
+                        }
+                    },
+                );
+                let profile_split_project = project.clone();
+                workspace.register_action(
+                    move |workspace, action: &NewTerminalSplitWithProfile, window, cx| {
+                        match launch_tab_for_profile(&action.profile, Some(action.direction)) {
+                            Ok(tab) => {
+                                if let Some(working_directory) = tab.working_directory.clone() {
+                                    profile_split_project.update(cx, |project, cx| {
+                                        project
+                                            .find_or_create_worktree(&working_directory, true, cx)
+                                            .detach_and_log_err(cx);
+                                    });
+                                }
+                                add_launch_tab(workspace, window, cx, tab).detach_and_log_err(cx);
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to split terminal for profile {:?}: {error:#}",
                                     action.profile
                                 );
                             }
@@ -3727,6 +3800,46 @@ mod tests {
     }
 
     #[test]
+    fn profile_launch_tab_applies_runtime_split_without_replaying_profile_tabs() {
+        let initial_dir = temp_test_dir();
+        let extra_tab_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                title: Some("Work".into()),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(extra_tab_dir.clone()),
+                    title: Some("Logs".into()),
+                    split: Some(TerminalStartupSplitDirection::Down),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let tab = config
+            .profile_launch_tab(" work ", Some(TerminalStartupSplitDirection::Right))
+            .expect("profile split tab should resolve");
+
+        assert_tab_working_directory(&tab, &initial_dir);
+        assert_ne!(
+            tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&extra_tab_dir).unwrap().as_path())
+        );
+        assert_eq!(tab.title.as_deref(), Some("Work"));
+        assert_eq!(tab.split, Some(TerminalStartupSplitDirection::Right));
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(extra_tab_dir).ok();
+    }
+
+    #[test]
     fn parses_new_terminal_tab_with_profile_action_input() {
         let action = <NewTerminalTabWithProfile as Action>::build(
             gpui::private::serde_json::json!({ "profile": "work" }),
@@ -3749,6 +3862,45 @@ mod tests {
         )
         .expect_err("unknown profile action fields should be rejected");
 
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_split_with_profile_action_input() {
+        let action =
+            <NewTerminalSplitWithProfile as Action>::build(gpui::private::serde_json::json!({
+                "profile": "work",
+                "direction": "right"
+            }))
+            .expect("profile split action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalSplitWithProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &NewTerminalSplitWithProfile {
+                profile: "work".into(),
+                direction: TerminalStartupSplitDirection::Right,
+            }
+        );
+
+        let error =
+            <NewTerminalSplitWithProfile as Action>::build(gpui::private::serde_json::json!({
+                "profile": "work",
+                "direction": "diagonal"
+            }))
+            .expect_err("unknown profile split directions should be rejected");
+        assert!(format!("{error:#}").contains("unknown variant"));
+
+        let error =
+            <NewTerminalSplitWithProfile as Action>::build(gpui::private::serde_json::json!({
+                "profile": "work",
+                "direction": "right",
+                "extra": true
+            }))
+            .expect_err("unknown profile split action fields should be rejected");
         assert!(format!("{error:#}").contains("unknown field"));
     }
 
