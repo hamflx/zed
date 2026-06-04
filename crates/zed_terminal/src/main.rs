@@ -116,6 +116,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
     ArgGroup::new("default_profile_command")
         .args(["set_default_profile", "clear_default_profile"])
 ))]
+#[command(group(
+    ArgGroup::new("profile_visibility_command")
+        .args(["hide_profile", "show_profile"])
+))]
 struct Cli {
     #[arg(
         long = "user-data-dir",
@@ -433,6 +437,88 @@ struct Cli {
         help = "Set the output format for --rename-profile"
     )]
     rename_profile_format: Option<TerminalStartupProfileRenameOutputFormat>,
+
+    #[arg(
+        long = "hide-profile",
+        value_name = "NAME",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "remove_profile",
+            "rename_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Hide a startup profile from menus and profile lists without opening a terminal window"
+    )]
+    hide_profile: Option<String>,
+
+    #[arg(
+        long = "show-profile",
+        value_name = "NAME",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "remove_profile",
+            "rename_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Show a startup profile in menus and profile lists without opening a terminal window"
+    )]
+    show_profile: Option<String>,
+
+    #[arg(
+        long = "profile-visibility-format",
+        value_enum,
+        requires = "profile_visibility_command",
+        help = "Set the output format for --hide-profile and --show-profile"
+    )]
+    profile_visibility_format: Option<TerminalStartupProfileVisibilityOutputFormat>,
 
     #[arg(
         long = "validate-startup-config",
@@ -825,6 +911,12 @@ enum TerminalCliCommand {
         profile: String,
         format: TerminalStartupProfileRemovalOutputFormat,
     },
+    SetProfileVisibility {
+        path_options: TerminalPathOptions,
+        profile: String,
+        hidden: bool,
+        format: TerminalStartupProfileVisibilityOutputFormat,
+    },
     RenameProfile {
         path_options: TerminalPathOptions,
         old_profile: String,
@@ -1118,6 +1210,15 @@ struct TerminalStartupProfileRename {
     updated_reference_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileVisibilityUpdate {
+    path: PathBuf,
+    profile: String,
+    previous_hidden: bool,
+    hidden: bool,
+    changed: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TerminalStartupConfigValidation {
     layout_count: usize,
@@ -1263,6 +1364,13 @@ enum TerminalStartupProfileRenameOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileVisibilityOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupLayoutOutputFormat {
     #[default]
     Text,
@@ -1301,6 +1409,8 @@ impl TerminalCliCommand {
             || cli.clear_default_profile
             || cli.remove_profile.is_some()
             || !cli.rename_profile.is_empty()
+            || cli.hide_profile.is_some()
+            || cli.show_profile.is_some()
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.print_default_keymap
@@ -1395,6 +1505,24 @@ impl TerminalCliCommand {
             });
         }
 
+        if let Some(profile) = cli.hide_profile {
+            return Ok(Self::SetProfileVisibility {
+                path_options,
+                profile,
+                hidden: true,
+                format: cli.profile_visibility_format.unwrap_or_default(),
+            });
+        }
+
+        if let Some(profile) = cli.show_profile {
+            return Ok(Self::SetProfileVisibility {
+                path_options,
+                profile,
+                hidden: false,
+                format: cli.profile_visibility_format.unwrap_or_default(),
+            });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -1446,6 +1574,7 @@ impl TerminalCliCommand {
             Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ClearDefaultProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
+            Self::SetProfileVisibility { path_options, .. } => path_options,
             Self::RenameProfile { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
@@ -2240,6 +2369,17 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::SetProfileVisibility {
+            profile,
+            hidden,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_visibility_update(&profile, hidden, format) {
+                eprintln!("failed to update startup profile visibility: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::RenameProfile {
             old_profile,
             new_profile,
@@ -2565,6 +2705,27 @@ fn print_startup_profile_rename(
         }
         TerminalStartupProfileRenameOutputFormat::Json => {
             print!("{}", format_startup_profile_rename_json(&rename)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_visibility_update(
+    profile: &str,
+    hidden: bool,
+    format: TerminalStartupProfileVisibilityOutputFormat,
+) -> Result<()> {
+    let update =
+        set_startup_profile_visibility(&active_terminal_startup_config_file(), profile, hidden)?;
+    match format {
+        TerminalStartupProfileVisibilityOutputFormat::Text => {
+            print!("{}", format_startup_profile_visibility_update(&update))
+        }
+        TerminalStartupProfileVisibilityOutputFormat::Json => {
+            print!(
+                "{}",
+                format_startup_profile_visibility_update_json(&update)?
+            )
         }
     }
     Ok(())
@@ -2901,6 +3062,93 @@ fn rename_startup_profile(
         profile: new_profile,
         changed: true,
         updated_reference_count,
+    })
+}
+
+fn set_startup_profile_visibility(
+    path: &Path,
+    profile: &str,
+    hidden: bool,
+) -> Result<TerminalStartupProfileVisibilityUpdate> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let mut text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    let startup_profile = startup_config.profiles.get(&profile).with_context(|| {
+        if startup_config.profiles.is_empty() {
+            format!("startup profile not found: {profile}")
+        } else {
+            format!(
+                "startup profile not found: {profile}. Available profiles: {}",
+                startup_config.profile_names().join(", ")
+            )
+        }
+    })?;
+    let previous_hidden = startup_profile.hidden;
+
+    if previous_hidden == hidden {
+        return Ok(TerminalStartupProfileVisibilityUpdate {
+            path: path.to_path_buf(),
+            profile,
+            previous_hidden,
+            hidden,
+            changed: false,
+        });
+    }
+
+    let mut updated_config = startup_config.clone();
+    updated_config
+        .profiles
+        .get_mut(&profile)
+        .expect("startup profile was already checked")
+        .hidden = hidden;
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to update startup profile {profile:?} visibility because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let new_value = serde_json::Value::Bool(hidden);
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &["profiles", profile.as_str(), "hidden"],
+        settings_json::infer_json_indent_size(&text),
+        Some(&new_value),
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because profile visibility update produced unexpected content",
+            path.display()
+        );
+    }
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupProfileVisibilityUpdate {
+        path: path.to_path_buf(),
+        profile,
+        previous_hidden,
+        hidden,
+        changed: true,
     })
 }
 
@@ -3946,6 +4194,44 @@ fn format_startup_profile_rename_json(rename: &TerminalStartupProfileRename) -> 
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile rename as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_visibility_update(
+    update: &TerminalStartupProfileVisibilityUpdate,
+) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        update.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", update.profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "previous_hidden: {}", update.previous_hidden)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "hidden: {}", update.hidden).expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", update.changed)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_profile_visibility_update_json(
+    update: &TerminalStartupProfileVisibilityUpdate,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": update.path.display().to_string(),
+        "status": "ok",
+        "profile": update.profile.as_str(),
+        "previous_hidden": update.previous_hidden,
+        "hidden": update.hidden,
+        "changed": update.changed,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile visibility update as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -8174,6 +8460,47 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_profile_visibility_update() {
+        let output =
+            format_startup_profile_visibility_update(&TerminalStartupProfileVisibilityUpdate {
+                path: PathBuf::from("terminal.json"),
+                profile: "work".into(),
+                previous_hidden: false,
+                hidden: true,
+                changed: true,
+            });
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nprofile: work\nprevious_hidden: false\nhidden: true\nchanged: true\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_visibility_update_json() {
+        let output = format_startup_profile_visibility_update_json(
+            &TerminalStartupProfileVisibilityUpdate {
+                path: PathBuf::from("terminal.json"),
+                profile: "work".into(),
+                previous_hidden: true,
+                hidden: false,
+                changed: false,
+            },
+        )
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile visibility json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile"], "work");
+        assert_eq!(json["previous_hidden"], true);
+        assert_eq!(json["hidden"], false);
+        assert_eq!(json["changed"], false);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_doctor_report() {
         let output = format_doctor_report(&sample_doctor_report());
 
@@ -9286,6 +9613,227 @@ mod tests {
     }
 
     #[test]
+    fn set_startup_profile_visibility_inserts_hidden_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  // keep profile map comment
+  "profiles": {
+    // keep work profile comment
+    "work": {
+      "display_name": "Work",
+      "description": "Project shell"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_startup_profile_visibility(&startup_config_file, " work ", true)
+            .expect("startup profile should be hidden");
+
+        assert_eq!(update.path, startup_config_file);
+        assert_eq!(update.profile, "work");
+        assert!(!update.previous_hidden);
+        assert!(update.hidden);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profile map comment"));
+        assert!(content.contains("// keep work profile comment"));
+        assert!(content.contains(r#""hidden": true"#));
+        assert!(content.contains(r#""display_name": "Work""#));
+        assert!(content.contains(r#""description": "Project shell""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert!(updated_config.profiles["work"].hidden);
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_inserts_hidden_field_into_empty_profile() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {}
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_startup_profile_visibility(&startup_config_file, "work", true)
+            .expect("startup profile should be hidden");
+
+        assert!(!update.previous_hidden);
+        assert!(update.hidden);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains(r#""hidden": true"#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert!(updated_config.profiles["work"].hidden);
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_replaces_hidden_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "hidden": true
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = set_startup_profile_visibility(&startup_config_file, "work", false)
+            .expect("startup profile should be shown");
+
+        assert_eq!(update.previous_hidden, true);
+        assert!(!update.hidden);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains(r#""hidden": false"#));
+        assert!(content.contains(r#""display_name": "Work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert!(!updated_config.profiles["work"].hidden);
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_reports_unchanged_when_already_matching() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "work": {
+      "hidden": true
+    }
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let update = set_startup_profile_visibility(&startup_config_file, "work", true)
+            .expect("matching startup profile visibility should be unchanged");
+
+        assert_eq!(update.path, startup_config_file);
+        assert_eq!(update.profile, "work");
+        assert!(update.previous_hidden);
+        assert!(update.hidden);
+        assert!(!update.changed);
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after no-op visibility update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_rejects_missing_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = set_startup_profile_visibility(&startup_config_file, "old", true)
+            .expect_err("missing profile should be rejected");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("startup profile not found: old"));
+        assert!(message.contains("Available profiles: work"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected visibility update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_rejects_blank_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{ "profiles": { "work": {} } }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = set_startup_profile_visibility(&startup_config_file, "  ", true)
+            .expect_err("blank profile should be rejected");
+
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected visibility update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn set_startup_profile_visibility_rejects_missing_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let error = set_startup_profile_visibility(&startup_config_file, "work", true)
+            .expect_err("missing startup config should be rejected when updating visibility");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("failed to read terminal startup config"));
+        assert!(
+            !startup_config_file.exists(),
+            "updating visibility in a missing startup config should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let report = TerminalKeymapValidationReport {
             keymap_file: PathBuf::from("keymap.json"),
@@ -9789,6 +10337,59 @@ mod tests {
     }
 
     #[test]
+    fn profile_visibility_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--hide-profile",
+            "work",
+            "--profile-visibility-format",
+            "json",
+        ])
+        .expect("failed to parse hide profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("hide profile json mode should resolve");
+
+        let TerminalCliCommand::SetProfileVisibility {
+            profile,
+            hidden,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected profile visibility mode");
+        };
+        assert_eq!(profile, "work");
+        assert!(hidden);
+        assert_eq!(format, TerminalStartupProfileVisibilityOutputFormat::Json);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--show-profile",
+            "work",
+            "--profile-visibility-format",
+            "json",
+        ])
+        .expect("failed to parse show profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("show profile json mode should resolve");
+
+        let TerminalCliCommand::SetProfileVisibility {
+            profile,
+            hidden,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected profile visibility mode");
+        };
+        assert_eq!(profile, "work");
+        assert!(!hidden);
+        assert_eq!(format, TerminalStartupProfileVisibilityOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -9958,6 +10559,74 @@ mod tests {
         assert_eq!(old_profile, "old");
         assert_eq!(new_profile, "new");
         assert_eq!(format, TerminalStartupProfileRenameOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn profile_visibility_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--hide-profile",
+            "work",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("hide-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::SetProfileVisibility {
+            path_options,
+            profile,
+            hidden,
+            format,
+        } = command
+        else {
+            panic!("expected profile visibility mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(profile, "work");
+        assert!(hidden);
+        assert_eq!(format, TerminalStartupProfileVisibilityOutputFormat::Text);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--show-profile",
+            "work",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("show-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::SetProfileVisibility {
+            path_options,
+            profile,
+            hidden,
+            format,
+        } = command
+        else {
+            panic!("expected profile visibility mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(profile, "work");
+        assert!(!hidden);
+        assert_eq!(format, TerminalStartupProfileVisibilityOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -10169,6 +10838,57 @@ mod tests {
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn profile_visibility_rejects_startup_only_arguments() {
+        for mode in ["--hide-profile", "--show-profile"] {
+            let error = Cli::try_parse_from(["zed-terminal", mode, "work", "--profile", "admin"])
+                .expect_err("profile selection should conflict with profile visibility update");
+            assert!(error.to_string().contains("cannot be used with"));
+
+            let dir = temp_test_dir();
+            let error =
+                Cli::try_parse_from(["zed-terminal", mode, "work", "-d", dir.to_str().unwrap()])
+                    .expect_err("startup directory should conflict with profile visibility update");
+            assert!(error.to_string().contains("cannot be used with"));
+
+            let error = Cli::try_parse_from([
+                "zed-terminal",
+                mode,
+                "work",
+                "--new-tab-command",
+                "cmd /C echo tab",
+            ])
+            .expect_err("startup tab command should conflict with profile visibility update");
+            assert!(error.to_string().contains("cannot be used with"));
+
+            let error = Cli::try_parse_from(["zed-terminal", mode, "work", "--paths"])
+                .expect_err("path inspection should conflict with profile visibility update");
+            assert!(error.to_string().contains("cannot be used with"));
+
+            let error = Cli::try_parse_from(["zed-terminal", mode, "work", "--all-profiles"])
+                .expect_err(
+                    "hidden profile listing should conflict with profile visibility update",
+                );
+            assert!(error.to_string().contains("cannot be used with"));
+
+            std_fs::remove_dir_all(dir).ok();
+        }
+
+        let error = Cli::try_parse_from(["zed-terminal", "--profile-visibility-format", "json"])
+            .expect_err("profile visibility format should require a visibility command");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--hide-profile",
+            "work",
+            "--show-profile",
+            "work",
+        ])
+        .expect_err("profile visibility commands should conflict with each other");
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
@@ -10525,14 +11245,22 @@ mod tests {
             "--clear-default-profile",
             "--remove-profile",
             "--rename-profile",
+            "--hide-profile",
+            "--show-profile",
         ] {
             let mode_args = match mode {
-                "--set-default-profile" | "--remove-profile" => vec!["zed-terminal", mode, "work"],
+                "--set-default-profile"
+                | "--remove-profile"
+                | "--hide-profile"
+                | "--show-profile" => vec!["zed-terminal", mode, "work"],
                 "--rename-profile" => vec!["zed-terminal", mode, "old", "new"],
                 _ => vec!["zed-terminal", mode],
             };
 
-            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
+            let args = if matches!(
+                mode,
+                "--set-default-profile" | "--remove-profile" | "--hide-profile" | "--show-profile"
+            ) {
                 vec!["zed-terminal", mode, "work", "--title", "Production"]
             } else if mode == "--rename-profile" {
                 vec!["zed-terminal", mode, "old", "new", "--title", "Production"]
@@ -10543,7 +11271,10 @@ mod tests {
             };
             assert_cli_conflict(&args, "initial title should conflict with non-launch modes");
 
-            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
+            let args = if matches!(
+                mode,
+                "--set-default-profile" | "--remove-profile" | "--hide-profile" | "--show-profile"
+            ) {
                 vec!["zed-terminal", mode, "work", "--new-tab-title", "Logs"]
             } else if mode == "--rename-profile" {
                 vec![
@@ -10564,7 +11295,10 @@ mod tests {
                 "startup tab title should conflict with non-launch modes",
             );
 
-            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
+            let args = if matches!(
+                mode,
+                "--set-default-profile" | "--remove-profile" | "--hide-profile" | "--show-profile"
+            ) {
                 vec![
                     "zed-terminal",
                     mode,
@@ -10591,7 +11325,10 @@ mod tests {
                 "startup profile tab title should conflict with non-launch modes",
             );
 
-            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
+            let args = if matches!(
+                mode,
+                "--set-default-profile" | "--remove-profile" | "--hide-profile" | "--show-profile"
+            ) {
                 vec![
                     "zed-terminal",
                     mode,
@@ -10618,7 +11355,10 @@ mod tests {
                 "startup profile tab split should conflict with non-launch modes",
             );
 
-            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
+            let args = if matches!(
+                mode,
+                "--set-default-profile" | "--remove-profile" | "--hide-profile" | "--show-profile"
+            ) {
                 vec![
                     "zed-terminal",
                     mode,
