@@ -3688,6 +3688,15 @@ mod tests {
         .expect("terminal keymap asset should parse as json");
 
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
+        for tab_number in 1..=8 {
+            assert_key_binding_with_param(
+                &keymap,
+                None,
+                &format!("ctrl-alt-{tab_number}"),
+                "pane::ActivateItem",
+                tab_number - 1,
+            );
+        }
         assert_key_binding(
             &keymap,
             Some("os == windows && Terminal"),
@@ -3768,6 +3777,49 @@ mod tests {
         keystroke: &str,
         expected_action: &str,
     ) {
+        let action = key_binding(keymap, context, keystroke)
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("key binding {keystroke:?} in context {context:?} should be a string action")
+            });
+
+        assert_eq!(action, expected_action);
+    }
+
+    fn assert_key_binding_with_param(
+        keymap: &gpui::private::serde_json::Value,
+        context: Option<&str>,
+        keystroke: &str,
+        expected_action: &str,
+        expected_param: usize,
+    ) {
+        let binding = key_binding(keymap, context, keystroke)
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("key binding {keystroke:?} in context {context:?} should be an array action")
+            });
+        let action = binding
+            .first()
+            .and_then(gpui::private::serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "key binding {keystroke:?} in context {context:?} should include an action name"
+                )
+            });
+        let param = binding
+            .get(1)
+            .and_then(gpui::private::serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("key binding {keystroke:?} in context {context:?} should include a numeric parameter"));
+
+        assert_eq!(action, expected_action);
+        assert_eq!(param, expected_param as u64);
+    }
+
+    fn key_binding<'a>(
+        keymap: &'a gpui::private::serde_json::Value,
+        context: Option<&str>,
+        keystroke: &str,
+    ) -> &'a gpui::private::serde_json::Value {
         let entries = keymap
             .as_array()
             .expect("terminal keymap should be a JSON array");
@@ -3780,13 +3832,10 @@ mod tests {
                     == context
             })
             .unwrap_or_else(|| panic!("missing keymap context {context:?}"));
-        let action = entry
+        entry
             .get("bindings")
             .and_then(|bindings| bindings.get(keystroke))
-            .and_then(gpui::private::serde_json::Value::as_str)
-            .unwrap_or_else(|| panic!("missing key binding {keystroke:?} in context {context:?}"));
-
-        assert_eq!(action, expected_action);
+            .unwrap_or_else(|| panic!("missing key binding {keystroke:?} in context {context:?}"))
     }
 
     fn collect_action_names(
