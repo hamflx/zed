@@ -2923,6 +2923,8 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
         MenuItem::separator(),
         MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
         MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
+        MenuItem::action("Move Tab Left", workspace::pane::SwapItemLeft),
+        MenuItem::action("Move Tab Right", workspace::pane::SwapItemRight),
     ]);
 
     shell_items
@@ -4015,6 +4017,14 @@ mod tests {
             "pane::CloseItemsToTheLeft",
         );
         assert_menu_action(&items, "Close All Tabs", "pane::CloseAllItems");
+    }
+
+    #[test]
+    fn shell_menu_exposes_tab_reorder_actions() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Move Tab Left", "pane::SwapItemLeft");
+        assert_menu_action(&items, "Move Tab Right", "pane::SwapItemRight");
     }
 
     #[test]
