@@ -121,6 +121,10 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
         .args(["update_startup"])
 ))]
 #[command(group(
+    ArgGroup::new("startup_env_command")
+        .args(["update_startup_env"])
+))]
+#[command(group(
     ArgGroup::new("profile_metadata_command")
         .args(["create_profile", "update_profile"])
 ))]
@@ -480,6 +484,82 @@ struct Cli {
         help = "Set the output format for --update-startup"
     )]
     update_startup_format: Option<TerminalStartupUpdateOutputFormat>,
+
+    #[arg(
+        long = "update-startup-env",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_profile_env",
+            "describe_profile",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Update root environment variables in terminal.json without opening a terminal window"
+    )]
+    update_startup_env: bool,
+
+    #[arg(
+        long = "startup-env",
+        value_name = "KEY=VALUE",
+        requires = "startup_env_command",
+        help = "Set one environment variable for --update-startup-env; repeat to set multiple"
+    )]
+    startup_env: Vec<String>,
+
+    #[arg(
+        long = "remove-startup-env",
+        value_name = "KEY",
+        requires = "update_startup_env",
+        help = "Remove one environment variable for --update-startup-env; repeat to remove multiple"
+    )]
+    remove_startup_env: Vec<String>,
+
+    #[arg(
+        long = "clear-startup-env",
+        requires = "update_startup_env",
+        help = "Clear all root environment variables for --update-startup-env"
+    )]
+    clear_startup_env: bool,
+
+    #[arg(
+        long = "update-startup-env-format",
+        value_enum,
+        requires = "update_startup_env",
+        help = "Set the output format for --update-startup-env"
+    )]
+    update_startup_env_format: Option<TerminalStartupEnvUpdateOutputFormat>,
 
     #[arg(
         long = "set-default-profile",
@@ -1601,6 +1681,11 @@ enum TerminalCliCommand {
         update: TerminalStartupUpdateRequest,
         format: TerminalStartupUpdateOutputFormat,
     },
+    UpdateStartupEnv {
+        path_options: TerminalPathOptions,
+        update: TerminalStartupEnvUpdateRequest,
+        format: TerminalStartupEnvUpdateOutputFormat,
+    },
     UpdateProfileEnv {
         path_options: TerminalPathOptions,
         profile: String,
@@ -1955,6 +2040,13 @@ struct TerminalStartupProfileEnvUpdateRequest {
     clear: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalStartupEnvUpdateRequest {
+    set: Vec<(String, String)>,
+    remove: Vec<String>,
+    clear: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TerminalProfileSplitDirectionEntry {
     label: &'static str,
@@ -2030,6 +2122,18 @@ struct TerminalStartupUpdate {
 struct TerminalStartupProfileEnvUpdate {
     path: PathBuf,
     profile: String,
+    previous_env_keys: Vec<String>,
+    env_keys: Vec<String>,
+    added_env_keys: Vec<String>,
+    updated_env_keys: Vec<String>,
+    removed_env_keys: Vec<String>,
+    cleared: bool,
+    changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupEnvUpdate {
+    path: PathBuf,
     previous_env_keys: Vec<String>,
     env_keys: Vec<String>,
     added_env_keys: Vec<String>,
@@ -2241,6 +2345,13 @@ enum TerminalStartupUpdateOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupEnvUpdateOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileEnvUpdateOutputFormat {
     #[default]
     Text,
@@ -2316,6 +2427,7 @@ impl TerminalCliCommand {
             || cli.update_profile.is_some()
             || cli.update_profile_startup.is_some()
             || cli.update_startup
+            || cli.update_startup_env
             || cli.update_profile_env.is_some()
             || !cli.copy_profile.is_empty()
             || cli.remove_profile.is_some()
@@ -2414,6 +2526,28 @@ impl TerminalCliCommand {
                 path_options,
                 update,
                 format: cli.update_startup_format.unwrap_or_default(),
+            });
+        }
+
+        if cli.update_startup_env {
+            let update = TerminalStartupEnvUpdateRequest {
+                set: cli
+                    .startup_env
+                    .iter()
+                    .map(|assignment| parse_startup_env_assignment(assignment))
+                    .collect::<Result<Vec<_>>>()?,
+                remove: cli
+                    .remove_startup_env
+                    .iter()
+                    .map(|key| normalize_startup_env_key(key))
+                    .collect::<Result<Vec<_>>>()?,
+                clear: cli.clear_startup_env,
+            };
+            update.ensure_requested()?;
+            return Ok(Self::UpdateStartupEnv {
+                path_options,
+                update,
+                format: cli.update_startup_env_format.unwrap_or_default(),
             });
         }
 
@@ -2643,6 +2777,7 @@ impl TerminalCliCommand {
             Self::UpdateProfile { path_options, .. } => path_options,
             Self::UpdateProfileStartup { path_options, .. } => path_options,
             Self::UpdateStartup { path_options, .. } => path_options,
+            Self::UpdateStartupEnv { path_options, .. } => path_options,
             Self::UpdateProfileEnv { path_options, .. } => path_options,
             Self::CopyProfile { path_options, .. } => path_options,
             Self::RemoveProfile { path_options, .. } => path_options,
@@ -3484,6 +3619,12 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::UpdateStartupEnv { update, format, .. } => {
+            if let Err(error) = print_startup_env_update(&update, format) {
+                eprintln!("failed to update root startup environment variables: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::UpdateProfileEnv {
             profile,
             update,
@@ -3908,6 +4049,22 @@ fn print_startup_update(
     Ok(())
 }
 
+fn print_startup_env_update(
+    update: &TerminalStartupEnvUpdateRequest,
+    format: TerminalStartupEnvUpdateOutputFormat,
+) -> Result<()> {
+    let update = update_root_startup_env(&active_terminal_startup_config_file(), update)?;
+    match format {
+        TerminalStartupEnvUpdateOutputFormat::Text => {
+            print!("{}", format_startup_env_update(&update))
+        }
+        TerminalStartupEnvUpdateOutputFormat::Json => {
+            print!("{}", format_startup_env_update_json(&update)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_profile_env_update(
     profile: &str,
     update: &TerminalStartupProfileEnvUpdateRequest,
@@ -4295,6 +4452,33 @@ impl TerminalStartupProfileEnvUpdateRequest {
     }
 }
 
+impl TerminalStartupEnvUpdateRequest {
+    fn normalized(&self) -> Result<Self> {
+        Ok(Self {
+            set: self
+                .set
+                .iter()
+                .map(|(key, value)| Ok((normalize_startup_env_key(key)?, value.clone())))
+                .collect::<Result<Vec<_>>>()?,
+            remove: self
+                .remove
+                .iter()
+                .map(|key| normalize_startup_env_key(key))
+                .collect::<Result<Vec<_>>>()?,
+            clear: self.clear,
+        })
+    }
+
+    fn ensure_requested(&self) -> Result<()> {
+        if self.set.is_empty() && self.remove.is_empty() && !self.clear {
+            bail!(
+                "--update-startup-env requires at least one environment flag: --startup-env, --remove-startup-env, or --clear-startup-env"
+            );
+        }
+        Ok(())
+    }
+}
+
 fn normalized_profile_metadata_update_value(
     value: &Option<Option<String>>,
 ) -> Option<Option<String>> {
@@ -4375,6 +4559,13 @@ fn parse_profile_env_assignment(assignment: &str) -> Result<(String, String)> {
     Ok((normalize_profile_env_key(key)?, value.into()))
 }
 
+fn parse_startup_env_assignment(assignment: &str) -> Result<(String, String)> {
+    let (key, value) = assignment
+        .split_once('=')
+        .with_context(|| "--startup-env requires KEY=VALUE")?;
+    Ok((normalize_startup_env_key(key)?, value.into()))
+}
+
 fn normalize_profile_env_key(key: &str) -> Result<String> {
     let key = key.trim();
     if key.is_empty() {
@@ -4382,6 +4573,17 @@ fn normalize_profile_env_key(key: &str) -> Result<String> {
     }
     if key.contains('=') {
         bail!("profile environment variable key must not contain '='");
+    }
+    Ok(key.into())
+}
+
+fn normalize_startup_env_key(key: &str) -> Result<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        bail!("startup environment variable key is empty");
+    }
+    if key.contains('=') {
+        bail!("startup environment variable key must not contain '='");
     }
     Ok(key.into())
 }
@@ -4922,6 +5124,133 @@ fn update_root_startup(
         previous_shell,
         shell,
         changed: fields_changed || created_from_initial,
+    })
+}
+
+fn update_root_startup_env(
+    path: &Path,
+    update: &TerminalStartupEnvUpdateRequest,
+) -> Result<TerminalStartupEnvUpdate> {
+    let update = update.normalized()?;
+    update.ensure_requested()?;
+    let mut created_from_initial = false;
+    let mut text = match std_fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            created_from_initial = true;
+            initial_terminal_startup_config_content().into()
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+
+    let previous_env = startup_config.env.clone();
+    let mut env = if update.clear {
+        HashMap::default()
+    } else {
+        previous_env.clone()
+    };
+    for key in &update.remove {
+        env.remove(key);
+    }
+    for (key, value) in &update.set {
+        env.insert(key.clone(), value.clone());
+    }
+
+    let previous_env_keys = sorted_env_keys(&previous_env);
+    let env_keys = sorted_env_keys(&env);
+    let previous_key_set = previous_env_keys.iter().cloned().collect::<BTreeSet<_>>();
+    let env_key_set = env_keys.iter().cloned().collect::<BTreeSet<_>>();
+    let added_env_keys = env_key_set
+        .difference(&previous_key_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_env_keys = previous_key_set
+        .difference(&env_key_set)
+        .cloned()
+        .collect::<Vec<_>>();
+    let updated_env_keys = previous_key_set
+        .intersection(&env_key_set)
+        .filter(|key| previous_env.get(*key) != env.get(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let cleared = update.clear && !previous_env.is_empty();
+
+    if previous_env == env && !created_from_initial {
+        return Ok(TerminalStartupEnvUpdate {
+            path: path.to_path_buf(),
+            previous_env_keys,
+            env_keys,
+            added_env_keys,
+            updated_env_keys,
+            removed_env_keys,
+            cleared,
+            changed: false,
+        });
+    }
+
+    let mut updated_config = startup_config.clone();
+    updated_config.env = env.clone();
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to update root startup environment variables because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    if previous_env != env {
+        replace_startup_field(
+            &mut text,
+            "env",
+            if env.is_empty() {
+                None
+            } else {
+                Some(env_to_json_value(&env))
+            },
+        );
+    }
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because root environment update produced unexpected content",
+            path.display()
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupEnvUpdate {
+        path: path.to_path_buf(),
+        previous_env_keys,
+        env_keys,
+        added_env_keys,
+        updated_env_keys,
+        removed_env_keys,
+        cleared,
+        changed: previous_env != env || created_from_initial,
     })
 }
 
@@ -7238,6 +7567,57 @@ fn format_startup_update_json(update: &TerminalStartupUpdate) -> Result<String> 
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup update as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_env_update(update: &TerminalStartupEnvUpdate) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        update.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    format_env_key_list_with_label(&mut output, "", "previous_env", &update.previous_env_keys);
+    format_env_key_list(&mut output, "", &update.env_keys);
+    format_env_key_list_with_label(&mut output, "", "added_env_keys", &update.added_env_keys);
+    format_env_key_list_with_label(
+        &mut output,
+        "",
+        "updated_env_keys",
+        &update.updated_env_keys,
+    );
+    format_env_key_list_with_label(
+        &mut output,
+        "",
+        "removed_env_keys",
+        &update.removed_env_keys,
+    );
+    writeln!(&mut output, "cleared: {}", update.cleared)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", update.changed)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_env_update_json(update: &TerminalStartupEnvUpdate) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": update.path.display().to_string(),
+        "status": "ok",
+        "previous_env_count": update.previous_env_keys.len(),
+        "previous_env_keys": &update.previous_env_keys,
+        "env_count": update.env_keys.len(),
+        "env_keys": &update.env_keys,
+        "added_env_keys": &update.added_env_keys,
+        "updated_env_keys": &update.updated_env_keys,
+        "removed_env_keys": &update.removed_env_keys,
+        "cleared": update.cleared,
+        "changed": update.changed,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup environment update as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -12197,6 +12577,77 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_env_update() {
+        let output = format_startup_env_update(&TerminalStartupEnvUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_env_keys: vec!["API_KEY".into(), "MODE".into()],
+            env_keys: vec!["MODE".into(), "TOKEN".into()],
+            added_env_keys: vec!["TOKEN".into()],
+            updated_env_keys: vec!["MODE".into()],
+            removed_env_keys: vec!["API_KEY".into()],
+            cleared: false,
+            changed: true,
+        });
+
+        assert_eq!(
+            output,
+            concat!(
+                "startup_config_file: terminal.json\n",
+                "status: ok\n",
+                "previous_env: 2 variables\n",
+                "  - API_KEY\n",
+                "  - MODE\n",
+                "env: 2 variables\n",
+                "  - MODE\n",
+                "  - TOKEN\n",
+                "added_env_keys: 1 variables\n",
+                "  - TOKEN\n",
+                "updated_env_keys: 1 variables\n",
+                "  - MODE\n",
+                "removed_env_keys: 1 variables\n",
+                "  - API_KEY\n",
+                "cleared: false\n",
+                "changed: true\n",
+            )
+        );
+        assert!(!output.contains("secret"));
+    }
+
+    #[test]
+    fn formats_startup_env_update_json_without_values() {
+        let output = format_startup_env_update_json(&TerminalStartupEnvUpdate {
+            path: PathBuf::from("terminal.json"),
+            previous_env_keys: vec!["API_KEY".into(), "MODE".into()],
+            env_keys: vec!["MODE".into(), "TOKEN".into()],
+            added_env_keys: vec!["TOKEN".into()],
+            updated_env_keys: vec!["MODE".into()],
+            removed_env_keys: vec!["API_KEY".into()],
+            cleared: true,
+            changed: true,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("root env update json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["previous_env_count"], 2);
+        assert_eq!(
+            json["previous_env_keys"],
+            serde_json::json!(["API_KEY", "MODE"])
+        );
+        assert_eq!(json["env_count"], 2);
+        assert_eq!(json["env_keys"], serde_json::json!(["MODE", "TOKEN"]));
+        assert_eq!(json["added_env_keys"], serde_json::json!(["TOKEN"]));
+        assert_eq!(json["updated_env_keys"], serde_json::json!(["MODE"]));
+        assert_eq!(json["removed_env_keys"], serde_json::json!(["API_KEY"]));
+        assert_eq!(json["cleared"], true);
+        assert_eq!(json["changed"], true);
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("secret"));
+    }
+
+    #[test]
     fn formats_startup_profile_env_update() {
         let output = format_startup_profile_env_update(&TerminalStartupProfileEnvUpdate {
             path: PathBuf::from("terminal.json"),
@@ -14617,6 +15068,316 @@ mod tests {
     }
 
     #[test]
+    fn update_root_startup_env_updates_jsonc_fields_without_reporting_values() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  // keep root comment
+  "command": "cmd /C echo root",
+  "env": {
+    "API_KEY": "old-secret",
+    "MODE": "old",
+    "REMOVE_ME": "gone"
+  },
+  "tabs": [
+    { "title": "Logs" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                set: vec![
+                    (" MODE ".into(), "new-secret".into()),
+                    ("TOKEN".into(), "first-secret".into()),
+                    ("TOKEN".into(), "final-secret".into()),
+                ],
+                remove: vec![" REMOVE_ME ".into()],
+                clear: false,
+            },
+        )
+        .expect("root environment variables should update");
+
+        assert_eq!(update.path, startup_config_file);
+        assert_eq!(
+            update.previous_env_keys,
+            vec!["API_KEY", "MODE", "REMOVE_ME"]
+        );
+        assert_eq!(update.env_keys, vec!["API_KEY", "MODE", "TOKEN"]);
+        assert_eq!(update.added_env_keys, vec!["TOKEN"]);
+        assert_eq!(update.updated_env_keys, vec!["MODE"]);
+        assert_eq!(update.removed_env_keys, vec!["REMOVE_ME"]);
+        assert!(!update.cleared);
+        assert!(update.changed);
+
+        let text_output = format_startup_env_update(&update);
+        let json_output =
+            format_startup_env_update_json(&update).expect("json output should format");
+        for output in [&text_output, &json_output] {
+            assert!(!output.contains("old-secret"));
+            assert!(!output.contains("new-secret"));
+            assert!(!output.contains("first-secret"));
+            assert!(!output.contains("final-secret"));
+            assert!(!output.contains("gone"));
+        }
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep root comment"));
+        assert!(content.contains(r#""command": "cmd /C echo root""#));
+        assert!(content.contains(r#""API_KEY": "old-secret""#));
+        assert!(content.contains(r#""MODE": "new-secret""#));
+        assert!(content.contains(r#""TOKEN": "final-secret""#));
+        assert!(!content.contains("REMOVE_ME"));
+        assert!(content.contains(r#""tabs""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.command.as_deref(), Some("cmd /C echo root"));
+        assert_eq!(updated_config.env["API_KEY"], "old-secret");
+        assert_eq!(updated_config.env["MODE"], "new-secret");
+        assert_eq!(updated_config.env["TOKEN"], "final-secret");
+        assert!(!updated_config.env.contains_key("REMOVE_ME"));
+        assert_eq!(updated_config.tabs[0].title.as_deref(), Some("Logs"));
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn update_root_startup_env_clear_removes_json_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "command": "cmd /C echo root",
+  "env": {
+    "API_KEY": "secret",
+    "MODE": "test"
+  },
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let update = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                clear: true,
+                ..TerminalStartupEnvUpdateRequest::default()
+            },
+        )
+        .expect("root environment variables should clear");
+
+        assert_eq!(update.previous_env_keys, vec!["API_KEY", "MODE"]);
+        assert!(update.env_keys.is_empty());
+        assert!(update.added_env_keys.is_empty());
+        assert!(update.updated_env_keys.is_empty());
+        assert_eq!(update.removed_env_keys, vec!["API_KEY", "MODE"]);
+        assert!(update.cleared);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read updated startup config");
+        assert!(content.contains(r#""command": "cmd /C echo root""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+        assert!(!content.contains(r#""env""#));
+        assert!(!content.contains("secret"));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert!(updated_config.env.is_empty());
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn update_root_startup_env_reports_unchanged_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "command": "cmd /C echo root",
+  "env": {
+    "MODE": "test"
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let update = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                set: vec![("MODE".into(), "test".into())],
+                remove: vec!["MISSING".into()],
+                clear: false,
+            },
+        )
+        .expect("matching environment update should be unchanged");
+
+        assert_eq!(update.previous_env_keys, vec!["MODE"]);
+        assert_eq!(update.env_keys, vec!["MODE"]);
+        assert!(update.added_env_keys.is_empty());
+        assert!(update.updated_env_keys.is_empty());
+        assert!(update.removed_env_keys.is_empty());
+        assert!(!update.cleared);
+        assert!(!update.changed);
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after no-op update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn update_root_startup_env_initializes_missing_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("config").join("terminal.json");
+
+        let update = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                set: vec![
+                    ("MODE".into(), "test".into()),
+                    ("TOKEN".into(), "secret".into()),
+                ],
+                ..TerminalStartupEnvUpdateRequest::default()
+            },
+        )
+        .expect("missing root startup config should initialize and update env");
+
+        assert_eq!(update.path, startup_config_file);
+        assert!(update.previous_env_keys.is_empty());
+        assert_eq!(update.env_keys, vec!["MODE", "TOKEN"]);
+        assert_eq!(update.added_env_keys, vec!["MODE", "TOKEN"]);
+        assert!(update.updated_env_keys.is_empty());
+        assert!(update.removed_env_keys.is_empty());
+        assert!(!update.cleared);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read created startup config");
+        assert!(content.contains("// Zed Terminal startup layout."));
+        assert!(content.contains(r#""MODE": "test""#));
+        assert!(content.contains(r#""TOKEN": "secret""#));
+        assert!(content.contains(r#""profiles": {}"#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("created config should parse");
+        updated_config
+            .validate()
+            .expect("created config should validate");
+        assert_eq!(updated_config.env["MODE"], "test");
+        assert_eq!(updated_config.env["TOKEN"], "secret");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn update_root_startup_env_clear_initializes_missing_file() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("config").join("terminal.json");
+
+        let update = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                clear: true,
+                ..TerminalStartupEnvUpdateRequest::default()
+            },
+        )
+        .expect("missing root startup config should initialize when clearing env");
+
+        assert!(update.previous_env_keys.is_empty());
+        assert!(update.env_keys.is_empty());
+        assert!(!update.cleared);
+        assert!(update.changed);
+
+        let content =
+            std_fs::read_to_string(&update.path).expect("failed to read created startup config");
+        assert!(content.contains("// Zed Terminal startup layout."));
+        assert!(content.contains(r#""env": {}"#));
+        assert!(content.contains(r#""profiles": {}"#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("created config should parse");
+        assert!(updated_config.env.is_empty());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn update_root_startup_env_rejects_invalid_requests_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "command": "cmd /C echo root",
+  "env": {
+    "MODE": "test"
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest::default(),
+        )
+        .expect_err("empty environment update should be rejected");
+        assert!(
+            format!("{error:#}")
+                .contains("--update-startup-env requires at least one environment flag")
+        );
+
+        let error = update_root_startup_env(
+            &startup_config_file,
+            &TerminalStartupEnvUpdateRequest {
+                set: vec![("  ".into(), "secret".into())],
+                ..TerminalStartupEnvUpdateRequest::default()
+            },
+        )
+        .expect_err("blank environment key should be rejected");
+        assert!(format!("{error:#}").contains("startup environment variable key is empty"));
+
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected update"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn update_startup_profile_env_updates_jsonc_fields_without_reporting_values() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -16558,6 +17319,64 @@ mod tests {
     }
 
     #[test]
+    fn update_startup_env_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            " MODE=dev ",
+            "--startup-env",
+            "TOKEN=secret",
+            "--remove-startup-env",
+            " OLD_TOKEN ",
+            "--update-startup-env-format",
+            "json",
+        ])
+        .expect("failed to parse update startup env json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("update startup env json mode should resolve");
+
+        let TerminalCliCommand::UpdateStartupEnv { update, format, .. } = command else {
+            panic!("expected update startup env mode");
+        };
+        assert_eq!(
+            update,
+            TerminalStartupEnvUpdateRequest {
+                set: vec![
+                    ("MODE".into(), "dev ".into()),
+                    ("TOKEN".into(), "secret".into())
+                ],
+                remove: vec!["OLD_TOKEN".into()],
+                clear: false,
+            }
+        );
+        assert_eq!(format, TerminalStartupEnvUpdateOutputFormat::Json);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--clear-startup-env",
+        ])
+        .expect("failed to parse update startup env clear args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("update startup env clear mode should resolve");
+
+        let TerminalCliCommand::UpdateStartupEnv { update, format, .. } = command else {
+            panic!("expected update startup env clear mode");
+        };
+        assert_eq!(
+            update,
+            TerminalStartupEnvUpdateRequest {
+                clear: true,
+                ..TerminalStartupEnvUpdateRequest::default()
+            }
+        );
+        assert_eq!(format, TerminalStartupEnvUpdateOutputFormat::Text);
+    }
+
+    #[test]
     fn update_profile_env_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -17056,6 +17875,52 @@ mod tests {
             }
         );
         assert_eq!(format, TerminalStartupUpdateOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn update_startup_env_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("update-startup-env mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::UpdateStartupEnv {
+            path_options,
+            update,
+            format,
+        } = command
+        else {
+            panic!("expected update startup env mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(
+            update,
+            TerminalStartupEnvUpdateRequest {
+                set: vec![("MODE".into(), "test".into())],
+                ..TerminalStartupEnvUpdateRequest::default()
+            }
+        );
+        assert_eq!(format, TerminalStartupEnvUpdateOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -17801,6 +18666,142 @@ mod tests {
             "Root",
         ])
         .expect_err("profile startup updates should conflict with root startup updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn update_startup_env_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with root environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with root environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with root environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "--paths",
+        ])
+        .expect_err("path inspection should conflict with root environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with root environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--update-startup-env-format", "json"])
+            .expect_err("update startup env format should require update startup env mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--startup-env", "MODE=test"])
+            .expect_err("startup env set should require update startup env mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-startup-env", "MODE"])
+            .expect_err("startup env removal should require update startup env mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--clear-startup-env"])
+            .expect_err("startup env clearing should require update startup env mode");
+        assert!(error.to_string().contains("required"));
+
+        let cli = Cli::try_parse_from(["zed-terminal", "--update-startup-env"])
+            .expect("update startup env mode without operations should parse");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err(
+                    "update startup env mode should require at least one environment operation",
+                );
+        assert!(
+            format!("{error:#}")
+                .contains("--update-startup-env requires at least one environment flag")
+        );
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE",
+        ])
+        .expect("startup env assignment without separator should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("startup env assignment without separator should be rejected");
+        assert!(format!("{error:#}").contains("--startup-env requires KEY=VALUE"));
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup-env",
+            "--startup-env",
+            " =secret",
+        ])
+        .expect("startup env assignment with blank key should parse as raw cli value");
+        let error =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect_err("blank startup env key should be rejected");
+        assert!(format!("{error:#}").contains("startup environment variable key is empty"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-startup",
+            "--startup-title",
+            "Root",
+            "--update-startup-env",
+            "--startup-env",
+            "MODE=test",
+        ])
+        .expect_err("root startup field updates should conflict with environment updates");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--update-profile-env",
+            "work",
+            "--profile-env",
+            "MODE=test",
+            "--update-startup-env",
+            "--startup-env",
+            "ROOT_MODE=test",
+        ])
+        .expect_err("profile environment updates should conflict with root environment updates");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
@@ -18564,6 +19565,7 @@ mod tests {
             "--create-profile",
             "--update-profile",
             "--update-startup",
+            "--update-startup-env",
             "--update-profile-startup",
             "--update-profile-env",
             "--copy-profile",
