@@ -2704,11 +2704,36 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
 
     workspace::init(app_state.clone(), cx);
     editor::init(cx);
+    init_terminal_search(cx);
     terminal_view::init(cx);
 
     open_terminal_window(app_state, launch_options, cx)?;
     cx.activate(true);
     Ok(())
+}
+
+fn init_terminal_search(cx: &mut App) {
+    search::buffer_search::init(cx);
+    cx.set_global(terminal_search_callbacks());
+}
+
+fn terminal_search_callbacks() -> workspace::PaneSearchBarCallbacks {
+    workspace::PaneSearchBarCallbacks {
+        setup_search_bar: setup_terminal_search_bar,
+        wrap_div_with_search_actions: search::buffer_search::register_pane_search_actions,
+    }
+}
+
+fn setup_terminal_search_bar(
+    languages: Option<Arc<LanguageRegistry>>,
+    toolbar: &gpui::Entity<workspace::Toolbar>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let search_bar = cx.new(|cx| search::BufferSearchBar::new(languages, window, cx));
+    toolbar.update(cx, |toolbar, cx| {
+        toolbar.add_item(search_bar, window, cx);
+    });
 }
 
 fn observe_settings_for_rendering(cx: &mut App) {
@@ -2903,6 +2928,31 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
     shell_items
 }
 
+fn terminal_menu_items() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Find", zed_actions::buffer_search::Deploy::find()),
+        MenuItem::separator(),
+        MenuItem::action("Copy", terminal::Copy),
+        MenuItem::action("Paste", terminal::Paste),
+        MenuItem::action("Paste Text", terminal::PasteText),
+        MenuItem::action("Select All", editor::actions::SelectAll),
+        MenuItem::separator(),
+        MenuItem::action("Clear", terminal::Clear),
+        MenuItem::action("Toggle Vi Mode", terminal::ToggleViMode),
+        MenuItem::action("Show Character Palette", terminal::ShowCharacterPalette),
+        MenuItem::separator(),
+        MenuItem::action("Scroll Line Up", terminal::ScrollLineUp),
+        MenuItem::action("Scroll Line Down", terminal::ScrollLineDown),
+        MenuItem::action("Scroll Page Up", terminal::ScrollPageUp),
+        MenuItem::action("Scroll Page Down", terminal::ScrollPageDown),
+        MenuItem::action("Scroll To Top", terminal::ScrollToTop),
+        MenuItem::action("Scroll To Bottom", terminal::ScrollToBottom),
+        MenuItem::separator(),
+        MenuItem::action("Rerun Task", terminal_view::RerunTask),
+        MenuItem::action("Rename Terminal", terminal_view::RenameTerminal),
+    ]
+}
+
 fn set_app_menus(cx: &mut App) {
     let shell_items = shell_menu_items(startup_profile_menu_entries());
 
@@ -2917,26 +2967,7 @@ fn set_app_menus(cx: &mut App) {
             MenuItem::action("Quit", zed_actions::Quit),
         ]),
         Menu::new("Shell").items(shell_items),
-        Menu::new("Terminal").items(vec![
-            MenuItem::action("Copy", terminal::Copy),
-            MenuItem::action("Paste", terminal::Paste),
-            MenuItem::action("Paste Text", terminal::PasteText),
-            MenuItem::action("Select All", editor::actions::SelectAll),
-            MenuItem::separator(),
-            MenuItem::action("Clear", terminal::Clear),
-            MenuItem::action("Toggle Vi Mode", terminal::ToggleViMode),
-            MenuItem::action("Show Character Palette", terminal::ShowCharacterPalette),
-            MenuItem::separator(),
-            MenuItem::action("Scroll Line Up", terminal::ScrollLineUp),
-            MenuItem::action("Scroll Line Down", terminal::ScrollLineDown),
-            MenuItem::action("Scroll Page Up", terminal::ScrollPageUp),
-            MenuItem::action("Scroll Page Down", terminal::ScrollPageDown),
-            MenuItem::action("Scroll To Top", terminal::ScrollToTop),
-            MenuItem::action("Scroll To Bottom", terminal::ScrollToBottom),
-            MenuItem::separator(),
-            MenuItem::action("Rerun Task", terminal_view::RerunTask),
-            MenuItem::action("Rename Terminal", terminal_view::RenameTerminal),
-        ]),
+        Menu::new("Terminal").items(terminal_menu_items()),
         Menu::new("Pane").items(vec![
             MenuItem::action("Split Right", workspace::SplitRight::default()),
             MenuItem::action("Split Down", workspace::SplitDown::default()),
@@ -3748,6 +3779,21 @@ mod tests {
     }
 
     #[test]
+    fn terminal_keymap_includes_terminal_search_binding() {
+        let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
+            include_str!("../../../assets/keymaps/zed-terminal.json"),
+        )
+        .expect("terminal keymap asset should parse as json");
+
+        assert_key_binding(
+            &keymap,
+            Some("Terminal"),
+            "ctrl-shift-f",
+            "buffer_search::Deploy",
+        );
+    }
+
+    #[test]
     fn terminal_keymap_actions_are_registered() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -3969,6 +4015,34 @@ mod tests {
             "pane::CloseItemsToTheLeft",
         );
         assert_menu_action(&items, "Close All Tabs", "pane::CloseAllItems");
+    }
+
+    #[test]
+    fn terminal_menu_exposes_find_action() {
+        let items = terminal_menu_items();
+
+        assert_menu_action(&items, "Find", "buffer_search::Deploy");
+    }
+
+    #[test]
+    fn terminal_search_callbacks_use_zed_buffer_search() {
+        let callbacks = terminal_search_callbacks();
+
+        assert!(std::ptr::fn_addr_eq(
+            callbacks.setup_search_bar,
+            setup_terminal_search_bar
+                as fn(
+                    Option<Arc<LanguageRegistry>>,
+                    &gpui::Entity<workspace::Toolbar>,
+                    &mut Window,
+                    &mut App,
+                )
+        ));
+        assert!(std::ptr::fn_addr_eq(
+            callbacks.wrap_div_with_search_actions,
+            search::buffer_search::register_pane_search_actions
+                as fn(gpui::Div, gpui::Entity<workspace::Pane>) -> gpui::Div
+        ));
     }
 
     #[test]

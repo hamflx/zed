@@ -32,6 +32,7 @@
       "ctrl-shift-v": "terminal::Paste",
       "ctrl-alt-v": "terminal::PasteText",
       "ctrl-shift-a": "editor::SelectAll",
+      "ctrl-shift-f": "buffer_search::Deploy",
       "ctrl-shift-l": "terminal::Clear",
       "shift-pageup": "terminal::ScrollPageUp",
       "shift-pagedown": "terminal::ScrollPageDown",
