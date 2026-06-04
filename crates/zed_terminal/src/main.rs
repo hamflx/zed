@@ -202,6 +202,14 @@ struct Cli {
     all_profiles: bool,
 
     #[arg(
+        long = "list-profiles-format",
+        value_enum,
+        requires = "list_profiles",
+        help = "Set the output format for --list-profiles"
+    )]
+    list_profiles_format: Option<TerminalListProfilesOutputFormat>,
+
+    #[arg(
         long = "no-startup-config",
         conflicts_with_all = [
             "profile",
@@ -637,6 +645,7 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
         include_hidden: bool,
+        format: TerminalListProfilesOutputFormat,
     },
     SetDefaultProfile {
         path_options: TerminalPathOptions,
@@ -818,6 +827,16 @@ struct TerminalStartupProfileSummary {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileListReport {
+    startup_config_file: PathBuf,
+    include_hidden: bool,
+    total_count: usize,
+    visible_count: usize,
+    hidden_count: usize,
+    profiles: Vec<TerminalStartupProfileSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupProfileMenuEntry {
     profile: String,
     label: String,
@@ -935,6 +954,13 @@ enum TerminalPathsOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalListProfilesOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDoctorOutputFormat {
     #[default]
     Text,
@@ -993,6 +1019,7 @@ impl TerminalCliCommand {
                 path_options,
                 startup_config,
                 include_hidden: cli.all_profiles,
+                format: cli.list_profiles_format.unwrap_or_default(),
             });
         }
 
@@ -1802,8 +1829,14 @@ fn main() {
         TerminalCliCommand::ListProfiles {
             startup_config,
             include_hidden,
+            format,
             ..
-        } => print_startup_profiles(&startup_config, include_hidden),
+        } => {
+            if let Err(error) = print_startup_profiles(&startup_config, include_hidden, format) {
+                eprintln!("failed to list terminal startup profiles: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::ValidateStartupConfig { startup_config, .. } => {
             if let Err(error) = print_startup_config_validation(&startup_config) {
                 eprintln!("failed to validate terminal startup config: {error:#}");
@@ -1969,15 +2002,23 @@ fn active_terminal_path_report() -> TerminalPathReport {
     }
 }
 
-fn print_startup_profiles(startup_config: &TerminalStartupConfig, include_hidden: bool) {
-    print!(
-        "{}",
-        format_startup_profiles(
-            startup_config,
-            &active_terminal_startup_config_file(),
-            include_hidden
-        )
-    );
+fn print_startup_profiles(
+    startup_config: &TerminalStartupConfig,
+    include_hidden: bool,
+    format: TerminalListProfilesOutputFormat,
+) -> Result<()> {
+    let startup_config_file = active_terminal_startup_config_file();
+    match format {
+        TerminalListProfilesOutputFormat::Text => print!("{}", {
+            format_startup_profiles(startup_config, &startup_config_file, include_hidden)
+        }),
+        TerminalListProfilesOutputFormat::Json => {
+            let report =
+                startup_profile_list_report(startup_config, &startup_config_file, include_hidden);
+            print!("{}", format_startup_profiles_json(&report)?)
+        }
+    }
+    Ok(())
 }
 
 fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Result<()> {
@@ -2508,27 +2549,48 @@ fn format_startup_profiles(
     startup_config_file: &Path,
     include_hidden: bool,
 ) -> String {
-    let summaries = startup_config.profile_summaries(include_hidden);
+    let report = startup_profile_list_report(startup_config, startup_config_file, include_hidden);
+    format_startup_profiles_report(&report)
+}
+
+fn startup_profile_list_report(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+    include_hidden: bool,
+) -> TerminalStartupProfileListReport {
+    let profiles = startup_config.profile_summaries(include_hidden);
     let hidden_count = startup_config
         .profiles
         .values()
         .filter(|profile| profile.hidden)
         .count();
     let visible_count = startup_config.profiles.len() - hidden_count;
+
+    TerminalStartupProfileListReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        include_hidden,
+        total_count: startup_config.profiles.len(),
+        visible_count,
+        hidden_count,
+        profiles,
+    }
+}
+
+fn format_startup_profiles_report(report: &TerminalStartupProfileListReport) -> String {
     let mut output = String::new();
 
     writeln!(
         &mut output,
         "startup_config_file: {}",
-        startup_config_file.display()
+        report.startup_config_file.display()
     )
     .expect("writing to string should not fail");
 
-    if summaries.is_empty() {
-        if startup_config.profiles.is_empty() {
+    if report.profiles.is_empty() {
+        if report.total_count == 0 {
             writeln!(&mut output, "No startup profiles configured.")
                 .expect("writing to string should not fail");
-        } else if include_hidden {
+        } else if report.include_hidden {
             writeln!(&mut output, "No startup profiles configured.")
                 .expect("writing to string should not fail");
         } else {
@@ -2544,11 +2606,11 @@ fn format_startup_profiles(
     writeln!(
         &mut output,
         "profiles: {} visible, {} hidden",
-        visible_count, hidden_count
+        report.visible_count, report.hidden_count
     )
     .expect("writing to string should not fail");
 
-    for profile in summaries {
+    for profile in &report.profiles {
         let mut badges = Vec::new();
         if profile.is_default {
             badges.push("default");
@@ -2566,14 +2628,14 @@ fn format_startup_profiles(
             .expect("writing to string should not fail");
         writeln!(&mut output, "  display_name: {}", profile.display_name)
             .expect("writing to string should not fail");
-        if let Some(description) = profile.description {
+        if let Some(description) = &profile.description {
             writeln!(&mut output, "  description: {description}")
                 .expect("writing to string should not fail");
         }
-        if let Some(icon) = profile.icon {
+        if let Some(icon) = &profile.icon {
             writeln!(&mut output, "  icon: {icon}").expect("writing to string should not fail");
         }
-        if let Some(color) = profile.color {
+        if let Some(color) = &profile.color {
             writeln!(&mut output, "  color: {color}").expect("writing to string should not fail");
         }
         writeln!(&mut output, "  tabs: {}", profile.tab_count)
@@ -2581,6 +2643,38 @@ fn format_startup_profiles(
     }
 
     output
+}
+
+fn format_startup_profiles_json(report: &TerminalStartupProfileListReport) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "include_hidden": report.include_hidden,
+        "total_count": report.total_count,
+        "visible_count": report.visible_count,
+        "hidden_count": report.hidden_count,
+        "profiles": report
+            .profiles
+            .iter()
+            .map(startup_profile_summary_json)
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profiles as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serde_json::Value {
+    serde_json::json!({
+        "name": profile.name.as_str(),
+        "display_name": profile.display_name.as_str(),
+        "description": profile.description.as_deref(),
+        "icon": profile.icon.as_deref(),
+        "color": profile.color.as_deref(),
+        "hidden": profile.hidden,
+        "is_default": profile.is_default,
+        "tab_count": profile.tab_count,
+    })
 }
 
 fn format_startup_layout(launch_options: &LaunchOptions, startup_config_file: &Path) -> String {
@@ -6198,6 +6292,57 @@ mod tests {
 
     #[test]
     fn formats_startup_profile_list() {
+        let config = sample_startup_profile_list_config();
+
+        let visible = format_startup_profiles(&config, Path::new("terminal.json"), false);
+
+        assert!(visible.contains("startup_config_file: terminal.json"));
+        assert!(visible.contains("profiles: 1 visible, 1 hidden"));
+        assert!(visible.contains("- work (default)"));
+        assert!(visible.contains("  display_name: Work Shell"));
+        assert!(visible.contains("  description: Project startup shell"));
+        assert!(visible.contains("  icon: terminal"));
+        assert!(visible.contains("  color: #0f766e"));
+        assert!(visible.contains("  tabs: 2"));
+        assert!(!visible.contains("- secret"));
+
+        let all = format_startup_profiles(&config, Path::new("terminal.json"), true);
+
+        assert!(all.contains("- secret (hidden)"));
+        assert!(all.contains("  display_name: Secret"));
+    }
+
+    #[test]
+    fn formats_startup_profile_list_json() {
+        let config = sample_startup_profile_list_config();
+        let report = startup_profile_list_report(&config, Path::new("terminal.json"), true);
+        let output =
+            format_startup_profiles_json(&report).expect("profile list json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile list json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["include_hidden"], true);
+        assert_eq!(json["total_count"], 2);
+        assert_eq!(json["visible_count"], 1);
+        assert_eq!(json["hidden_count"], 1);
+        assert_eq!(json["profiles"][0]["name"], "secret");
+        assert_eq!(json["profiles"][0]["display_name"], "Secret");
+        assert_eq!(json["profiles"][0]["hidden"], true);
+        assert_eq!(json["profiles"][0]["is_default"], false);
+        assert_eq!(json["profiles"][0]["tab_count"], 1);
+        assert_eq!(json["profiles"][1]["name"], "work");
+        assert_eq!(json["profiles"][1]["display_name"], "Work Shell");
+        assert_eq!(json["profiles"][1]["description"], "Project startup shell");
+        assert_eq!(json["profiles"][1]["icon"], "terminal");
+        assert_eq!(json["profiles"][1]["color"], "#0f766e");
+        assert_eq!(json["profiles"][1]["hidden"], false);
+        assert_eq!(json["profiles"][1]["is_default"], true);
+        assert_eq!(json["profiles"][1]["tab_count"], 2);
+        assert!(output.ends_with('\n'));
+    }
+
+    fn sample_startup_profile_list_config() -> TerminalStartupConfig {
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "secret".into(),
@@ -6218,28 +6363,11 @@ mod tests {
                 ..TerminalStartupProfileConfig::default()
             },
         );
-        let config = TerminalStartupConfig {
+        TerminalStartupConfig {
             default_profile: Some("work".into()),
             profiles,
             ..TerminalStartupConfig::default()
-        };
-
-        let visible = format_startup_profiles(&config, Path::new("terminal.json"), false);
-
-        assert!(visible.contains("startup_config_file: terminal.json"));
-        assert!(visible.contains("profiles: 1 visible, 1 hidden"));
-        assert!(visible.contains("- work (default)"));
-        assert!(visible.contains("  display_name: Work Shell"));
-        assert!(visible.contains("  description: Project startup shell"));
-        assert!(visible.contains("  icon: terminal"));
-        assert!(visible.contains("  color: #0f766e"));
-        assert!(visible.contains("  tabs: 2"));
-        assert!(!visible.contains("- secret"));
-
-        let all = format_startup_profiles(&config, Path::new("terminal.json"), true);
-
-        assert!(all.contains("- secret (hidden)"));
-        assert!(all.contains("  display_name: Secret"));
+        }
     }
 
     #[test]
@@ -7732,6 +7860,25 @@ mod tests {
     }
 
     #[test]
+    fn list_profiles_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profiles",
+            "--list-profiles-format",
+            "json",
+        ])
+        .expect("failed to parse list profiles json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("profile list json mode should resolve");
+
+        let TerminalCliCommand::ListProfiles { format, .. } = command else {
+            panic!("expected profile listing mode");
+        };
+        assert_eq!(format, TerminalListProfilesOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -8421,6 +8568,11 @@ mod tests {
         let error = Cli::try_parse_from(["zed-terminal", "--list-profiles", "--", "cmd"])
             .expect_err("startup command should conflict with profile listing");
         assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profiles-format", "json"])
+            .expect_err("profile list format should require profile listing");
+        assert!(error.to_string().contains("required"));
+
         std_fs::remove_dir_all(dir).ok();
     }
 
