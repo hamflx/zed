@@ -138,6 +138,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -162,6 +163,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -194,6 +196,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -220,6 +223,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -238,6 +242,7 @@ struct Cli {
             "all_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -266,6 +271,7 @@ struct Cli {
             "all_profiles",
             "print_startup_layout",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -307,6 +313,7 @@ struct Cli {
             "all_profiles",
             "print_startup_layout",
             "set_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -333,6 +340,49 @@ struct Cli {
     clear_default_profile: bool,
 
     #[arg(
+        long = "remove-profile",
+        value_name = "NAME",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Remove a startup profile from terminal.json without opening a terminal window"
+    )]
+    remove_profile: Option<String>,
+
+    #[arg(
+        long = "remove-profile-format",
+        value_enum,
+        requires = "remove_profile",
+        help = "Set the output format for --remove-profile"
+    )]
+    remove_profile_format: Option<TerminalStartupProfileRemovalOutputFormat>,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "print_paths",
@@ -340,6 +390,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_keymap",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -377,6 +428,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_default_keymap",
@@ -406,6 +458,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -444,6 +497,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -482,6 +536,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "print_default_keymap",
@@ -520,6 +575,7 @@ struct Cli {
             "print_startup_layout",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "print_startup_config_schema",
             "init_config",
@@ -590,6 +646,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -610,6 +667,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -631,6 +689,7 @@ struct Cli {
             "list_profiles",
             "set_default_profile",
             "clear_default_profile",
+            "remove_profile",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -699,6 +758,11 @@ enum TerminalCliCommand {
     ClearDefaultProfile {
         path_options: TerminalPathOptions,
         format: TerminalDefaultProfileUpdateOutputFormat,
+    },
+    RemoveProfile {
+        path_options: TerminalPathOptions,
+        profile: String,
+        format: TerminalStartupProfileRemovalOutputFormat,
     },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
@@ -970,6 +1034,14 @@ struct TerminalDefaultProfileUpdate {
     changed: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileRemoval {
+    path: PathBuf,
+    profile: String,
+    changed: bool,
+    remaining_profile_count: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TerminalStartupConfigValidation {
     layout_count: usize,
@@ -1101,6 +1173,13 @@ enum TerminalDefaultProfileUpdateOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileRemovalOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupLayoutOutputFormat {
     #[default]
     Text,
@@ -1137,6 +1216,7 @@ impl TerminalCliCommand {
             || cli.no_startup_config
             || cli.set_default_profile.is_some()
             || cli.clear_default_profile
+            || cli.remove_profile.is_some()
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.print_default_keymap
@@ -1207,6 +1287,14 @@ impl TerminalCliCommand {
             });
         }
 
+        if let Some(profile) = cli.remove_profile {
+            return Ok(Self::RemoveProfile {
+                path_options,
+                profile,
+                format: cli.remove_profile_format.unwrap_or_default(),
+            });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -1257,6 +1345,7 @@ impl TerminalCliCommand {
             Self::ListProfiles { path_options, .. } => path_options,
             Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ClearDefaultProfile { path_options, .. } => path_options,
+            Self::RemoveProfile { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -2042,6 +2131,14 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::RemoveProfile {
+            profile, format, ..
+        } => {
+            if let Err(error) = print_startup_profile_removal(&profile, format) {
+                eprintln!("failed to remove startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::PrintStartupConfigSchema { .. } => {
             if let Err(error) = print_startup_config_schema() {
                 eprintln!("failed to print terminal startup config schema: {error:#}");
@@ -2324,6 +2421,22 @@ fn print_clear_default_profile_update(
     Ok(())
 }
 
+fn print_startup_profile_removal(
+    profile: &str,
+    format: TerminalStartupProfileRemovalOutputFormat,
+) -> Result<()> {
+    let removal = remove_startup_profile(&active_terminal_startup_config_file(), profile)?;
+    match format {
+        TerminalStartupProfileRemovalOutputFormat::Text => {
+            print!("{}", format_startup_profile_removal(&removal))
+        }
+        TerminalStartupProfileRemovalOutputFormat::Json => {
+            print!("{}", format_startup_profile_removal_json(&removal)?)
+        }
+    }
+    Ok(())
+}
+
 fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
     initialize_terminal_config_files_at(active_terminal_config_file_paths())
 }
@@ -2465,6 +2578,78 @@ fn set_default_startup_profile(path: &Path, profile: &str) -> Result<TerminalDef
 
 fn clear_default_startup_profile(path: &Path) -> Result<TerminalDefaultProfileUpdate> {
     update_default_startup_profile(path, None)
+}
+
+fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupProfileRemoval> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let mut text = match std_fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalStartupProfileRemoval {
+                path: path.to_path_buf(),
+                profile,
+                changed: false,
+                remaining_profile_count: 0,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+    let mut startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+
+    if startup_config.profiles.remove(&profile).is_none() {
+        return Ok(TerminalStartupProfileRemoval {
+            path: path.to_path_buf(),
+            profile,
+            changed: false,
+            remaining_profile_count: startup_config.profiles.len(),
+        });
+    }
+
+    startup_config.validate().with_context(|| {
+        format!(
+            "refusing to remove startup profile {profile:?} because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let indent_size = settings_json::infer_json_indent_size(&text);
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &["profiles", profile.as_str()],
+        indent_size,
+        None,
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupProfileRemoval {
+        path: path.to_path_buf(),
+        profile,
+        changed: true,
+        remaining_profile_count: startup_config.profiles.len(),
+    })
 }
 
 fn update_default_startup_profile(
@@ -3370,6 +3555,42 @@ fn format_default_profile_update_json(update: &TerminalDefaultProfileUpdate) -> 
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal default profile update as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_removal(removal: &TerminalStartupProfileRemoval) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        removal.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", removal.profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", removal.changed)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "remaining_profiles: {}",
+        removal.remaining_profile_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_profile_removal_json(removal: &TerminalStartupProfileRemoval) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": removal.path.display().to_string(),
+        "status": "ok",
+        "profile": removal.profile.as_str(),
+        "changed": removal.changed,
+        "remaining_profile_count": removal.remaining_profile_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile removal as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -7525,6 +7746,41 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_profile_removal() {
+        let output = format_startup_profile_removal(&TerminalStartupProfileRemoval {
+            path: PathBuf::from("terminal.json"),
+            profile: "old".into(),
+            changed: true,
+            remaining_profile_count: 2,
+        });
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nstatus: ok\nprofile: old\nchanged: true\nremaining_profiles: 2\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_removal_json() {
+        let output = format_startup_profile_removal_json(&TerminalStartupProfileRemoval {
+            path: PathBuf::from("terminal.json"),
+            profile: "old".into(),
+            changed: false,
+            remaining_profile_count: 1,
+        })
+        .expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile removal json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile"], "old");
+        assert_eq!(json["changed"], false);
+        assert_eq!(json["remaining_profile_count"], 1);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_doctor_report() {
         let output = format_doctor_report(&sample_doctor_report());
 
@@ -8235,6 +8491,196 @@ mod tests {
     }
 
     #[test]
+    fn remove_startup_profile_updates_jsonc_profiles_field() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  // keep profile map comment
+  "profiles": {
+    // keep old profile comment
+    "old": {
+      "display_name": "Old"
+    },
+    // keep work profile comment
+    "work": {
+      "display_name": "Work"
+    }
+  },
+  "tabs": []
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let removal = remove_startup_profile(&startup_config_file, " old ")
+            .expect("startup profile should be removed");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.profile, "old");
+        assert!(removal.changed);
+        assert_eq!(removal.remaining_profile_count, 1);
+
+        let content =
+            std_fs::read_to_string(&removal.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profile map comment"));
+        assert!(content.contains("// keep work profile comment"));
+        assert!(!content.contains(r#""old""#));
+        assert!(content.contains(r#""work""#));
+        assert!(content.contains(r#""display_name": "Work""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(updated_config.profiles.len(), 1);
+        assert!(!updated_config.profiles.contains_key("old"));
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_profile_reports_unchanged_when_absent() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "profiles": {
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let removal = remove_startup_profile(&startup_config_file, "old")
+            .expect("missing profile should be an unchanged no-op");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.profile, "old");
+        assert!(!removal.changed);
+        assert_eq!(removal.remaining_profile_count, 1);
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after no-op removal"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_profile_reports_unchanged_when_file_is_missing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let removal = remove_startup_profile(&startup_config_file, "old")
+            .expect("missing startup config should be a no-op when removing a profile");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.profile, "old");
+        assert!(!removal.changed);
+        assert_eq!(removal.remaining_profile_count, 0);
+        assert!(
+            !removal.path.exists(),
+            "removing from a missing startup config should not create terminal.json"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_profile_rejects_default_profile_reference_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "default_profile": "work",
+  "profiles": {
+    "old": {},
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = remove_startup_profile(&startup_config_file, "work")
+            .expect_err("default profile reference should block removal");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("refusing to remove startup profile"));
+        assert!(message.contains("default_profile references missing startup profile: work"));
+        assert!(message.contains("Available profiles: old"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected removal"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_profile_rejects_startup_tab_reference_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{
+  "tabs": [
+    { "profile": "work" }
+  ],
+  "profiles": {
+    "old": {},
+    "work": {}
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = remove_startup_profile(&startup_config_file, "work")
+            .expect_err("startup tab reference should block removal");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("refusing to remove startup profile"));
+        assert!(message.contains("failed to resolve profile for tab 2 for root startup layout"));
+        assert!(message.contains("startup profile not found: work"));
+        assert!(message.contains("Available profiles: old"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected removal"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn remove_startup_profile_rejects_blank_profile() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let original = r#"{ "profiles": { "work": {} } }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let error = remove_startup_profile(&startup_config_file, "  ")
+            .expect_err("blank profile should be rejected");
+
+        assert!(format!("{error:#}").contains("startup profile name is empty"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected removal"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn formats_keymap_validation() {
         let report = TerminalKeymapValidationReport {
             keymap_file: PathBuf::from("keymap.json"),
@@ -8685,6 +9131,30 @@ mod tests {
     }
 
     #[test]
+    fn remove_profile_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-profile",
+            "work",
+            "--remove-profile-format",
+            "json",
+        ])
+        .expect("failed to parse remove profile json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("remove profile json mode should resolve");
+
+        let TerminalCliCommand::RemoveProfile {
+            profile, format, ..
+        } = command
+        else {
+            panic!("expected remove profile mode");
+        };
+        assert_eq!(profile, "work");
+        assert_eq!(format, TerminalStartupProfileRemovalOutputFormat::Json);
+    }
+
+    #[test]
     fn validate_keymap_mode_does_not_resolve_startup_layout() {
         let config = TerminalStartupConfig {
             default_profile: Some("missing".into()),
@@ -8778,6 +9248,45 @@ mod tests {
     }
 
     #[test]
+    fn remove_profile_mode_does_not_load_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--remove-profile",
+            "work",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("remove-profile mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::RemoveProfile {
+            path_options,
+            profile,
+            format,
+        } = command
+        else {
+            panic!("expected remove profile mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(profile, "work");
+        assert_eq!(format, TerminalStartupProfileRemovalOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn set_default_profile_rejects_startup_only_arguments() {
         let error = Cli::try_parse_from([
             "zed-terminal",
@@ -8865,6 +9374,55 @@ mod tests {
         let error = Cli::try_parse_from(["zed-terminal", "--paths", "--clear-default-profile"])
             .expect_err("path inspection should conflict with default profile clearing");
         assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn remove_profile_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-profile",
+            "work",
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with profile removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-profile",
+            "work",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--remove-profile",
+            "work",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-profile", "work", "--paths"])
+            .expect_err("path inspection should conflict with profile removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--remove-profile", "work", "--all-profiles"])
+                .expect_err("hidden profile listing should conflict with profile removal");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-profile-format", "json"])
+            .expect_err("remove profile format should require remove profile mode");
+        assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
     }
@@ -9221,14 +9779,14 @@ mod tests {
             "--list-profiles",
             "--set-default-profile",
             "--clear-default-profile",
+            "--remove-profile",
         ] {
-            let mode_args = if mode == "--set-default-profile" {
-                vec!["zed-terminal", mode, "work"]
-            } else {
-                vec!["zed-terminal", mode]
+            let mode_args = match mode {
+                "--set-default-profile" | "--remove-profile" => vec!["zed-terminal", mode, "work"],
+                _ => vec!["zed-terminal", mode],
             };
 
-            let args = if mode == "--set-default-profile" {
+            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec!["zed-terminal", mode, "work", "--title", "Production"]
             } else {
                 let mut args = mode_args.clone();
@@ -9237,7 +9795,7 @@ mod tests {
             };
             assert_cli_conflict(&args, "initial title should conflict with non-launch modes");
 
-            let args = if mode == "--set-default-profile" {
+            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec!["zed-terminal", mode, "work", "--new-tab-title", "Logs"]
             } else {
                 let mut args = mode_args.clone();
@@ -9249,7 +9807,7 @@ mod tests {
                 "startup tab title should conflict with non-launch modes",
             );
 
-            let args = if mode == "--set-default-profile" {
+            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec![
                     "zed-terminal",
                     mode,
@@ -9267,7 +9825,7 @@ mod tests {
                 "startup profile tab title should conflict with non-launch modes",
             );
 
-            let args = if mode == "--set-default-profile" {
+            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec![
                     "zed-terminal",
                     mode,
@@ -9285,7 +9843,7 @@ mod tests {
                 "startup profile tab split should conflict with non-launch modes",
             );
 
-            let args = if mode == "--set-default-profile" {
+            let args = if matches!(mode, "--set-default-profile" | "--remove-profile") {
                 vec![
                     "zed-terminal",
                     mode,
