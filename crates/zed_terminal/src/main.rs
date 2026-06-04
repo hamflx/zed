@@ -657,6 +657,12 @@ struct TerminalStartupProfileMenuEntry {
     label: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerminalProfileSplitDirectionEntry {
+    label: &'static str,
+    direction: TerminalStartupSplitDirection,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalDefaultProfileUpdate {
     path: PathBuf,
@@ -2598,6 +2604,27 @@ fn startup_profile_menu_entries() -> Vec<TerminalStartupProfileMenuEntry> {
     }
 }
 
+fn terminal_profile_split_direction_entries() -> &'static [TerminalProfileSplitDirectionEntry] {
+    &[
+        TerminalProfileSplitDirectionEntry {
+            label: "Right",
+            direction: TerminalStartupSplitDirection::Right,
+        },
+        TerminalProfileSplitDirectionEntry {
+            label: "Down",
+            direction: TerminalStartupSplitDirection::Down,
+        },
+        TerminalProfileSplitDirectionEntry {
+            label: "Left",
+            direction: TerminalStartupSplitDirection::Left,
+        },
+        TerminalProfileSplitDirectionEntry {
+            label: "Up",
+            direction: TerminalStartupSplitDirection::Up,
+        },
+    ]
+}
+
 fn launch_tab_for_profile(
     profile: &str,
     split: Option<TerminalStartupSplitDirection>,
@@ -2936,24 +2963,17 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
-            query,
-            format!("Split Right With Profile: {label}"),
-            NewTerminalSplitWithProfile {
-                profile: profile_name.clone(),
-                direction: TerminalStartupSplitDirection::Right,
-            }
-            .boxed_clone(),
-        ));
-        items.push(terminal_profile_command_palette_item(
-            query,
-            format!("Split Down With Profile: {label}"),
-            NewTerminalSplitWithProfile {
-                profile: profile_name.clone(),
-                direction: TerminalStartupSplitDirection::Down,
-            }
-            .boxed_clone(),
-        ));
+        for split_direction in terminal_profile_split_direction_entries() {
+            items.push(terminal_profile_command_palette_item(
+                query,
+                format!("Split {} With Profile: {label}", split_direction.label),
+                NewTerminalSplitWithProfile {
+                    profile: profile_name.clone(),
+                    direction: split_direction.direction,
+                }
+                .boxed_clone(),
+            ));
+        }
         items.push(terminal_profile_command_palette_item(
             query,
             format!("Set Default Profile: {label}"),
@@ -3147,32 +3167,21 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
                 )
             }),
         )));
-        shell_items.push(MenuItem::submenu(
-            Menu::new("Split Right With Profile").items(profile_entries.iter().cloned().map(
-                |entry| {
-                    MenuItem::action(
-                        entry.label,
-                        NewTerminalSplitWithProfile {
-                            profile: entry.profile,
-                            direction: TerminalStartupSplitDirection::Right,
-                        },
-                    )
-                },
-            )),
-        ));
-        shell_items.push(MenuItem::submenu(
-            Menu::new("Split Down With Profile").items(profile_entries.iter().cloned().map(
-                |entry| {
-                    MenuItem::action(
-                        entry.label,
-                        NewTerminalSplitWithProfile {
-                            profile: entry.profile,
-                            direction: TerminalStartupSplitDirection::Down,
-                        },
-                    )
-                },
-            )),
-        ));
+        for split_direction in terminal_profile_split_direction_entries() {
+            shell_items.push(MenuItem::submenu(
+                Menu::new(format!("Split {} With Profile", split_direction.label)).items(
+                    profile_entries.iter().cloned().map(move |entry| {
+                        MenuItem::action(
+                            entry.label,
+                            NewTerminalSplitWithProfile {
+                                profile: entry.profile,
+                                direction: split_direction.direction,
+                            },
+                        )
+                    }),
+                ),
+            ));
+        }
         shell_items.push(MenuItem::submenu(Menu::new("Set Default Profile").items(
             profile_entries.into_iter().map(|entry| {
                 MenuItem::action(
@@ -3983,6 +3992,42 @@ mod tests {
         assert_eq!(action.name(), action_name);
     }
 
+    fn assert_profile_split_submenu_action(
+        menu_items: &[MenuItem],
+        submenu_label: &str,
+        action_label: &str,
+        expected_profile: &str,
+        expected_direction: TerminalStartupSplitDirection,
+    ) {
+        let submenu = menu_items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu(menu) if menu.name.as_ref() == submenu_label => Some(menu),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing submenu {submenu_label:?}"));
+        let item = submenu
+            .items
+            .iter()
+            .find(|item| match item {
+                MenuItem::Action { name, .. } => name.as_ref() == action_label,
+                _ => false,
+            })
+            .unwrap_or_else(|| {
+                panic!("missing submenu action {action_label:?} in {submenu_label:?}")
+            });
+
+        let MenuItem::Action { action, .. } = item else {
+            panic!("submenu item {action_label:?} should be an action");
+        };
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalSplitWithProfile>()
+            .expect("expected profile split action");
+        assert_eq!(action.profile, expected_profile);
+        assert_eq!(action.direction, expected_direction);
+    }
+
     #[test]
     fn parses_path_options() {
         let data_dir = temp_test_dir();
@@ -4276,6 +4321,8 @@ mod tests {
                 "New Tab With Profile: Work Shell (work) - Default",
                 "Split Right With Profile: Work Shell (work) - Default",
                 "Split Down With Profile: Work Shell (work) - Default",
+                "Split Left With Profile: Work Shell (work) - Default",
+                "Split Up With Profile: Work Shell (work) - Default",
                 "Set Default Profile: Work Shell (work) - Default",
             ]
         );
@@ -4291,7 +4338,17 @@ mod tests {
             "work",
             TerminalStartupSplitDirection::Down,
         );
-        assert_set_default_profile_action(&result.results[3], "work");
+        assert_profile_split_action(
+            &result.results[3],
+            "work",
+            TerminalStartupSplitDirection::Left,
+        );
+        assert_profile_split_action(
+            &result.results[4],
+            "work",
+            TerminalStartupSplitDirection::Up,
+        );
+        assert_set_default_profile_action(&result.results[5], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -4323,7 +4380,7 @@ mod tests {
             config.profile_summaries(false),
         );
 
-        assert_eq!(result.results.len(), 4);
+        assert_eq!(result.results.len(), 6);
         assert!(
             result
                 .results
@@ -4365,12 +4422,28 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 4);
+        assert_eq!(result.results.len(), 6);
         assert!(
             result
                 .results
                 .iter()
                 .all(|item| item.string.contains("Log Tail"))
+        );
+    }
+
+    #[test]
+    fn terminal_profile_split_directions_cover_full_pane_model() {
+        assert_eq!(
+            terminal_profile_split_direction_entries()
+                .iter()
+                .map(|entry| (entry.label, entry.direction))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Right", TerminalStartupSplitDirection::Right),
+                ("Down", TerminalStartupSplitDirection::Down),
+                ("Left", TerminalStartupSplitDirection::Left),
+                ("Up", TerminalStartupSplitDirection::Up),
+            ]
         );
     }
 
@@ -4716,6 +4789,43 @@ mod tests {
 
         assert_menu_action(&items, "Move Tab Left", "pane::SwapItemLeft");
         assert_menu_action(&items, "Move Tab Right", "pane::SwapItemRight");
+    }
+
+    #[test]
+    fn shell_menu_exposes_all_profile_split_directions() {
+        let items = shell_menu_items(vec![TerminalStartupProfileMenuEntry {
+            profile: "work".into(),
+            label: "Work Shell (work)".into(),
+        }]);
+
+        assert_profile_split_submenu_action(
+            &items,
+            "Split Right With Profile",
+            "Work Shell (work)",
+            "work",
+            TerminalStartupSplitDirection::Right,
+        );
+        assert_profile_split_submenu_action(
+            &items,
+            "Split Down With Profile",
+            "Work Shell (work)",
+            "work",
+            TerminalStartupSplitDirection::Down,
+        );
+        assert_profile_split_submenu_action(
+            &items,
+            "Split Left With Profile",
+            "Work Shell (work)",
+            "work",
+            TerminalStartupSplitDirection::Left,
+        );
+        assert_profile_split_submenu_action(
+            &items,
+            "Split Up With Profile",
+            "Work Shell (work)",
+            "work",
+            TerminalStartupSplitDirection::Up,
+        );
     }
 
     #[test]
