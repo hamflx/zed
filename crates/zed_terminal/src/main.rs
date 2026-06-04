@@ -246,6 +246,14 @@ struct Cli {
     print_startup_layout: bool,
 
     #[arg(
+        long = "startup-layout-format",
+        value_enum,
+        requires = "print_startup_layout",
+        help = "Set the output format for --print-startup-layout"
+    )]
+    startup_layout_format: Option<TerminalStartupLayoutOutputFormat>,
+
+    #[arg(
         long = "set-default-profile",
         value_name = "NAME",
         conflicts_with_all = [
@@ -658,7 +666,10 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
     },
-    PrintStartupLayout(LaunchOptions),
+    PrintStartupLayout {
+        launch_options: LaunchOptions,
+        format: TerminalStartupLayoutOutputFormat,
+    },
     PrintStartupConfigSchema {
         path_options: TerminalPathOptions,
     },
@@ -721,6 +732,68 @@ struct LaunchTab {
 struct LaunchCommand {
     program: String,
     args: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupLayoutReport {
+    startup_config_file: PathBuf,
+    new_terminal_tab: TerminalStartupLayoutTabReport,
+    tabs: Vec<TerminalStartupLayoutTabReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupLayoutTabReport {
+    kind: TerminalStartupLayoutTabKind,
+    placement: TerminalStartupLayoutPlacement,
+    title: Option<String>,
+    working_directory: Option<PathBuf>,
+    command: Option<LaunchCommand>,
+    shell: Option<Shell>,
+    env_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalStartupLayoutTabKind {
+    Shell,
+    Command,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalStartupLayoutPlacement {
+    Tab,
+    Split(TerminalStartupSplitDirection),
+}
+
+impl TerminalStartupLayoutTabKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Command => "command",
+        }
+    }
+}
+
+impl TerminalStartupLayoutPlacement {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Tab => "tab",
+            Self::Split(_) => "split",
+        }
+    }
+
+    fn split_direction(self) -> Option<TerminalStartupSplitDirection> {
+        match self {
+            Self::Tab => None,
+            Self::Split(direction) => Some(direction),
+        }
+    }
+
+    fn display_label(self) -> String {
+        match self {
+            Self::Tab => "tab".into(),
+            Self::Split(direction) => format!("split {}", direction.as_str()),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -961,6 +1034,13 @@ enum TerminalListProfilesOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupLayoutOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDoctorOutputFormat {
     #[default]
     Text,
@@ -1024,11 +1104,11 @@ impl TerminalCliCommand {
         }
 
         if cli.print_startup_layout {
-            return Ok(Self::PrintStartupLayout(LaunchOptions::from_cli_parts(
-                cli,
-                startup_config,
-                path_options,
-            )?));
+            let format = cli.startup_layout_format.unwrap_or_default();
+            return Ok(Self::PrintStartupLayout {
+                launch_options: LaunchOptions::from_cli_parts(cli, startup_config, path_options)?,
+                format,
+            });
         }
 
         if let Some(profile) = cli.set_default_profile {
@@ -1086,7 +1166,7 @@ impl TerminalCliCommand {
             Self::SetDefaultProfile { path_options, .. } => path_options,
             Self::ClearDefaultProfile { path_options } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
-            Self::PrintStartupLayout(launch_options) => &launch_options.path_options,
+            Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
             Self::PrintDefaultKeymap { path_options } => path_options,
             Self::InitConfig { path_options } => path_options,
@@ -1807,8 +1887,14 @@ fn main() {
             run_terminal_doctor(path_options.clone(), *format);
             return;
         }
-        TerminalCliCommand::PrintStartupLayout(launch_options) => {
-            print_startup_layout(launch_options);
+        TerminalCliCommand::PrintStartupLayout {
+            launch_options,
+            format,
+        } => {
+            if let Err(error) = print_startup_layout(launch_options, *format) {
+                eprintln!("failed to print terminal startup layout: {error:#}");
+                process::exit(2);
+            }
             return;
         }
         _ => {}
@@ -1843,7 +1929,7 @@ fn main() {
                 process::exit(2);
             }
         }
-        TerminalCliCommand::PrintStartupLayout(_) => {
+        TerminalCliCommand::PrintStartupLayout { .. } => {
             unreachable!("startup layout printing is handled before path install")
         }
         TerminalCliCommand::SetDefaultProfile { profile, .. } => {
@@ -2030,14 +2116,24 @@ fn print_startup_config_validation(startup_config: &TerminalStartupConfig) -> Re
     Ok(())
 }
 
-fn print_startup_layout(launch_options: &LaunchOptions) {
-    print!(
-        "{}",
-        format_startup_layout(
-            launch_options,
-            &terminal_startup_config_file(&launch_options.path_options.config_dir),
-        )
-    );
+fn print_startup_layout(
+    launch_options: &LaunchOptions,
+    format: TerminalStartupLayoutOutputFormat,
+) -> Result<()> {
+    let startup_config_file = terminal_startup_config_file(&launch_options.path_options.config_dir);
+    match format {
+        TerminalStartupLayoutOutputFormat::Text => {
+            print!(
+                "{}",
+                format_startup_layout(launch_options, &startup_config_file)
+            )
+        }
+        TerminalStartupLayoutOutputFormat::Json => {
+            let report = startup_layout_report(launch_options, &startup_config_file);
+            print!("{}", format_startup_layout_json(&report)?)
+        }
+    }
+    Ok(())
 }
 
 fn print_startup_config_schema() -> Result<()> {
@@ -2678,51 +2774,84 @@ fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serd
 }
 
 fn format_startup_layout(launch_options: &LaunchOptions, startup_config_file: &Path) -> String {
+    let report = startup_layout_report(launch_options, startup_config_file);
+    format_startup_layout_report(&report)
+}
+
+fn startup_layout_report(
+    launch_options: &LaunchOptions,
+    startup_config_file: &Path,
+) -> TerminalStartupLayoutReport {
+    TerminalStartupLayoutReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        new_terminal_tab: startup_layout_tab_report(&launch_options.new_terminal_tab),
+        tabs: std::iter::once(&launch_options.initial_tab)
+            .chain(launch_options.additional_tabs.iter())
+            .map(startup_layout_tab_report)
+            .collect(),
+    }
+}
+
+fn startup_layout_tab_report(tab: &LaunchTab) -> TerminalStartupLayoutTabReport {
+    TerminalStartupLayoutTabReport {
+        kind: if tab.command.is_some() {
+            TerminalStartupLayoutTabKind::Command
+        } else {
+            TerminalStartupLayoutTabKind::Shell
+        },
+        placement: tab
+            .split
+            .map(TerminalStartupLayoutPlacement::Split)
+            .unwrap_or(TerminalStartupLayoutPlacement::Tab),
+        title: tab.title.clone(),
+        working_directory: tab.working_directory.clone(),
+        command: tab.command.clone(),
+        shell: tab.shell.clone(),
+        env_count: tab.env.len(),
+    }
+}
+
+fn format_startup_layout_report(report: &TerminalStartupLayoutReport) -> String {
     let mut output = String::new();
     writeln!(
         &mut output,
         "startup_config_file: {}",
-        startup_config_file.display()
+        report.startup_config_file.display()
     )
     .expect("writing to string should not fail");
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
-    writeln!(
-        &mut output,
-        "tabs: {}",
-        1 + launch_options.additional_tabs.len()
-    )
-    .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", report.tabs.len())
+        .expect("writing to string should not fail");
     writeln!(&mut output, "new_terminal_tab:").expect("writing to string should not fail");
-    format_startup_layout_tab_body(&mut output, "  ", &launch_options.new_terminal_tab);
+    format_startup_layout_tab_body(&mut output, "  ", &report.new_terminal_tab);
 
-    for (index, tab) in std::iter::once(&launch_options.initial_tab)
-        .chain(launch_options.additional_tabs.iter())
-        .enumerate()
-    {
+    for (index, tab) in report.tabs.iter().enumerate() {
         format_startup_layout_tab(&mut output, index + 1, tab);
     }
 
     output
 }
 
-fn format_startup_layout_tab(output: &mut String, tab_number: usize, tab: &LaunchTab) {
+fn format_startup_layout_tab(
+    output: &mut String,
+    tab_number: usize,
+    tab: &TerminalStartupLayoutTabReport,
+) {
     writeln!(output, "- tab {tab_number}").expect("writing to string should not fail");
     format_startup_layout_tab_body(output, "  ", tab);
 }
 
-fn format_startup_layout_tab_body(output: &mut String, prefix: &str, tab: &LaunchTab) {
-    let kind = if tab.command.is_some() {
-        "command"
-    } else {
-        "shell"
-    };
-    writeln!(output, "{prefix}kind: {kind}").expect("writing to string should not fail");
+fn format_startup_layout_tab_body(
+    output: &mut String,
+    prefix: &str,
+    tab: &TerminalStartupLayoutTabReport,
+) {
+    writeln!(output, "{prefix}kind: {}", tab.kind.as_str())
+        .expect("writing to string should not fail");
     writeln!(
         output,
         "{prefix}placement: {}",
-        tab.split
-            .map(|direction| format!("split {}", direction.as_str()))
-            .unwrap_or_else(|| "tab".into())
+        tab.placement.display_label()
     )
     .expect("writing to string should not fail");
     writeln!(
@@ -2753,8 +2882,94 @@ fn format_startup_layout_tab_body(output: &mut String, prefix: &str, tab: &Launc
         .expect("writing to string should not fail");
     }
 
-    writeln!(output, "{prefix}env: {} variables", tab.env.len())
+    writeln!(output, "{prefix}env: {} variables", tab.env_count)
         .expect("writing to string should not fail");
+}
+
+fn format_startup_layout_json(report: &TerminalStartupLayoutReport) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "status": "ok",
+        "tab_count": report.tabs.len(),
+        "new_terminal_tab": startup_layout_tab_json(&report.new_terminal_tab, None),
+        "tabs": report
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| startup_layout_tab_json(tab, Some(index + 1)))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup layout as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_layout_tab_json(
+    tab: &TerminalStartupLayoutTabReport,
+    tab_number: Option<usize>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "kind": tab.kind.as_str(),
+        "placement": tab.placement.kind(),
+        "split_direction": tab.placement.split_direction().map(TerminalStartupSplitDirection::as_str),
+        "title": tab.title.as_deref(),
+        "working_directory": tab
+            .working_directory
+            .as_ref()
+            .map(|path| path.display().to_string()),
+        "command": tab.command.as_ref().map(startup_layout_command_json),
+        "shell": if tab.kind == TerminalStartupLayoutTabKind::Shell {
+            Some(startup_layout_shell_json(tab.shell.as_ref()))
+        } else {
+            None
+        },
+        "env_count": tab.env_count,
+    });
+    if let Some(tab_number) = tab_number {
+        value
+            .as_object_mut()
+            .expect("startup layout tab json should be an object")
+            .insert("tab".into(), serde_json::json!(tab_number));
+    }
+    value
+}
+
+fn startup_layout_command_json(command: &LaunchCommand) -> serde_json::Value {
+    serde_json::json!({
+        "program": command.program.as_str(),
+        "args": &command.args,
+        "label": command.display_label(),
+    })
+}
+
+fn startup_layout_shell_json(shell: Option<&Shell>) -> serde_json::Value {
+    match shell {
+        None => serde_json::json!({
+            "kind": "default",
+            "program": null,
+            "args": [],
+            "label": "default",
+        }),
+        Some(Shell::System) => serde_json::json!({
+            "kind": "system",
+            "program": null,
+            "args": [],
+            "label": "system",
+        }),
+        Some(shell @ Shell::Program(program)) => serde_json::json!({
+            "kind": "program",
+            "program": program.as_str(),
+            "args": [],
+            "label": format_shell(shell),
+        }),
+        Some(shell @ Shell::WithArguments { program, args, .. }) => serde_json::json!({
+            "kind": "with_arguments",
+            "program": program.as_str(),
+            "args": args,
+            "label": format_shell(shell),
+        }),
+    }
 }
 
 fn format_optional_shell(shell: Option<&Shell>) -> String {
@@ -6449,6 +6664,105 @@ mod tests {
     }
 
     #[test]
+    fn formats_resolved_startup_layout_json_without_env_values() {
+        let initial_dir = temp_test_dir();
+        let command_dir = temp_test_dir();
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                title: Some("Configured".into()),
+                shell: Some(TerminalStartupShellConfig::WithArguments(
+                    TerminalStartupShellWithArgumentsConfig {
+                        program: "pwsh.exe".into(),
+                        args: vec!["-NoLogo".into()],
+                    },
+                )),
+                env: test_env(&[
+                    ("ZED_TERMINAL_PROFILE", "work"),
+                    ("ZED_TERMINAL_SECRET", "do-not-print"),
+                ]),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--profile",
+            "work",
+            "--title",
+            "CLI",
+            "--new-tab-command",
+            "cmd /C \"echo build\"",
+            "--new-tab-command-directory",
+            command_dir.to_str().unwrap(),
+            "--new-tab-command-title",
+            "Build",
+        ])
+        .expect("failed to parse cli args");
+        let options = LaunchOptions::from_cli_and_startup_config(cli, config)
+            .expect("failed to build launch options");
+        let report = startup_layout_report(&options, Path::new("terminal.json"));
+
+        let output = format_startup_layout_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup layout json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tab_count"], 2);
+        assert_eq!(json["new_terminal_tab"]["kind"], "shell");
+        assert_eq!(json["new_terminal_tab"]["placement"], "tab");
+        assert_eq!(
+            json["new_terminal_tab"]["split_direction"],
+            serde_json::Value::Null
+        );
+        assert_eq!(json["new_terminal_tab"]["title"], "Configured");
+        assert_eq!(json["new_terminal_tab"]["shell"]["kind"], "with_arguments");
+        assert_eq!(json["new_terminal_tab"]["shell"]["program"], "pwsh.exe");
+        assert_eq!(json["new_terminal_tab"]["shell"]["args"][0], "-NoLogo");
+        assert_eq!(json["tabs"][0]["tab"], 1);
+        assert_eq!(json["tabs"][0]["kind"], "shell");
+        assert_eq!(json["tabs"][0]["placement"], "tab");
+        assert_eq!(json["tabs"][0]["title"], "CLI");
+        assert_eq!(
+            json["tabs"][0]["working_directory"],
+            dunce::canonicalize(&initial_dir)
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(json["tabs"][0]["shell"]["label"], "pwsh.exe -NoLogo");
+        assert_eq!(json["tabs"][1]["tab"], 2);
+        assert_eq!(json["tabs"][1]["kind"], "command");
+        assert_eq!(json["tabs"][1]["placement"], "tab");
+        assert_eq!(json["tabs"][1]["title"], "Build");
+        assert_eq!(
+            json["tabs"][1]["working_directory"],
+            dunce::canonicalize(&command_dir)
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(json["tabs"][1]["command"]["program"], "cmd");
+        assert_eq!(json["tabs"][1]["command"]["args"][0], "/C");
+        assert_eq!(json["tabs"][1]["command"]["args"][1], "echo build");
+        assert_eq!(json["tabs"][1]["command"]["label"], "cmd /C \"echo build\"");
+        assert_eq!(json["tabs"][1]["shell"], serde_json::Value::Null);
+        assert_eq!(json["tabs"][1]["env_count"], 2);
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("ZED_TERMINAL_SECRET"));
+        assert!(!output.contains("do-not-print"));
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(command_dir).ok();
+    }
+
+    #[test]
     fn parses_startup_split_tabs_from_config() {
         let config: TerminalStartupConfig = settings::parse_json_with_comments(
             r#"{
@@ -7654,10 +7968,15 @@ mod tests {
             TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
                 .expect("failed to build cli command");
 
-        let TerminalCliCommand::PrintStartupLayout(options) = command else {
+        let TerminalCliCommand::PrintStartupLayout {
+            launch_options: options,
+            format,
+        } = command
+        else {
             panic!("expected startup layout printing mode");
         };
 
+        assert_eq!(format, TerminalStartupLayoutOutputFormat::Text);
         assert_eq!(options.initial_tab.title.as_deref(), Some("Preview"));
         assert_eq!(options.additional_tabs.len(), 1);
         assert_tab_working_directory(&options.additional_tabs[0], &tab_dir);
@@ -7691,10 +8010,15 @@ mod tests {
         let command = TerminalCliCommand::from_cli_and_config_file(cli)
             .expect("layout preview should not load terminal.json when startup config is disabled");
 
-        let TerminalCliCommand::PrintStartupLayout(options) = command else {
+        let TerminalCliCommand::PrintStartupLayout {
+            launch_options: options,
+            format,
+        } = command
+        else {
             panic!("expected startup layout printing mode");
         };
 
+        assert_eq!(format, TerminalStartupLayoutOutputFormat::Text);
         assert_eq!(options.path_options.data_dir, data_dir);
         assert_eq!(options.path_options.config_dir, config_dir);
         assert_eq!(options.initial_tab.working_directory, None);
@@ -7876,6 +8200,25 @@ mod tests {
             panic!("expected profile listing mode");
         };
         assert_eq!(format, TerminalListProfilesOutputFormat::Json);
+    }
+
+    #[test]
+    fn startup_layout_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-startup-layout",
+            "--startup-layout-format",
+            "json",
+        ])
+        .expect("failed to parse startup layout json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("startup layout json mode should resolve");
+
+        let TerminalCliCommand::PrintStartupLayout { format, .. } = command else {
+            panic!("expected startup layout printing mode");
+        };
+        assert_eq!(format, TerminalStartupLayoutOutputFormat::Json);
     }
 
     #[test]
@@ -8571,6 +8914,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--list-profiles-format", "json"])
             .expect_err("profile list format should require profile listing");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--startup-layout-format", "json"])
+            .expect_err("startup layout format should require startup layout printing");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
