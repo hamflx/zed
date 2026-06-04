@@ -51,6 +51,8 @@ actions!(
         OpenLogsDirectory,
         NewTerminalWindow,
         CloseTerminalWindow,
+        MinimizeTerminalWindow,
+        ZoomTerminalWindow,
         NewTerminalTab,
         DuplicateTerminalTab,
         ToggleFullScreen,
@@ -3002,6 +3004,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ClearDefaultStartupProfile>(),
         TypeId::of::<CloseTerminalWindow>(),
         TypeId::of::<DuplicateTerminalTab>(),
+        TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalTab>(),
         TypeId::of::<NewTerminalSplitWithProfile>(),
@@ -3016,6 +3019,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ResizePaneUp>(),
         TypeId::of::<SetDefaultStartupProfile>(),
         TypeId::of::<ToggleFullScreen>(),
+        TypeId::of::<ZoomTerminalWindow>(),
         TypeId::of::<editor::actions::SelectAll>(),
         TypeId::of::<terminal::Clear>(),
         TypeId::of::<terminal::Copy>(),
@@ -3480,6 +3484,9 @@ fn window_menu_items() -> Vec<MenuItem> {
         MenuItem::action("New Window", NewTerminalWindow),
         MenuItem::action("Close Window", CloseTerminalWindow),
         MenuItem::separator(),
+        MenuItem::action("Minimize", MinimizeTerminalWindow),
+        MenuItem::action("Zoom", ZoomTerminalWindow),
+        MenuItem::separator(),
         MenuItem::action("Toggle Full Screen", ToggleFullScreen),
     ]
 }
@@ -3583,6 +3590,12 @@ fn open_terminal_window(
                 );
                 workspace.register_action(|_, _: &ToggleFullScreen, window, _| {
                     window.toggle_fullscreen();
+                });
+                workspace.register_action(|_, _: &MinimizeTerminalWindow, window, _| {
+                    window.minimize_window();
+                });
+                workspace.register_action(|_, _: &ZoomTerminalWindow, window, _| {
+                    window.zoom_window();
                 });
                 workspace.register_action(|_workspace, _: &CloseTerminalWindow, window, cx| {
                     cx.spawn_in(window, async move |workspace, cx| {
@@ -4494,6 +4507,7 @@ mod tests {
 
         assert_command_palette_action_visible(&filter, &CloseTerminalWindow);
         assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
+        assert_command_palette_action_visible(&filter, &MinimizeTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
         assert_command_palette_action_visible(
@@ -4516,6 +4530,7 @@ mod tests {
             },
         );
         assert_command_palette_action_visible(&filter, &ToggleFullScreen);
+        assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
@@ -5142,11 +5157,13 @@ mod tests {
     }
 
     #[test]
-    fn window_menu_exposes_full_screen_action() {
+    fn window_menu_exposes_window_lifecycle_actions() {
         let items = window_menu_items();
 
         assert_menu_action(&items, "New Window", "zed_terminal::NewTerminalWindow");
         assert_menu_action(&items, "Close Window", "zed_terminal::CloseTerminalWindow");
+        assert_menu_action(&items, "Minimize", "zed_terminal::MinimizeTerminalWindow");
+        assert_menu_action(&items, "Zoom", "zed_terminal::ZoomTerminalWindow");
         assert_menu_action(
             &items,
             "Toggle Full Screen",
@@ -5595,6 +5612,33 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<CloseTerminalWindow>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_minimize_terminal_window_action_input() {
+        let action =
+            <MinimizeTerminalWindow as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("minimize terminal window action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<MinimizeTerminalWindow>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_zoom_terminal_window_action_input() {
+        let action = <ZoomTerminalWindow as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("zoom terminal window action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<ZoomTerminalWindow>()
                 .is_some()
         );
     }
