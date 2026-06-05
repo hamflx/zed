@@ -371,6 +371,51 @@ function Assert-PackageManifest {
     }
 }
 
+function Assert-PackageZipArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipFile,
+        [Parameter(Mandatory = $true)][string]$ValidationRoot,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$BuildProfile,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$Architecture,
+        [Parameter(Mandatory = $true)][string]$BinaryFileName,
+        [Parameter(Mandatory = $true)][string]$BinaryHash
+    )
+
+    if (-not (Test-Path -LiteralPath $ZipFile -PathType Leaf)) {
+        throw "package zip archive was not written: $ZipFile"
+    }
+
+    $extractDir = Join-Path $ValidationRoot "zip-extract"
+    if (Test-Path -LiteralPath $extractDir) {
+        Remove-Item -LiteralPath $extractDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+
+    Expand-Archive -LiteralPath $ZipFile -DestinationPath $extractDir -Force
+
+    $entries = @(Get-ChildItem -LiteralPath $extractDir -Force)
+    if ($entries.Count -ne 1 -or -not $entries[0].PSIsContainer -or $entries[0].Name -ne $PackageName) {
+        throw "package zip archive must contain one top-level package directory named $PackageName"
+    }
+
+    $extractedPackageDir = $entries[0].FullName
+    Assert-PackageManifest `
+        -PackageDir $extractedPackageDir `
+        -ManifestFile (Join-Path $extractedPackageDir "zed-terminal-package.json") `
+        -PackageName $PackageName `
+        -Version $Version `
+        -BuildProfile $BuildProfile `
+        -Platform $Platform `
+        -Architecture $Architecture `
+        -BinaryFileName $BinaryFileName `
+        -BinaryHash $BinaryHash
+
+    return (Get-FileHash -LiteralPath $ZipFile -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
 $version = Get-ZedTerminalVersion
 $platform = Get-PlatformName
 $architecture = Get-ArchitectureName
@@ -584,9 +629,20 @@ Assert-PackageManifest `
     -BinaryHash $binaryHash
 
 $zipFile = $null
+$zipHash = $null
 if ($Zip) {
     $zipFile = Join-Path $runDir "$packageName.zip"
     Compress-Archive -LiteralPath $packageDir -DestinationPath $zipFile -Force
+    $zipHash = Assert-PackageZipArchive `
+        -ZipFile $zipFile `
+        -ValidationRoot $runDir `
+        -PackageName $packageName `
+        -Version $version `
+        -BuildProfile $BuildProfile `
+        -Platform $platform `
+        -Architecture $architecture `
+        -BinaryFileName $binaryFileName `
+        -BinaryHash $binaryHash
 }
 
 Write-Host "status: ok"
@@ -596,4 +652,5 @@ Write-Host "binary: $packagedBinary"
 Write-Host "binary_sha256: $binaryHash"
 if ($zipFile) {
     Write-Host "zip_file: $zipFile"
+    Write-Host "zip_sha256: $zipHash"
 }

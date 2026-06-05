@@ -440,6 +440,7 @@ try {
                 "-Binary", $Binary,
                 "-BuildProfile", "debug",
                 "-SkipBuild",
+                "-Zip",
                 "-OutputDir", $packageSmokeDir
             )
         }
