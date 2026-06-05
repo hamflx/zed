@@ -434,8 +434,17 @@ try {
                 "--diff-startup-config-backup-format <text\|json>",
                 "--restore-startup-config --restore-startup-config-file <FILE>",
                 "--restore-startup-config-format <text\|json>",
-                "Profile transfer and startup config file options may be combined with --user-data-dir and",
-                "--config-dir only."
+                "Keymap backup and restore options:",
+                "--backup-keymap --backup-keymap-file <FILE>",
+                "--backup-keymap-format <text\|json>",
+                "--check-keymap-backup --check-keymap-backup-file <FILE>",
+                "--check-keymap-backup-format <text\|json>",
+                "--diff-keymap-backup --diff-keymap-backup-file <FILE>",
+                "--diff-keymap-backup-format <text\|json>",
+                "--restore-keymap --restore-keymap-file <FILE>",
+                "--restore-keymap-format <text\|json>",
+                "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
+                "and --config-dir only."
             )
             Invoke-NativeJsonCommand "init-config" @(
                 "--user-data-dir", $cliDataDir,
@@ -527,6 +536,128 @@ try {
                 "--init-config",
                 "--init-config-format", "json"
             )
+            $mutationKeymapFile = Join-Path $mutationCliConfigDir "keymap.json"
+            Set-Content -LiteralPath $mutationKeymapFile -Value @'
+// release-check keymap do-not-log-keymap
+[
+  {
+    "bindings": {
+      "ctrl-shift-t": "zed_terminal::NewTerminalTab",
+      "ctrl-shift-w": "pane::CloseActiveItem"
+    },
+    "unbind": {
+      "ctrl-j": "zed_terminal::NewTerminalTab"
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-shift-v": "terminal::Paste"
+    }
+  }
+]
+'@ -Encoding ascii
+            $mutationKeymapBackupFile = Join-Path $mutationCliConfigDir "backups\keymap.backup.json"
+            $keymapBackup = Invoke-NativeJsonCommandResult "mutation-backup-keymap" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--backup-keymap",
+                "--backup-keymap-file", $mutationKeymapBackupFile,
+                "--backup-keymap-format", "json"
+            )
+            if ($keymapBackup.keymap_file -ne $mutationKeymapFile -or $keymapBackup.backup_file -ne $mutationKeymapBackupFile -or $keymapBackup.section_count -ne 2 -or $keymapBackup.binding_count -ne 4 -or $keymapBackup.unbind_count -ne 1 -or $keymapBackup.byte_count -le 0) {
+                throw "Keymap backup did not report the expected mutated keymap summary."
+            }
+            $keymapBackupText = $keymapBackup | ConvertTo-Json -Depth 10
+            if ($keymapBackupText -match "do-not-log-keymap" -or $keymapBackupText -match "zed_terminal::NewTerminalTab" -or $keymapBackupText -match "terminal::Paste") {
+                throw "Keymap backup output leaked keymap file contents."
+            }
+            $keymapBackupFileText = Get-Content -Raw -LiteralPath $mutationKeymapBackupFile
+            $mutationKeymapFileText = Get-Content -Raw -LiteralPath $mutationKeymapFile
+            if ($keymapBackupFileText -ne $mutationKeymapFileText) {
+                throw "Keymap backup file did not match keymap.json exactly."
+            }
+            if ($keymapBackupFileText -notmatch "do-not-log-keymap") {
+                throw "Keymap backup file did not preserve the full keymap payload."
+            }
+            $keymapBackupCheck = Invoke-NativeJsonCommandResult "mutation-check-keymap-backup-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-keymap-backup",
+                "--check-keymap-backup-file", $mutationKeymapBackupFile,
+                "--check-keymap-backup-format", "json"
+            )
+            if (-not $keymapBackupCheck.matches -or $keymapBackupCheck.keymap_file -ne $mutationKeymapFile -or $keymapBackupCheck.backup_file -ne $mutationKeymapBackupFile -or $keymapBackupCheck.keymap_byte_count -ne $keymapBackup.byte_count -or $keymapBackupCheck.backup_byte_count -ne $keymapBackup.byte_count -or $keymapBackupCheck.keymap_section_count -ne 2 -or $keymapBackupCheck.backup_section_count -ne 2 -or $keymapBackupCheck.keymap_binding_count -ne 4 -or $keymapBackupCheck.backup_binding_count -ne 4 -or $keymapBackupCheck.keymap_unbind_count -ne 1 -or $keymapBackupCheck.backup_unbind_count -ne 1) {
+                throw "Keymap backup check did not report the expected matching keymap summary."
+            }
+            $keymapBackupCheckText = $keymapBackupCheck | ConvertTo-Json -Depth 10
+            if ($keymapBackupCheckText -match "do-not-log-keymap" -or $keymapBackupCheckText -match "terminal::Paste") {
+                throw "Keymap backup check output leaked keymap file contents."
+            }
+            $keymapBackupDiffMatch = Invoke-NativeJsonCommandResult "mutation-diff-keymap-backup-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-keymap-backup",
+                "--diff-keymap-backup-file", $mutationKeymapBackupFile,
+                "--diff-keymap-backup-format", "json"
+            )
+            $keymapBackupDiffMatchCategories = @($keymapBackupDiffMatch.categories)
+            if (-not $keymapBackupDiffMatch.text_matches -or -not $keymapBackupDiffMatch.keymap_matches -or $keymapBackupDiffMatchCategories.Count -ne 0 -or $keymapBackupDiffMatch.keymap_binding_count -ne 4 -or $keymapBackupDiffMatch.backup_binding_count -ne 4) {
+                throw "Keymap backup diff did not report the expected matching keymap summary."
+            }
+            $keymapBackupDiffMatchText = $keymapBackupDiffMatch | ConvertTo-Json -Depth 10
+            if ($keymapBackupDiffMatchText -match "do-not-log-keymap" -or $keymapBackupDiffMatchText -match "terminal::Paste") {
+                throw "Keymap backup diff match output leaked keymap file contents."
+            }
+            Add-Content -LiteralPath $mutationKeymapFile -Value "`n// release-check keymap drift"
+            $keymapBackupTextDrift = Invoke-NativeJsonCommandResult "mutation-diff-keymap-backup-text-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-keymap-backup",
+                "--diff-keymap-backup-file", $mutationKeymapBackupFile,
+                "--diff-keymap-backup-format", "json"
+            )
+            $keymapBackupTextDriftCategories = @($keymapBackupTextDrift.categories)
+            if ($keymapBackupTextDrift.text_matches -or -not $keymapBackupTextDrift.keymap_matches -or $keymapBackupTextDriftCategories.Count -ne 1 -or $keymapBackupTextDriftCategories -notcontains "text") {
+                throw "Keymap backup diff did not distinguish text-only keymap drift."
+            }
+            Set-Content -LiteralPath $mutationKeymapFile -Value $keymapBackupFileText -NoNewline
+            $changedKeymapFileText = $keymapBackupFileText -replace '"ctrl-shift-v": "terminal::Paste"', """ctrl-shift-v"": ""terminal::Copy"",`n      ""ctrl-shift-c"": ""terminal::Copy"""
+            Set-Content -LiteralPath $mutationKeymapFile -Value $changedKeymapFileText -NoNewline
+            $keymapBackupDiffDrift = Invoke-NativeJsonCommandResult "mutation-diff-keymap-backup-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-keymap-backup",
+                "--diff-keymap-backup-file", $mutationKeymapBackupFile,
+                "--diff-keymap-backup-format", "json"
+            )
+            $keymapBackupDiffDriftCategories = @($keymapBackupDiffDrift.categories)
+            if ($keymapBackupDiffDrift.text_matches -or $keymapBackupDiffDrift.keymap_matches -or $keymapBackupDiffDriftCategories -notcontains "text" -or $keymapBackupDiffDriftCategories -notcontains "keymap" -or $keymapBackupDiffDriftCategories -notcontains "binding_count" -or $keymapBackupDiffDrift.keymap_binding_count -ne 5 -or $keymapBackupDiffDrift.backup_binding_count -ne 4) {
+                throw "Keymap backup diff did not report the expected binding drift."
+            }
+            $keymapBackupDiffDriftText = $keymapBackupDiffDrift | ConvertTo-Json -Depth 10
+            if ($keymapBackupDiffDriftText -match "terminal::Copy" -or $keymapBackupDiffDriftText -match "terminal::Paste" -or $keymapBackupDiffDriftText -match "do-not-log-keymap") {
+                throw "Keymap backup diff drift output leaked keymap file contents."
+            }
+            Set-Content -LiteralPath $mutationKeymapFile -Value "{ broken keymap" -NoNewline
+            $keymapRestore = Invoke-NativeJsonCommandResult "mutation-restore-keymap" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--restore-keymap",
+                "--restore-keymap-file", $mutationKeymapBackupFile,
+                "--restore-keymap-format", "json"
+            )
+            if ($keymapRestore.keymap_file -ne $mutationKeymapFile -or $keymapRestore.restore_file -ne $mutationKeymapBackupFile -or $keymapRestore.section_count -ne 2 -or $keymapRestore.binding_count -ne 4 -or $keymapRestore.unbind_count -ne 1 -or $keymapRestore.byte_count -ne $keymapBackup.byte_count) {
+                throw "Keymap restore did not report the expected restored keymap summary."
+            }
+            $keymapRestoreText = $keymapRestore | ConvertTo-Json -Depth 10
+            if ($keymapRestoreText -match "do-not-log-keymap" -or $keymapRestoreText -match "terminal::Paste") {
+                throw "Keymap restore output leaked keymap file contents."
+            }
+            $restoredKeymapFileText = Get-Content -Raw -LiteralPath $mutationKeymapFile
+            if ($restoredKeymapFileText -ne $keymapBackupFileText) {
+                throw "Keymap restore did not restore keymap.json exactly from the backup file."
+            }
             $createdProfile = Invoke-NativeJsonCommandResult "mutation-create-profile" @(
                 "--user-data-dir", $mutationCliDataDir,
                 "--config-dir", $mutationCliConfigDir,

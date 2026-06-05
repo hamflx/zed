@@ -57,3 +57,6 @@ uuid.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
 zlog.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

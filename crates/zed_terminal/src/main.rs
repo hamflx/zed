@@ -198,7 +198,25 @@ Startup config backup and restore options:
       --restore-startup-config-format <text|json>
           Set the output format for --restore-startup-config
 
-Profile transfer and startup config file options may be combined with --user-data-dir and --config-dir only."
+Keymap backup and restore options:
+      --backup-keymap --backup-keymap-file <FILE>
+          Back up keymap.json to another file without opening a terminal window
+      --backup-keymap-format <text|json>
+          Set the output format for --backup-keymap
+      --check-keymap-backup --check-keymap-backup-file <FILE>
+          Validate and compare keymap.json with a backup file without opening a terminal window
+      --check-keymap-backup-format <text|json>
+          Set the output format for --check-keymap-backup
+      --diff-keymap-backup --diff-keymap-backup-file <FILE>
+          Summarize semantic differences between keymap.json and a backup file without opening a terminal window
+      --diff-keymap-backup-format <text|json>
+          Set the output format for --diff-keymap-backup
+      --restore-keymap --restore-keymap-file <FILE>
+          Restore keymap.json from a verified backup file without opening a terminal window
+      --restore-keymap-format <text|json>
+          Set the output format for --restore-keymap
+
+Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir and --config-dir only."
 )]
 #[command(group(
     ArgGroup::new("default_profile_command")
@@ -2842,6 +2860,34 @@ struct TerminalStartupConfigRestoreCommand {
     format: TerminalStartupConfigRestoreOutputFormat,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalKeymapBackupOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupCheckCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalKeymapBackupCheckOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupDiffCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalKeymapBackupDiffOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapRestoreCommand {
+    path_options: TerminalPathOptions,
+    restore_file: PathBuf,
+    format: TerminalKeymapRestoreOutputFormat,
+}
+
 #[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
@@ -3604,6 +3650,100 @@ struct TerminalStartupConfigRestore {
     profile_count: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackup {
+    path: PathBuf,
+    backup_file: PathBuf,
+    byte_count: u64,
+    section_count: usize,
+    binding_count: usize,
+    unbind_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupCheck {
+    path: PathBuf,
+    backup_file: PathBuf,
+    matches: bool,
+    keymap_byte_count: u64,
+    backup_byte_count: u64,
+    keymap_section_count: usize,
+    backup_section_count: usize,
+    keymap_binding_count: usize,
+    backup_binding_count: usize,
+    keymap_unbind_count: usize,
+    backup_unbind_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupDiff {
+    path: PathBuf,
+    backup_file: PathBuf,
+    text_matches: bool,
+    keymap_matches: bool,
+    keymap_byte_count: u64,
+    backup_byte_count: u64,
+    keymap_section_count: usize,
+    backup_section_count: usize,
+    keymap_binding_count: usize,
+    backup_binding_count: usize,
+    keymap_unbind_count: usize,
+    backup_unbind_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalKeymapBackupDiffCategory {
+    Text,
+    Keymap,
+    SectionCount,
+    BindingCount,
+    UnbindCount,
+}
+
+impl TerminalKeymapBackupDiffCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Keymap => "keymap",
+            Self::SectionCount => "section_count",
+            Self::BindingCount => "binding_count",
+            Self::UnbindCount => "unbind_count",
+        }
+    }
+}
+
+impl TerminalKeymapBackupDiff {
+    fn categories(&self) -> Vec<TerminalKeymapBackupDiffCategory> {
+        let mut categories = Vec::new();
+        if !self.text_matches {
+            categories.push(TerminalKeymapBackupDiffCategory::Text);
+        }
+        if !self.keymap_matches {
+            categories.push(TerminalKeymapBackupDiffCategory::Keymap);
+        }
+        if self.keymap_section_count != self.backup_section_count {
+            categories.push(TerminalKeymapBackupDiffCategory::SectionCount);
+        }
+        if self.keymap_binding_count != self.backup_binding_count {
+            categories.push(TerminalKeymapBackupDiffCategory::BindingCount);
+        }
+        if self.keymap_unbind_count != self.backup_unbind_count {
+            categories.push(TerminalKeymapBackupDiffCategory::UnbindCount);
+        }
+        categories
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapRestore {
+    path: PathBuf,
+    restore_file: PathBuf,
+    byte_count: u64,
+    section_count: usize,
+    binding_count: usize,
+    unbind_count: usize,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupProfileExportFile {
@@ -3926,6 +4066,34 @@ enum TerminalStartupConfigBackupDiffOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigRestoreOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapBackupOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapBackupCheckOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapBackupDiffOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapRestoreOutputFormat {
     #[default]
     Text,
     Json,
@@ -4681,6 +4849,301 @@ impl TerminalStartupConfigFileCommand {
             Self::CheckBackup(command) => &command.path_options,
             Self::DiffBackup(command) => &command.path_options,
             Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalKeymapFileCommand {
+    Backup(TerminalKeymapBackupCommand),
+    CheckBackup(TerminalKeymapBackupCheckCommand),
+    DiffBackup(TerminalKeymapBackupDiffCommand),
+    Restore(TerminalKeymapRestoreCommand),
+}
+
+impl TerminalKeymapFileCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalKeymapFileParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            match flag {
+                "--user-data-dir" => {
+                    parser.user_data_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--config-dir" => {
+                    parser.config_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--backup-keymap" => {
+                    if inline_value.is_some() {
+                        bail!("--backup-keymap does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--backup-keymap")?);
+                }
+                "--backup-keymap-file" => {
+                    parser.backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_keymap_file_option = true;
+                }
+                "--backup-keymap-format" => {
+                    parser.backup_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_file_option = true;
+                }
+                "--check-keymap-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--check-keymap-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--check-keymap-backup")?);
+                }
+                "--check-keymap-backup-file" => {
+                    parser.check_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_keymap_file_option = true;
+                }
+                "--check-keymap-backup-format" => {
+                    parser.check_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_file_option = true;
+                }
+                "--diff-keymap-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--diff-keymap-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--diff-keymap-backup")?);
+                }
+                "--diff-keymap-backup-file" => {
+                    parser.diff_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_keymap_file_option = true;
+                }
+                "--diff-keymap-backup-format" => {
+                    parser.diff_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_file_option = true;
+                }
+                "--restore-keymap" => {
+                    if inline_value.is_some() {
+                        bail!("--restore-keymap does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--restore-keymap")?);
+                }
+                "--restore-keymap-file" => {
+                    parser.restore_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_keymap_file_option = true;
+                }
+                "--restore-keymap-format" => {
+                    parser.restore_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_file_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Backup(command) => &command.path_options,
+            Self::CheckBackup(command) => &command.path_options,
+            Self::DiffBackup(command) => &command.path_options,
+            Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalKeymapFileParser {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    mode: Option<&'static str>,
+    seen_keymap_file_option: bool,
+    pre_keymap_file_arg: Option<String>,
+    backup_file: Option<PathBuf>,
+    backup_format: Option<String>,
+    check_backup_file: Option<PathBuf>,
+    check_backup_format: Option<String>,
+    diff_backup_file: Option<PathBuf>,
+    diff_backup_format: Option<String>,
+    restore_file: Option<PathBuf>,
+    restore_format: Option<String>,
+}
+
+impl TerminalKeymapFileParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_keymap_file_option = true;
+        if let Some(arg) = &self.pre_keymap_file_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode {
+            if mode != flag {
+                bail!("{mode} cannot be used with {flag}");
+            }
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_keymap_file_option {
+            let mode = self.mode.unwrap_or("terminal keymap file command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_keymap_file_arg.is_none() {
+            self.pre_keymap_file_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalKeymapFileCommand>> {
+        if !self.seen_keymap_file_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(
+            self.user_data_dir.as_deref(),
+            self.config_dir.as_deref(),
+        )
+        .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--backup-keymap") => {
+                if self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--backup-keymap cannot be used with other keymap file options");
+                }
+                let backup_file = self
+                    .backup_file
+                    .context("--backup-keymap requires --backup-keymap-file")?;
+                Ok(Some(TerminalKeymapFileCommand::Backup(
+                    TerminalKeymapBackupCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_keymap_backup_output_format(self.backup_format.as_deref())?,
+                    },
+                )))
+            }
+            Some("--check-keymap-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--check-keymap-backup cannot be used with other keymap file options");
+                }
+                let backup_file = self
+                    .check_backup_file
+                    .context("--check-keymap-backup requires --check-keymap-backup-file")?;
+                Ok(Some(TerminalKeymapFileCommand::CheckBackup(
+                    TerminalKeymapBackupCheckCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_keymap_backup_check_output_format(
+                            self.check_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--diff-keymap-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--diff-keymap-backup cannot be used with other keymap file options");
+                }
+                let backup_file = self
+                    .diff_backup_file
+                    .context("--diff-keymap-backup requires --diff-keymap-backup-file")?;
+                Ok(Some(TerminalKeymapFileCommand::DiffBackup(
+                    TerminalKeymapBackupDiffCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_keymap_backup_diff_output_format(
+                            self.diff_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--restore-keymap") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                {
+                    bail!("--restore-keymap cannot be used with other keymap file options");
+                }
+                let restore_file = self
+                    .restore_file
+                    .context("--restore-keymap requires --restore-keymap-file")?;
+                Ok(Some(TerminalKeymapFileCommand::Restore(
+                    TerminalKeymapRestoreCommand {
+                        path_options,
+                        restore_file,
+                        format: parse_keymap_restore_output_format(self.restore_format.as_deref())?,
+                    },
+                )))
+            }
+            Some(mode) => bail!("unsupported terminal keymap file mode: {mode}"),
+            None => {
+                if self.backup_file.is_some() {
+                    bail!("--backup-keymap-file requires --backup-keymap");
+                }
+                if self.backup_format.is_some() {
+                    bail!("--backup-keymap-format requires --backup-keymap");
+                }
+                if self.check_backup_file.is_some() {
+                    bail!("--check-keymap-backup-file requires --check-keymap-backup");
+                }
+                if self.check_backup_format.is_some() {
+                    bail!("--check-keymap-backup-format requires --check-keymap-backup");
+                }
+                if self.diff_backup_file.is_some() {
+                    bail!("--diff-keymap-backup-file requires --diff-keymap-backup");
+                }
+                if self.diff_backup_format.is_some() {
+                    bail!("--diff-keymap-backup-format requires --diff-keymap-backup");
+                }
+                if self.restore_file.is_some() {
+                    bail!("--restore-keymap-file requires --restore-keymap");
+                }
+                if self.restore_format.is_some() {
+                    bail!("--restore-keymap-format requires --restore-keymap");
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -5790,6 +6253,18 @@ fn main() {
         }
     }
 
+    match TerminalKeymapFileCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_keymap_file_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     let cli = match Cli::try_parse_from(env::args_os()) {
         Ok(cli) => cli,
         Err(error) => error.exit(),
@@ -6146,6 +6621,45 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
             }
         }
     }
+}
+
+fn run_terminal_keymap_file_command(command: TerminalKeymapFileCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let result = match command {
+                TerminalKeymapFileCommand::Backup(command) => {
+                    print_keymap_backup(&command.backup_file, command.format, cx)
+                }
+                TerminalKeymapFileCommand::CheckBackup(command) => {
+                    print_keymap_backup_check(&command.backup_file, command.format, cx)
+                }
+                TerminalKeymapFileCommand::DiffBackup(command) => {
+                    print_keymap_backup_diff(&command.backup_file, command.format, cx)
+                }
+                TerminalKeymapFileCommand::Restore(command) => {
+                    print_keymap_restore(&command.restore_file, command.format, cx)
+                }
+            };
+
+            match result {
+                Ok(()) => io::stdout()
+                    .flush()
+                    .expect("failed to flush terminal keymap file output"),
+                Err(error) => {
+                    eprintln!("failed to manage terminal keymap file: {error:#}");
+                    io::stderr().flush().ok();
+                    cx.quit();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
 }
 
 fn run_terminal_profile_transfer_command(command: TerminalProfileTransferCommand) {
@@ -6954,6 +7468,70 @@ fn print_startup_config_restore(
     Ok(())
 }
 
+fn print_keymap_backup(
+    backup_file: &Path,
+    format: TerminalKeymapBackupOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let backup = backup_keymap(paths::keymap_file(), backup_file, cx)?;
+    match format {
+        TerminalKeymapBackupOutputFormat::Text => print!("{}", format_keymap_backup(&backup)),
+        TerminalKeymapBackupOutputFormat::Json => {
+            print!("{}", format_keymap_backup_json(&backup)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_keymap_backup_check(
+    backup_file: &Path,
+    format: TerminalKeymapBackupCheckOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let check = check_keymap_backup(paths::keymap_file(), backup_file, cx)?;
+    match format {
+        TerminalKeymapBackupCheckOutputFormat::Text => {
+            print!("{}", format_keymap_backup_check(&check))
+        }
+        TerminalKeymapBackupCheckOutputFormat::Json => {
+            print!("{}", format_keymap_backup_check_json(&check)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_keymap_backup_diff(
+    backup_file: &Path,
+    format: TerminalKeymapBackupDiffOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let diff = diff_keymap_backup(paths::keymap_file(), backup_file, cx)?;
+    match format {
+        TerminalKeymapBackupDiffOutputFormat::Text => {
+            print!("{}", format_keymap_backup_diff(&diff))
+        }
+        TerminalKeymapBackupDiffOutputFormat::Json => {
+            print!("{}", format_keymap_backup_diff_json(&diff)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_keymap_restore(
+    restore_file: &Path,
+    format: TerminalKeymapRestoreOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let restore = restore_keymap(paths::keymap_file(), restore_file, cx)?;
+    match format {
+        TerminalKeymapRestoreOutputFormat::Text => print!("{}", format_keymap_restore(&restore)),
+        TerminalKeymapRestoreOutputFormat::Json => {
+            print!("{}", format_keymap_restore_json(&restore)?)
+        }
+    }
+    Ok(())
+}
+
 fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
     initialize_terminal_config_files_at(active_terminal_config_file_paths())
 }
@@ -7336,6 +7914,50 @@ fn parse_startup_config_restore_output_format(
         format => {
             bail!("unsupported --restore-startup-config-format {format:?}; expected text or json")
         }
+    }
+}
+
+fn parse_keymap_backup_output_format(
+    format: Option<&str>,
+) -> Result<TerminalKeymapBackupOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalKeymapBackupOutputFormat::Text),
+        "json" => Ok(TerminalKeymapBackupOutputFormat::Json),
+        format => bail!("unsupported --backup-keymap-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_keymap_backup_check_output_format(
+    format: Option<&str>,
+) -> Result<TerminalKeymapBackupCheckOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalKeymapBackupCheckOutputFormat::Text),
+        "json" => Ok(TerminalKeymapBackupCheckOutputFormat::Json),
+        format => {
+            bail!("unsupported --check-keymap-backup-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_keymap_backup_diff_output_format(
+    format: Option<&str>,
+) -> Result<TerminalKeymapBackupDiffOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalKeymapBackupDiffOutputFormat::Text),
+        "json" => Ok(TerminalKeymapBackupDiffOutputFormat::Json),
+        format => {
+            bail!("unsupported --diff-keymap-backup-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_keymap_restore_output_format(
+    format: Option<&str>,
+) -> Result<TerminalKeymapRestoreOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalKeymapRestoreOutputFormat::Text),
+        "json" => Ok(TerminalKeymapRestoreOutputFormat::Json),
+        format => bail!("unsupported --restore-keymap-format {format:?}; expected text or json"),
     }
 }
 
@@ -10550,6 +11172,218 @@ fn read_valid_startup_config_text(path: &Path, label: &str) -> Result<TerminalSt
     })
 }
 
+fn backup_keymap(path: &Path, backup_file: &Path, cx: &mut App) -> Result<TerminalKeymapBackup> {
+    if paths_refer_to_same_file(path, backup_file)? {
+        bail!(
+            "backup file {} must be different from terminal keymap {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let keymap = read_valid_keymap_text(path, "terminal keymap", cx)?;
+
+    if let Some(parent) = backup_file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create keymap backup directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std_fs::write(backup_file, keymap.text).with_context(|| {
+        format!(
+            "failed to write terminal keymap backup {}",
+            backup_file.display()
+        )
+    })?;
+
+    Ok(TerminalKeymapBackup {
+        path: path.to_path_buf(),
+        backup_file: backup_file.to_path_buf(),
+        byte_count: keymap.metadata.len(),
+        section_count: keymap.stats.section_count,
+        binding_count: keymap.binding_count,
+        unbind_count: keymap.stats.unbind_count,
+    })
+}
+
+fn restore_keymap(path: &Path, restore_file: &Path, cx: &mut App) -> Result<TerminalKeymapRestore> {
+    if paths_refer_to_same_file(path, restore_file)? {
+        bail!(
+            "restore file {} must be different from terminal keymap {}",
+            restore_file.display(),
+            path.display()
+        );
+    }
+
+    let restore = read_valid_keymap_text(restore_file, "terminal keymap restore file", cx)?;
+
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create terminal keymap directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std_fs::write(path, restore.text)
+        .with_context(|| format!("failed to write terminal keymap {}", path.display()))?;
+
+    Ok(TerminalKeymapRestore {
+        path: path.to_path_buf(),
+        restore_file: restore_file.to_path_buf(),
+        byte_count: restore.metadata.len(),
+        section_count: restore.stats.section_count,
+        binding_count: restore.binding_count,
+        unbind_count: restore.stats.unbind_count,
+    })
+}
+
+fn check_keymap_backup(
+    path: &Path,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalKeymapBackupCheck> {
+    if paths_refer_to_same_file(path, backup_file)? {
+        bail!(
+            "backup file {} must be different from terminal keymap {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let keymap = read_valid_keymap_text(path, "terminal keymap", cx)?;
+    let backup = read_valid_keymap_text(backup_file, "terminal keymap backup", cx)?;
+
+    Ok(TerminalKeymapBackupCheck {
+        path: path.to_path_buf(),
+        backup_file: backup_file.to_path_buf(),
+        matches: keymap.text == backup.text,
+        keymap_byte_count: keymap.metadata.len(),
+        backup_byte_count: backup.metadata.len(),
+        keymap_section_count: keymap.stats.section_count,
+        backup_section_count: backup.stats.section_count,
+        keymap_binding_count: keymap.binding_count,
+        backup_binding_count: backup.binding_count,
+        keymap_unbind_count: keymap.stats.unbind_count,
+        backup_unbind_count: backup.stats.unbind_count,
+    })
+}
+
+fn diff_keymap_backup(
+    path: &Path,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalKeymapBackupDiff> {
+    if paths_refer_to_same_file(path, backup_file)? {
+        bail!(
+            "backup file {} must be different from terminal keymap {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let keymap = read_valid_keymap_text(path, "terminal keymap", cx)?;
+    let backup = read_valid_keymap_text(backup_file, "terminal keymap backup", cx)?;
+
+    Ok(TerminalKeymapBackupDiff {
+        path: path.to_path_buf(),
+        backup_file: backup_file.to_path_buf(),
+        text_matches: keymap.text == backup.text,
+        keymap_matches: keymap.json == backup.json,
+        keymap_byte_count: keymap.metadata.len(),
+        backup_byte_count: backup.metadata.len(),
+        keymap_section_count: keymap.stats.section_count,
+        backup_section_count: backup.stats.section_count,
+        keymap_binding_count: keymap.binding_count,
+        backup_binding_count: backup.binding_count,
+        keymap_unbind_count: keymap.stats.unbind_count,
+        backup_unbind_count: backup.stats.unbind_count,
+    })
+}
+
+struct TerminalKeymapText {
+    text: String,
+    metadata: std_fs::Metadata,
+    json: serde_json::Value,
+    stats: TerminalKeymapJsonStats,
+    binding_count: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalKeymapJsonStats {
+    section_count: usize,
+    binding_entry_count: usize,
+    unbind_count: usize,
+}
+
+fn read_valid_keymap_text(path: &Path, label: &str, cx: &mut App) -> Result<TerminalKeymapText> {
+    let metadata = std_fs::metadata(path)
+        .with_context(|| format!("failed to inspect {label} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("{label} {} is not a file", path.display());
+    }
+
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read {label} {}", path.display()))?;
+    let binding_count = load_keymap_content_for_validation(label, &text, cx)
+        .with_context(|| format!("refusing to use invalid {label} {}", path.display()))?;
+    let json = parse_keymap_json_value_for_diff(&text)
+        .with_context(|| format!("failed to parse {label} {}", path.display()))?;
+    let stats = keymap_json_stats(&json)
+        .with_context(|| format!("failed to inspect {label} structure {}", path.display()))?;
+
+    Ok(TerminalKeymapText {
+        text,
+        metadata,
+        json,
+        stats,
+        binding_count,
+    })
+}
+
+fn parse_keymap_json_value_for_diff(content: &str) -> Result<serde_json::Value> {
+    if content.trim().is_empty() {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    }
+    settings::parse_json_with_comments::<serde_json::Value>(content)
+}
+
+fn keymap_json_stats(value: &serde_json::Value) -> Result<TerminalKeymapJsonStats> {
+    let sections = value
+        .as_array()
+        .context("terminal keymap must be a top-level array")?;
+    let mut stats = TerminalKeymapJsonStats {
+        section_count: sections.len(),
+        ..TerminalKeymapJsonStats::default()
+    };
+
+    for section in sections {
+        let object = section
+            .as_object()
+            .context("terminal keymap section must be an object")?;
+        if let Some(bindings) = object.get("bindings") {
+            let bindings = bindings
+                .as_object()
+                .context("terminal keymap bindings must be an object")?;
+            stats.binding_entry_count += bindings.len();
+        }
+        if let Some(unbind) = object.get("unbind") {
+            let unbind = unbind
+                .as_object()
+                .context("terminal keymap unbind must be an object")?;
+            stats.unbind_count += unbind.len();
+        }
+    }
+
+    Ok(stats)
+}
+
 fn paths_refer_to_same_file(left: &Path, right: &Path) -> Result<bool> {
     if !left.exists() || !right.exists() {
         return Ok(false);
@@ -12011,6 +12845,230 @@ fn format_startup_config_restore_json(restore: &TerminalStartupConfigRestore) ->
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup config restore as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_keymap_backup(backup: &TerminalKeymapBackup) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "keymap_file: {}", backup.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_file: {}", backup.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "bytes: {}", backup.byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "sections: {}", backup.section_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "bindings: {}", backup.binding_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "unbinds: {}", backup.unbind_count)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_keymap_backup_json(backup: &TerminalKeymapBackup) -> Result<String> {
+    let value = serde_json::json!({
+        "keymap_file": backup.path.display().to_string(),
+        "backup_file": backup.backup_file.display().to_string(),
+        "status": "ok",
+        "byte_count": backup.byte_count,
+        "section_count": backup.section_count,
+        "binding_count": backup.binding_count,
+        "unbind_count": backup.unbind_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap backup as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_keymap_backup_check(check: &TerminalKeymapBackupCheck) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "keymap_file: {}", check.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_file: {}", check.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", check.matches).expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_bytes: {}", check.keymap_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_bytes: {}", check.backup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "keymap_sections: {}",
+        check.keymap_section_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_sections: {}",
+        check.backup_section_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "keymap_bindings: {}",
+        check.keymap_binding_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_bindings: {}",
+        check.backup_binding_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_unbinds: {}", check.keymap_unbind_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_unbinds: {}", check.backup_unbind_count)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_keymap_backup_check_json(check: &TerminalKeymapBackupCheck) -> Result<String> {
+    let value = serde_json::json!({
+        "keymap_file": check.path.display().to_string(),
+        "backup_file": check.backup_file.display().to_string(),
+        "status": "ok",
+        "matches": check.matches,
+        "keymap_byte_count": check.keymap_byte_count,
+        "backup_byte_count": check.backup_byte_count,
+        "keymap_section_count": check.keymap_section_count,
+        "backup_section_count": check.backup_section_count,
+        "keymap_binding_count": check.keymap_binding_count,
+        "backup_binding_count": check.backup_binding_count,
+        "keymap_unbind_count": check.keymap_unbind_count,
+        "backup_unbind_count": check.backup_unbind_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap backup check as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_keymap_backup_diff(diff: &TerminalKeymapBackupDiff) -> String {
+    let categories = diff
+        .categories()
+        .into_iter()
+        .map(TerminalKeymapBackupDiffCategory::as_str)
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    writeln!(&mut output, "keymap_file: {}", diff.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_file: {}", diff.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "text_matches: {}", diff.text_matches)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_matches: {}", diff.keymap_matches)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "categories: {}",
+        if categories.is_empty() {
+            "none".into()
+        } else {
+            categories.join(", ")
+        }
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_bytes: {}", diff.keymap_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_bytes: {}", diff.backup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "keymap_sections: {}",
+        diff.keymap_section_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_sections: {}",
+        diff.backup_section_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "keymap_bindings: {}",
+        diff.keymap_binding_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_bindings: {}",
+        diff.backup_binding_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_unbinds: {}", diff.keymap_unbind_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_unbinds: {}", diff.backup_unbind_count)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_keymap_backup_diff_json(diff: &TerminalKeymapBackupDiff) -> Result<String> {
+    let value = serde_json::json!({
+        "keymap_file": diff.path.display().to_string(),
+        "backup_file": diff.backup_file.display().to_string(),
+        "status": "ok",
+        "text_matches": diff.text_matches,
+        "keymap_matches": diff.keymap_matches,
+        "categories": diff
+            .categories()
+            .into_iter()
+            .map(TerminalKeymapBackupDiffCategory::as_str)
+            .collect::<Vec<_>>(),
+        "keymap_byte_count": diff.keymap_byte_count,
+        "backup_byte_count": diff.backup_byte_count,
+        "keymap_section_count": diff.keymap_section_count,
+        "backup_section_count": diff.backup_section_count,
+        "keymap_binding_count": diff.keymap_binding_count,
+        "backup_binding_count": diff.backup_binding_count,
+        "keymap_unbind_count": diff.keymap_unbind_count,
+        "backup_unbind_count": diff.backup_unbind_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap backup diff as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_keymap_restore(restore: &TerminalKeymapRestore) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "keymap_file: {}", restore.path.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "restore_file: {}",
+        restore.restore_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "bytes: {}", restore.byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "sections: {}", restore.section_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "bindings: {}", restore.binding_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "unbinds: {}", restore.unbind_count)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_keymap_restore_json(restore: &TerminalKeymapRestore) -> Result<String> {
+    let value = serde_json::json!({
+        "keymap_file": restore.path.display().to_string(),
+        "restore_file": restore.restore_file.display().to_string(),
+        "status": "ok",
+        "byte_count": restore.byte_count,
+        "section_count": restore.section_count,
+        "binding_count": restore.binding_count,
+        "unbind_count": restore.unbind_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap restore as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -16194,6 +17252,28 @@ mod tests {
             args: args.iter().map(|arg| (*arg).into()).collect(),
             title_override: None,
         }
+    }
+
+    fn valid_keymap_fixture() -> &'static str {
+        r#"// keep leading comment
+[
+  {
+    "bindings": {
+      "ctrl-shift-t": "zed_terminal::NewTerminalTab",
+      "ctrl-shift-w": "pane::CloseActiveItem"
+    },
+    "unbind": {
+      "ctrl-j": "zed_terminal::NewTerminalTab"
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-shift-v": "terminal::Paste"
+    }
+  }
+]
+"#
     }
 
     fn assert_cli_conflict(args: &[&str], reason: &str) {
@@ -29139,6 +30219,266 @@ mod tests {
         std_fs::remove_dir_all(root_dir).ok();
     }
 
+    #[gpui::test]
+    fn backup_keymap_preserves_original_jsonc(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        let backup_file = root_dir.join("backups").join("keymap.backup.json");
+        let original = valid_keymap_fixture();
+        std_fs::write(&keymap_file, original).expect("failed to write keymap");
+
+        let backup = backup_keymap(&keymap_file, &backup_file, cx).expect("keymap should back up");
+
+        assert_eq!(backup.path, keymap_file);
+        assert_eq!(backup.backup_file, backup_file);
+        assert_eq!(backup.byte_count, original.len() as u64);
+        assert_eq!(backup.section_count, 2);
+        assert_eq!(backup.binding_count, 4);
+        assert_eq!(backup.unbind_count, 1);
+        assert_eq!(
+            std_fs::read_to_string(&backup.backup_file).expect("failed to read backup"),
+            original
+        );
+
+        let summary = format_keymap_backup(&backup);
+        assert!(summary.contains("status: ok"));
+        assert!(summary.contains("bindings: 4"));
+        assert!(!summary.contains("zed_terminal::NewTerminalTab"));
+        let summary_json =
+            format_keymap_backup_json(&backup).expect("backup json should serialize");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&summary_json)
+                .expect("backup json should parse")["binding_count"],
+            4
+        );
+        assert!(!summary_json.contains("terminal::Paste"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn backup_keymap_rejects_missing_invalid_and_same_file_targets(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        let backup_file = root_dir.join("keymap.backup.json");
+
+        let error = backup_keymap(&keymap_file, &backup_file, cx)
+            .expect_err("missing keymap should not back up");
+        assert!(format!("{error:#}").contains("failed to inspect terminal keymap"));
+        assert!(!backup_file.exists());
+
+        std_fs::write(
+            &keymap_file,
+            r#"[{ "bindings": { "ctrl-?": "missing::Action" } }]"#,
+        )
+        .expect("failed to write invalid keymap");
+        let error = backup_keymap(&keymap_file, &backup_file, cx)
+            .expect_err("invalid keymap should not back up");
+        assert!(format!("{error:#}").contains("refusing to use invalid terminal keymap"));
+        assert!(!backup_file.exists());
+
+        std_fs::write(&keymap_file, "[]\n").expect("failed to write valid keymap");
+        let error = backup_keymap(&keymap_file, &keymap_file, cx)
+            .expect_err("same source and backup file should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal keymap"));
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file)
+                .expect("failed to read keymap after rejected backup"),
+            "[]\n"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn check_keymap_backup_reports_match_and_mismatch_without_values(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        let backup_file = root_dir.join("keymap.backup.json");
+        let original = valid_keymap_fixture();
+        std_fs::write(&keymap_file, original).expect("failed to write keymap");
+        std_fs::write(&backup_file, original).expect("failed to write matching backup keymap");
+
+        let check = check_keymap_backup(&keymap_file, &backup_file, cx)
+            .expect("matching keymap backup should check");
+        assert!(check.matches);
+        assert_eq!(check.keymap_byte_count, original.len() as u64);
+        assert_eq!(check.backup_byte_count, original.len() as u64);
+        assert_eq!(check.keymap_section_count, 2);
+        assert_eq!(check.backup_section_count, 2);
+        assert_eq!(check.keymap_binding_count, 4);
+        assert_eq!(check.backup_binding_count, 4);
+        assert_eq!(check.keymap_unbind_count, 1);
+        assert_eq!(check.backup_unbind_count, 1);
+
+        let summary = format_keymap_backup_check(&check);
+        assert!(summary.contains("matches: true"));
+        assert!(!summary.contains("terminal::Paste"));
+        let summary_json =
+            format_keymap_backup_check_json(&check).expect("check json should serialize");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&summary_json)
+                .expect("check json should parse")["matches"],
+            true
+        );
+        assert!(!summary_json.contains("terminal::Paste"));
+
+        let changed = original.replace(
+            r#""ctrl-shift-v": "terminal::Paste""#,
+            r#""ctrl-shift-v": "terminal::Copy""#,
+        );
+        std_fs::write(&backup_file, &changed).expect("failed to write changed backup keymap");
+        let check = check_keymap_backup(&keymap_file, &backup_file, cx)
+            .expect("changed but valid keymap backup should check");
+        assert!(!check.matches);
+        assert_eq!(check.keymap_binding_count, 4);
+        assert_eq!(check.backup_binding_count, 4);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn diff_keymap_backup_distinguishes_text_from_keymap_drift(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        let backup_file = root_dir.join("keymap.backup.json");
+
+        std_fs::write(
+            &keymap_file,
+            format!("{}\n// active comment\n", valid_keymap_fixture()),
+        )
+        .expect("failed to write active keymap");
+        std_fs::write(&backup_file, valid_keymap_fixture()).expect("failed to write backup keymap");
+
+        let diff = diff_keymap_backup(&keymap_file, &backup_file, cx)
+            .expect("comment-only keymap drift should diff");
+        assert!(!diff.text_matches);
+        assert!(diff.keymap_matches);
+        assert_eq!(
+            diff.categories(),
+            vec![TerminalKeymapBackupDiffCategory::Text]
+        );
+        assert_eq!(diff.keymap_binding_count, 4);
+        assert_eq!(diff.backup_binding_count, 4);
+
+        let changed = valid_keymap_fixture().replace(
+            r#""ctrl-shift-v": "terminal::Paste""#,
+            r#""ctrl-shift-v": "terminal::Copy",
+      "ctrl-shift-c": "terminal::Copy""#,
+        );
+        std_fs::write(&keymap_file, &changed).expect("failed to write changed active keymap");
+        let diff = diff_keymap_backup(&keymap_file, &backup_file, cx)
+            .expect("semantic keymap drift should diff");
+        assert!(!diff.text_matches);
+        assert!(!diff.keymap_matches);
+        assert_eq!(diff.keymap_binding_count, 5);
+        assert_eq!(diff.backup_binding_count, 4);
+        assert!(
+            diff.categories()
+                .contains(&TerminalKeymapBackupDiffCategory::Keymap)
+        );
+        assert!(
+            diff.categories()
+                .contains(&TerminalKeymapBackupDiffCategory::BindingCount)
+        );
+
+        let summary = format_keymap_backup_diff(&diff);
+        assert!(summary.contains("keymap_matches: false"));
+        assert!(summary.contains("binding_count"));
+        assert!(!summary.contains("terminal::Copy"));
+        let summary_json =
+            format_keymap_backup_diff_json(&diff).expect("diff json should serialize");
+        assert!(!summary_json.contains("terminal::Copy"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn restore_keymap_preserves_original_jsonc_and_repairs_target(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("config").join("keymap.json");
+        let restore_file = root_dir.join("backups").join("keymap.backup.json");
+        std_fs::create_dir_all(restore_file.parent().unwrap())
+            .expect("failed to create restore source dir");
+        std_fs::create_dir_all(keymap_file.parent().unwrap()).expect("failed to create keymap dir");
+        let restored = valid_keymap_fixture();
+        std_fs::write(&restore_file, restored).expect("failed to write restore source");
+        std_fs::write(&keymap_file, "{ broken keymap").expect("failed to write broken keymap");
+
+        let restore =
+            restore_keymap(&keymap_file, &restore_file, cx).expect("keymap should restore");
+
+        assert_eq!(restore.path, keymap_file);
+        assert_eq!(restore.restore_file, restore_file);
+        assert_eq!(restore.byte_count, restored.len() as u64);
+        assert_eq!(restore.section_count, 2);
+        assert_eq!(restore.binding_count, 4);
+        assert_eq!(restore.unbind_count, 1);
+        assert_eq!(
+            std_fs::read_to_string(&restore.path).expect("failed to read restored keymap"),
+            restored
+        );
+
+        let summary = format_keymap_restore(&restore);
+        assert!(summary.contains("status: ok"));
+        assert!(!summary.contains("zed_terminal::NewTerminalTab"));
+        let summary_json =
+            format_keymap_restore_json(&restore).expect("restore json should serialize");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&summary_json)
+                .expect("restore json should parse")["binding_count"],
+            4
+        );
+        assert!(!summary_json.contains("terminal::Paste"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn restore_keymap_rejects_missing_invalid_and_same_file_sources(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        let restore_file = root_dir.join("keymap.backup.json");
+        let original = "[]\n";
+        std_fs::write(&keymap_file, original).expect("failed to write keymap");
+
+        let error = restore_keymap(&keymap_file, &restore_file, cx)
+            .expect_err("missing restore source should not restore");
+        assert!(format!("{error:#}").contains("failed to inspect terminal keymap restore file"));
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file)
+                .expect("failed to read keymap after rejected restore"),
+            original
+        );
+
+        std_fs::write(
+            &restore_file,
+            r#"[{ "bindings": { "ctrl-?": "missing::Action" } }]"#,
+        )
+        .expect("failed to write invalid restore source");
+        let error = restore_keymap(&keymap_file, &restore_file, cx)
+            .expect_err("invalid restore source should not restore");
+        assert!(
+            format!("{error:#}").contains("refusing to use invalid terminal keymap restore file")
+        );
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file)
+                .expect("failed to read keymap after invalid restore"),
+            original
+        );
+
+        let error = restore_keymap(&keymap_file, &keymap_file, cx)
+            .expect_err("same source and restore target should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal keymap"));
+        assert_eq!(
+            std_fs::read_to_string(&keymap_file)
+                .expect("failed to read keymap after same-file restore"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
     #[test]
     fn formats_keymap_validation() {
         let report = TerminalKeymapValidationReport {
@@ -29156,6 +30496,172 @@ mod tests {
             output,
             "keymap_file: keymap.json\nstatus: ok\ndefault_bindings: 31\nuser_keymap_source: file\nuser_bindings: 2\n"
         );
+    }
+
+    #[test]
+    fn formats_keymap_backup_reports_without_binding_values() {
+        let report = TerminalKeymapBackup {
+            path: PathBuf::from("keymap.json"),
+            backup_file: PathBuf::from("backups/keymap.backup.json"),
+            byte_count: 120,
+            section_count: 2,
+            binding_count: 5,
+            unbind_count: 1,
+        };
+
+        let output = format_keymap_backup(&report);
+
+        assert_eq!(
+            output,
+            "keymap_file: keymap.json\nbackup_file: backups/keymap.backup.json\nstatus: ok\nbytes: 120\nsections: 2\nbindings: 5\nunbinds: 1\n"
+        );
+        assert!(!output.contains("zed_terminal::"));
+
+        let output_json = format_keymap_backup_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output_json).expect("keymap backup json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["section_count"], 2);
+        assert_eq!(json["binding_count"], 5);
+        assert_eq!(json["unbind_count"], 1);
+        assert!(output_json.ends_with('\n'));
+        assert!(!output_json.contains("zed_terminal::"));
+    }
+
+    #[test]
+    fn formats_keymap_backup_check_reports_match_summary() {
+        let report = TerminalKeymapBackupCheck {
+            path: PathBuf::from("keymap.json"),
+            backup_file: PathBuf::from("keymap.backup.json"),
+            matches: false,
+            keymap_byte_count: 140,
+            backup_byte_count: 120,
+            keymap_section_count: 2,
+            backup_section_count: 1,
+            keymap_binding_count: 5,
+            backup_binding_count: 4,
+            keymap_unbind_count: 1,
+            backup_unbind_count: 0,
+        };
+
+        let output = format_keymap_backup_check(&report);
+
+        assert!(output.contains("matches: false"));
+        assert!(output.contains("keymap_bindings: 5"));
+        assert!(output.contains("backup_unbinds: 0"));
+        assert!(!output.contains("terminal::Paste"));
+
+        let output_json =
+            format_keymap_backup_check_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output_json).expect("keymap backup check json should parse");
+        assert_eq!(json["matches"], false);
+        assert_eq!(json["keymap_binding_count"], 5);
+        assert_eq!(json["backup_unbind_count"], 0);
+        assert!(output_json.ends_with('\n'));
+        assert!(!output_json.contains("terminal::Paste"));
+    }
+
+    #[test]
+    fn formats_keymap_backup_diff_reports_categories() {
+        let report = TerminalKeymapBackupDiff {
+            path: PathBuf::from("keymap.json"),
+            backup_file: PathBuf::from("keymap.backup.json"),
+            text_matches: false,
+            keymap_matches: false,
+            keymap_byte_count: 140,
+            backup_byte_count: 120,
+            keymap_section_count: 2,
+            backup_section_count: 1,
+            keymap_binding_count: 5,
+            backup_binding_count: 4,
+            keymap_unbind_count: 1,
+            backup_unbind_count: 0,
+        };
+
+        assert_eq!(
+            report.categories(),
+            vec![
+                TerminalKeymapBackupDiffCategory::Text,
+                TerminalKeymapBackupDiffCategory::Keymap,
+                TerminalKeymapBackupDiffCategory::SectionCount,
+                TerminalKeymapBackupDiffCategory::BindingCount,
+                TerminalKeymapBackupDiffCategory::UnbindCount,
+            ]
+        );
+
+        let output = format_keymap_backup_diff(&report);
+
+        assert!(output.contains("text_matches: false"));
+        assert!(output.contains("keymap_matches: false"));
+        assert!(
+            output.contains("categories: text, keymap, section_count, binding_count, unbind_count")
+        );
+        assert!(!output.contains("zed_terminal::NewTerminalTab"));
+
+        let output_json =
+            format_keymap_backup_diff_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output_json).expect("keymap backup diff json should parse");
+        let categories = json["categories"]
+            .as_array()
+            .expect("categories should be an array");
+        assert_eq!(categories.len(), 5);
+        assert_eq!(categories[1], "keymap");
+        assert!(output_json.ends_with('\n'));
+        assert!(!output_json.contains("zed_terminal::NewTerminalTab"));
+    }
+
+    #[test]
+    fn formats_keymap_backup_diff_reports_text_only_drift() {
+        let report = TerminalKeymapBackupDiff {
+            path: PathBuf::from("keymap.json"),
+            backup_file: PathBuf::from("keymap.backup.json"),
+            text_matches: false,
+            keymap_matches: true,
+            keymap_byte_count: 140,
+            backup_byte_count: 120,
+            keymap_section_count: 2,
+            backup_section_count: 2,
+            keymap_binding_count: 5,
+            backup_binding_count: 5,
+            keymap_unbind_count: 1,
+            backup_unbind_count: 1,
+        };
+
+        assert_eq!(
+            report.categories(),
+            vec![TerminalKeymapBackupDiffCategory::Text]
+        );
+        assert!(format_keymap_backup_diff(&report).contains("categories: text"));
+    }
+
+    #[test]
+    fn formats_keymap_restore_reports_without_binding_values() {
+        let report = TerminalKeymapRestore {
+            path: PathBuf::from("keymap.json"),
+            restore_file: PathBuf::from("keymap.backup.json"),
+            byte_count: 120,
+            section_count: 2,
+            binding_count: 5,
+            unbind_count: 1,
+        };
+
+        let output = format_keymap_restore(&report);
+
+        assert_eq!(
+            output,
+            "keymap_file: keymap.json\nrestore_file: keymap.backup.json\nstatus: ok\nbytes: 120\nsections: 2\nbindings: 5\nunbinds: 1\n"
+        );
+        assert!(!output.contains("zed_terminal::"));
+
+        let output_json = format_keymap_restore_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output_json).expect("keymap restore json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["binding_count"], 5);
+        assert!(output_json.ends_with('\n'));
+        assert!(!output_json.contains("zed_terminal::"));
     }
 
     #[test]
@@ -30990,9 +32496,20 @@ mod tests {
         assert!(help.contains("--diff-startup-config-backup-format <text|json>"));
         assert!(help.contains("--restore-startup-config --restore-startup-config-file <FILE>"));
         assert!(help.contains("--restore-startup-config-format <text|json>"));
-        assert!(help.contains("Profile transfer and startup config file options may be combined"));
-        assert!(help.contains("with --user-data-dir and"));
-        assert!(help.contains("--config-dir only."));
+        assert!(help.contains("Keymap backup and restore options:"));
+        assert!(help.contains("--backup-keymap --backup-keymap-file <FILE>"));
+        assert!(help.contains("--backup-keymap-format <text|json>"));
+        assert!(help.contains("--check-keymap-backup --check-keymap-backup-file <FILE>"));
+        assert!(help.contains("--check-keymap-backup-format <text|json>"));
+        assert!(help.contains("--diff-keymap-backup --diff-keymap-backup-file <FILE>"));
+        assert!(help.contains("--diff-keymap-backup-format <text|json>"));
+        assert!(help.contains("--restore-keymap --restore-keymap-file <FILE>"));
+        assert!(help.contains("--restore-keymap-format <text|json>"));
+        assert!(help.contains(
+            "Profile transfer, startup config file, and keymap file options may be combined"
+        ));
+        assert!(help.contains("combined with --user-data-dir"));
+        assert!(help.contains("and --config-dir only."));
     }
 
     #[test]
@@ -31219,6 +32736,106 @@ mod tests {
     }
 
     #[test]
+    fn backup_keymap_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("keymap.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--backup-keymap",
+            "--backup-keymap-file",
+            backup_file.to_str().unwrap(),
+            "--backup-keymap-format",
+            "json",
+        ])
+        .expect("backup keymap json mode should parse")
+        .expect("backup keymap json mode should resolve");
+
+        let TerminalKeymapFileCommand::Backup(command) = command else {
+            panic!("expected backup keymap mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(command.format, TerminalKeymapBackupOutputFormat::Json);
+    }
+
+    #[test]
+    fn restore_keymap_format_json_is_carried_through_cli_resolution() {
+        let restore_file = PathBuf::from("keymap.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--restore-keymap",
+            "--restore-keymap-file",
+            restore_file.to_str().unwrap(),
+            "--restore-keymap-format",
+            "json",
+        ])
+        .expect("restore keymap json mode should parse")
+        .expect("restore keymap json mode should resolve");
+
+        let TerminalKeymapFileCommand::Restore(command) = command else {
+            panic!("expected restore keymap mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.restore_file, restore_file);
+        assert_eq!(command.format, TerminalKeymapRestoreOutputFormat::Json);
+    }
+
+    #[test]
+    fn check_keymap_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("keymap.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--check-keymap-backup",
+            "--check-keymap-backup-file",
+            backup_file.to_str().unwrap(),
+            "--check-keymap-backup-format",
+            "json",
+        ])
+        .expect("check keymap backup json mode should parse")
+        .expect("check keymap backup json mode should resolve");
+
+        let TerminalKeymapFileCommand::CheckBackup(command) = command else {
+            panic!("expected check keymap backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(command.format, TerminalKeymapBackupCheckOutputFormat::Json);
+    }
+
+    #[test]
+    fn diff_keymap_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("keymap.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--diff-keymap-backup",
+            "--diff-keymap-backup-file",
+            backup_file.to_str().unwrap(),
+            "--diff-keymap-backup-format",
+            "json",
+        ])
+        .expect("diff keymap backup json mode should parse")
+        .expect("diff keymap backup json mode should resolve");
+
+        let TerminalKeymapFileCommand::DiffBackup(command) = command else {
+            panic!("expected diff keymap backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(command.format, TerminalKeymapBackupDiffOutputFormat::Json);
+    }
+
+    #[test]
     fn backup_startup_config_rejects_startup_only_arguments() {
         let backup_file = "terminal.backup.json";
         let error = TerminalStartupConfigFileCommand::from_args([
@@ -31423,6 +33040,198 @@ mod tests {
             format!("{error:#}").contains(
                 "--diff-startup-config-backup-format requires --diff-startup-config-backup"
             )
+        );
+    }
+
+    #[test]
+    fn backup_keymap_rejects_startup_only_arguments() {
+        let backup_file = "keymap.backup.json";
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--backup-keymap",
+            "--backup-keymap-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap backup");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--backup-keymap",
+            "--backup-keymap-file",
+            backup_file,
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with keymap backup");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--backup-keymap",
+            "--backup-keymap-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap backup");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--backup-keymap-format",
+            "json",
+        ])
+        .expect_err("backup keymap format should require backup mode");
+        assert!(format!("{error:#}").contains("--backup-keymap-format requires --backup-keymap"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn restore_keymap_rejects_startup_only_arguments() {
+        let restore_file = "keymap.backup.json";
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--restore-keymap",
+            "--restore-keymap-file",
+            restore_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap restore");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--restore-keymap",
+            "--restore-keymap-file",
+            restore_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap restore");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--restore-keymap",
+            "--restore-keymap-file",
+            restore_file,
+            "--backup-keymap",
+            "--backup-keymap-file",
+            "other.json",
+        ])
+        .expect_err("backup and restore keymap modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --backup-keymap"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--restore-keymap-format",
+            "json",
+        ])
+        .expect_err("restore keymap format should require restore mode");
+        assert!(format!("{error:#}").contains("--restore-keymap-format requires --restore-keymap"));
+    }
+
+    #[test]
+    fn check_keymap_backup_rejects_startup_only_arguments() {
+        let backup_file = "keymap.backup.json";
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--check-keymap-backup",
+            "--check-keymap-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap backup check");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--check-keymap-backup",
+            "--check-keymap-backup-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap backup check");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--check-keymap-backup",
+            "--check-keymap-backup-file",
+            backup_file,
+            "--restore-keymap",
+            "--restore-keymap-file",
+            "other.json",
+        ])
+        .expect_err("check and restore keymap modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-keymap"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--check-keymap-backup-format",
+            "json",
+        ])
+        .expect_err("check keymap backup format should require check mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--check-keymap-backup-format requires --check-keymap-backup")
+        );
+    }
+
+    #[test]
+    fn diff_keymap_backup_rejects_startup_only_arguments() {
+        let backup_file = "keymap.backup.json";
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--diff-keymap-backup",
+            "--diff-keymap-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap backup diff");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--diff-keymap-backup",
+            "--diff-keymap-backup-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap backup diff");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--diff-keymap-backup",
+            "--diff-keymap-backup-file",
+            backup_file,
+            "--restore-keymap",
+            "--restore-keymap-file",
+            "other.json",
+        ])
+        .expect_err("diff and restore keymap modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-keymap"));
+
+        let error = TerminalKeymapFileCommand::from_args([
+            "zed-terminal",
+            "--diff-keymap-backup-format",
+            "json",
+        ])
+        .expect_err("diff keymap backup format should require diff mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--diff-keymap-backup-format requires --diff-keymap-backup")
         );
     }
 
