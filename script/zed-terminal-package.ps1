@@ -377,6 +377,7 @@ Generate support information without opening a terminal window:
 
 ```powershell
 .\{{BINARY}} --support-info > zed-terminal-support-info.txt
+.\{{BINARY}} --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json
 ```
 
 ## Included Files
@@ -387,7 +388,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -429,6 +430,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --support-info",
+        ".\$BinaryFileName --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json",
         "$PackageName.zip.sha256",
         "config-template/",
         "zed-terminal-package.json"
@@ -595,6 +597,122 @@ function Assert-ConfigBundleJson {
 
     if ($HasMatches -and $Report.matches -ne $ExpectedMatches) {
         throw "zed-terminal config bundle command reported unexpected matches value"
+    }
+}
+
+function Assert-SupportBundleJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$BundleDir
+    )
+
+    $files = @($Report.files)
+    $labels = @($files | ForEach-Object { $_.label })
+    if (
+        $Report.status -ne "ok" -or
+        $Report.format -ne "zed-terminal-support-bundle" -or
+        $Report.version -ne 1 -or
+        $Report.bundle_dir -ne $BundleDir -or
+        $Report.diagnostics_status -ne "ok" -or
+        $Report.file_count -ne 6 -or
+        $files.Count -ne 6 -or
+        $labels -notcontains "manifest" -or
+        $labels -notcontains "support_info" -or
+        $labels -notcontains "diagnostics" -or
+        $labels -notcontains "paths" -or
+        $labels -notcontains "file_metadata" -or
+        $labels -notcontains "readme"
+    ) {
+        throw "zed-terminal --support-bundle did not report expected status"
+    }
+
+    foreach ($file in $files) {
+        if (-not (Test-Path -LiteralPath $file.path -PathType Leaf) -or [int64]$file.byte_count -le 0) {
+            throw "zed-terminal --support-bundle reported an invalid output file: $($file.path)"
+        }
+    }
+}
+
+function Invoke-SupportBundleSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$BundleDir,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    New-Item -ItemType Directory -Force -Path $DataDir, $ConfigDir | Out-Null
+    Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--init-config",
+        "--init-config-format", "json"
+    ) -WorkingDirectory $WorkingDirectory | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "logs") | Out-Null
+    Add-Content -LiteralPath (Join-Path $ConfigDir "terminal.json") -Value "`n// do-not-log-package-startup-secret"
+    Add-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "`n// do-not-log-package-settings-secret"
+    Set-Content -LiteralPath (Join-Path (Join-Path $DataDir "logs") "Zed Terminal.log") -Value "do-not-log-package-log-secret" -Encoding utf8
+
+    $result = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--support-bundle",
+        "--support-bundle-dir", $BundleDir,
+        "--support-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $report = $result.Stdout | ConvertFrom-Json
+    Assert-SupportBundleJson $report $BundleDir
+
+    $manifestFile = Join-Path $BundleDir "zed-terminal-support-bundle.json"
+    $metadataFile = Join-Path $BundleDir "zed-terminal-file-metadata.json"
+    $supportInfoFile = Join-Path $BundleDir "zed-terminal-support-info.txt"
+    $diagnosticsFile = Join-Path $BundleDir "zed-terminal-diagnostics.json"
+    $pathsFile = Join-Path $BundleDir "zed-terminal-paths.json"
+    $readmeFile = Join-Path $BundleDir "README.txt"
+    foreach ($file in @($manifestFile, $metadataFile, $supportInfoFile, $diagnosticsFile, $pathsFile, $readmeFile)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "zed-terminal --support-bundle did not write expected file: $file"
+        }
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
+    if (
+        $manifest.format -ne "zed-terminal-support-bundle" -or
+        $manifest.version -ne 1 -or
+        $manifest.diagnostics_status -ne "ok" -or
+        $manifest.redaction.includes_raw_config_contents -ne $false -or
+        $manifest.redaction.includes_raw_log_contents -ne $false -or
+        $manifest.redaction.includes_environment_values -ne $false -or
+        $manifest.redaction.file_metadata_only -ne $true -or
+        @($manifest.files).Count -ne 5
+    ) {
+        throw "zed-terminal support bundle manifest did not report expected redaction metadata"
+    }
+
+    $metadata = Get-Content -LiteralPath $metadataFile -Raw | ConvertFrom-Json
+    $metadataLabels = @($metadata.files | ForEach-Object { $_.label })
+    if (
+        $metadata.redaction.includes_raw_file_contents -ne $false -or
+        $metadata.redaction.includes_environment_values -ne $false -or
+        $metadataLabels -notcontains "startup_config_file" -or
+        $metadataLabels -notcontains "settings_file" -or
+        $metadataLabels -notcontains "log_file"
+    ) {
+        throw "zed-terminal support bundle metadata did not report expected file metadata"
+    }
+
+    $bundleText = Get-ChildItem -LiteralPath $BundleDir -File | ForEach-Object {
+        Get-Content -LiteralPath $_.FullName -Raw
+    } | Out-String
+    foreach ($secret in @(
+        "do-not-log-package-startup-secret",
+        "do-not-log-package-settings-secret",
+        "do-not-log-package-log-secret"
+    )) {
+        if ($bundleText.Contains($secret)) {
+            throw "zed-terminal support bundle leaked redaction fixture text: $secret"
+        }
     }
 }
 
@@ -801,6 +919,7 @@ function Assert-PackageManifest {
         "config_bundle",
         "doctor",
         "support_info",
+        "support_bundle",
         "readme",
         "manifest"
     )) {
@@ -1004,6 +1123,13 @@ function Assert-PackageZipArchive {
         -BundleFile (Join-Path $ValidationRoot "zip-config.bundle.json") `
         -WorkingDirectory $extractedPackageDir
 
+    Invoke-SupportBundleSmoke `
+        -Binary $extractedBinary `
+        -DataDir (Join-Path $ValidationRoot "zip-support-data") `
+        -ConfigDir (Join-Path $ValidationRoot "zip-support-config") `
+        -BundleDir (Join-Path $ValidationRoot "zip-support-bundle") `
+        -WorkingDirectory $extractedPackageDir
+
     $supportInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
         "--config-dir", $extractedConfigDir,
@@ -1201,6 +1327,13 @@ Invoke-ConfigBundleSmoke `
     -BundleFile (Join-Path $runDir "zed-terminal-config.bundle.json") `
     -WorkingDirectory $packageDir
 
+Invoke-SupportBundleSmoke `
+    -Binary $packagedBinary `
+    -DataDir (Join-Path $runDir "support-validation-data") `
+    -ConfigDir (Join-Path $runDir "support-validation-config") `
+    -BundleDir (Join-Path $runDir "zed-terminal-support-bundle") `
+    -WorkingDirectory $packageDir
+
 $supportInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -1258,6 +1391,7 @@ $manifest = [pscustomobject]@{
         config_bundle = "ok"
         doctor = "ok"
         support_info = "ok"
+        support_bundle = "ok"
         readme = "ok"
         manifest = "ok"
     }

@@ -61,6 +61,7 @@ actions!(
         OpenDataDirectory,
         OpenDiagnosticsReport,
         OpenSupportInfoReport,
+        OpenSupportBundleDirectory,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
         OpenStartupProfilesReport,
@@ -166,6 +167,11 @@ const TERMINAL_KEYMAP_SCHEMA_FILE: &str = "keymap.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
+const TERMINAL_SUPPORT_BUNDLE_DIR: &str = "zed-terminal-support-bundle";
+const TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE: &str = "zed-terminal-support-bundle.json";
+const TERMINAL_SUPPORT_BUNDLE_PATHS_FILE: &str = "zed-terminal-paths.json";
+const TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE: &str = "zed-terminal-file-metadata.json";
+const TERMINAL_SUPPORT_BUNDLE_README_FILE: &str = "README.txt";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
@@ -182,6 +188,8 @@ const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
 const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
 const TERMINAL_CONFIG_BUNDLE_FORMAT: &str = "zed-terminal-config-bundle";
 const TERMINAL_CONFIG_BUNDLE_VERSION: u64 = 1;
+const TERMINAL_SUPPORT_BUNDLE_FORMAT: &str = "zed-terminal-support-bundle";
+const TERMINAL_SUPPORT_BUNDLE_VERSION: u64 = 1;
 const TERMINAL_SETTINGS_BACKUP_FORMAT: &str = "zed-terminal-settings-backup";
 const TERMINAL_SETTINGS_BACKUP_VERSION: u64 = 1;
 const TERMINAL_CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -223,6 +231,12 @@ Config bundle backup and restore options:
           Restore terminal.json, keymap.json, settings.json, and global_settings.json from a verified bundle without opening a terminal window
       --restore-config-bundle-format <text|json>
           Set the output format for --restore-config-bundle
+
+Support bundle options:
+      --support-bundle --support-bundle-dir <DIR>
+          Generate a redacted support bundle directory without opening a terminal window
+      --support-bundle-format <text|json>
+          Set the output format for --support-bundle
 
 Startup config backup and restore options:
       --backup-startup-config --backup-startup-config-file <FILE>
@@ -3022,6 +3036,13 @@ enum TerminalConfigBundleCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSupportBundleCommand {
+    path_options: TerminalPathOptions,
+    bundle_dir: PathBuf,
+    format: TerminalSupportBundleOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalConfigBundleBackupCommand {
     path_options: TerminalPathOptions,
     bundle_file: PathBuf,
@@ -3225,6 +3246,37 @@ struct TerminalPathReport {
     default_keymap_reference_file: PathBuf,
     themes_dir: PathBuf,
     log_file: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSupportBundleReport {
+    bundle_dir: PathBuf,
+    manifest_file: PathBuf,
+    manifest_byte_count: u64,
+    diagnostics_status: TerminalSupportBundleDiagnosticsStatus,
+    files: Vec<TerminalSupportBundleFileReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSupportBundleFileReport {
+    label: &'static str,
+    path: PathBuf,
+    byte_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSupportBundleDiagnosticsStatus {
+    Ok,
+    Error,
+}
+
+impl TerminalSupportBundleDiagnosticsStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5001,6 +5053,13 @@ enum TerminalConfigBundleOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSupportBundleOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigBackupOutputFormat {
     #[default]
     Text,
@@ -6035,6 +6094,128 @@ impl TerminalConfigBundleCommand {
             Self::Check(command) => &command.path_options,
             Self::Diff(command) => &command.path_options,
             Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
+impl TerminalSupportBundleCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalSupportBundleParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--support-bundle" => {
+                    if inline_value.is_some() {
+                        bail!("--support-bundle does not accept a value");
+                    }
+                    parser.mode_name("--support-bundle")?;
+                }
+                "--support-bundle-dir" => {
+                    parser.bundle_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_support_bundle_option = true;
+                }
+                "--support-bundle-format" => {
+                    parser.format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_support_bundle_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+}
+
+#[derive(Default)]
+struct TerminalSupportBundleParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_support_bundle_option: bool,
+    pre_support_bundle_arg: Option<String>,
+    bundle_dir: Option<PathBuf>,
+    format: Option<String>,
+}
+
+impl TerminalSupportBundleParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_support_bundle_option = true;
+        if let Some(arg) = &self.pre_support_bundle_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        self.mode = Some(flag);
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_support_bundle_option {
+            let mode = self.mode.unwrap_or("terminal support bundle command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_support_bundle_arg.is_none() {
+            self.pre_support_bundle_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalSupportBundleCommand>> {
+        if !self.seen_support_bundle_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--support-bundle") => {
+                let bundle_dir = self
+                    .bundle_dir
+                    .context("--support-bundle requires --support-bundle-dir")?;
+                Ok(Some(TerminalSupportBundleCommand {
+                    path_options,
+                    bundle_dir,
+                    format: parse_support_bundle_output_format(self.format.as_deref())?,
+                }))
+            }
+            Some(mode) => bail!("unsupported terminal support bundle mode: {mode}"),
+            None => {
+                if self.bundle_dir.is_some() {
+                    bail!("--support-bundle-dir requires --support-bundle");
+                }
+                if self.format.is_some() {
+                    bail!("--support-bundle-format requires --support-bundle");
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -8741,6 +8922,18 @@ fn main() {
         }
     }
 
+    match TerminalSupportBundleCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_support_bundle_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalStartupConfigFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_startup_config_file_command(command);
@@ -9315,6 +9508,40 @@ fn run_terminal_config_bundle_command(command: TerminalConfigBundleCommand) {
                     .expect("failed to flush terminal config bundle output"),
                 Err(error) => {
                     eprintln!("failed to manage terminal config bundle: {error:#}");
+                    io::stderr().flush().ok();
+                    cx.quit();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
+}
+
+fn run_terminal_support_bundle_command(command: TerminalSupportBundleCommand) {
+    if let Err(error) = install_terminal_paths(&command.path_options) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match generate_support_bundle(
+                env!("CARGO_PKG_VERSION"),
+                &command.path_options,
+                &command.bundle_dir,
+                cx,
+            )
+            .and_then(|report| format_support_bundle_report(&report, command.format))
+            {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush terminal support bundle output");
+                }
+                Err(error) => {
+                    eprintln!("failed to generate terminal support bundle: {error:#}");
                     io::stderr().flush().ok();
                     cx.quit();
                     process::exit(2);
@@ -10590,6 +10817,212 @@ fn restore_config_bundle(
     })
 }
 
+fn generate_support_bundle(
+    version: &str,
+    path_options: &TerminalPathOptions,
+    bundle_dir: &Path,
+    cx: &mut App,
+) -> Result<TerminalSupportBundleReport> {
+    reject_support_bundle_target(path_options, bundle_dir)?;
+    ensure_support_bundle_directory_is_safe(bundle_dir)?;
+    std_fs::create_dir_all(bundle_dir).with_context(|| {
+        format!(
+            "failed to create terminal support bundle directory {}",
+            bundle_dir.display()
+        )
+    })?;
+
+    let path_report = terminal_path_report(path_options);
+    let doctor_report = diagnose_terminal(path_options, cx);
+    let support_info = format_terminal_support_info(version, &path_report, &doctor_report);
+    let diagnostics = format_doctor_report_json(&doctor_report)?;
+    let paths = format_terminal_paths_json(&path_report)?;
+    let file_metadata = format_support_bundle_file_metadata_json(&path_report)?;
+    let readme = format_support_bundle_readme();
+
+    let support_info_file = bundle_dir.join(TERMINAL_SUPPORT_INFO_REPORT_FILE);
+    let diagnostics_file = bundle_dir.join(TERMINAL_DIAGNOSTICS_REPORT_FILE);
+    let paths_file = bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_PATHS_FILE);
+    let file_metadata_file = bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE);
+    let readme_file = bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_README_FILE);
+    let manifest_file = bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE);
+
+    write_support_bundle_file(&support_info_file, &support_info)?;
+    write_support_bundle_file(&diagnostics_file, &diagnostics)?;
+    write_support_bundle_file(&paths_file, &paths)?;
+    write_support_bundle_file(&file_metadata_file, &file_metadata)?;
+    write_support_bundle_file(&readme_file, &readme)?;
+
+    let diagnostics_status = if doctor_report.has_errors() {
+        TerminalSupportBundleDiagnosticsStatus::Error
+    } else {
+        TerminalSupportBundleDiagnosticsStatus::Ok
+    };
+    let mut files = vec![
+        support_bundle_file_report("support_info", &support_info_file)?,
+        support_bundle_file_report("diagnostics", &diagnostics_file)?,
+        support_bundle_file_report("paths", &paths_file)?,
+        support_bundle_file_report("file_metadata", &file_metadata_file)?,
+        support_bundle_file_report("readme", &readme_file)?,
+    ];
+    let manifest = format_support_bundle_manifest_json(
+        version,
+        bundle_dir,
+        diagnostics_status,
+        &path_report,
+        &files,
+    )?;
+    write_support_bundle_file(&manifest_file, &manifest)?;
+    files.push(support_bundle_file_report("manifest", &manifest_file)?);
+    let manifest_byte_count = files
+        .iter()
+        .find(|file| file.label == "manifest")
+        .map(|file| file.byte_count)
+        .context("support bundle manifest file report was not recorded")?;
+
+    Ok(TerminalSupportBundleReport {
+        bundle_dir: bundle_dir.to_path_buf(),
+        manifest_file,
+        manifest_byte_count,
+        diagnostics_status,
+        files,
+    })
+}
+
+fn reject_support_bundle_target(
+    path_options: &TerminalPathOptions,
+    bundle_dir: &Path,
+) -> Result<()> {
+    let candidate = normalize_path_for_comparison(bundle_dir)?;
+    for config_path in [
+        path_options.config_dir.join("settings.json"),
+        path_options.config_dir.join("global_settings.json"),
+        terminal_startup_config_file(&path_options.config_dir),
+        path_options.config_dir.join("keymap.json"),
+    ] {
+        if paths_refer_to_same_file(&config_path, bundle_dir)? {
+            bail!(
+                "support bundle directory {} must be different from terminal config file {}",
+                bundle_dir.display(),
+                config_path.display()
+            );
+        }
+    }
+
+    for root in [&path_options.config_dir, &path_options.data_dir] {
+        let root = normalize_path_for_comparison(root)?;
+        if root == candidate {
+            bail!(
+                "support bundle directory {} must not replace terminal path root {}",
+                bundle_dir.display(),
+                root.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_support_bundle_directory_is_safe(bundle_dir: &Path) -> Result<()> {
+    match std_fs::metadata(bundle_dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => bail!(
+            "support bundle target {} exists but is not a directory",
+            bundle_dir.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal support bundle directory {}",
+                    bundle_dir.display()
+                )
+            });
+        }
+    }
+
+    let allowed_entries = BTreeSet::from([
+        TERMINAL_SUPPORT_INFO_REPORT_FILE,
+        TERMINAL_DIAGNOSTICS_REPORT_FILE,
+        TERMINAL_SUPPORT_BUNDLE_PATHS_FILE,
+        TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE,
+        TERMINAL_SUPPORT_BUNDLE_README_FILE,
+        TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE,
+    ]);
+    for entry in std_fs::read_dir(bundle_dir).with_context(|| {
+        format!(
+            "failed to read terminal support bundle directory {}",
+            bundle_dir.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to read entry in terminal support bundle directory {}",
+                bundle_dir.display()
+            )
+        })?;
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            bail!(
+                "support bundle directory {} contains a non-UTF-8 entry",
+                bundle_dir.display()
+            );
+        };
+        if !allowed_entries.contains(file_name) {
+            bail!(
+                "support bundle directory {} contains unexpected entry {}; choose an empty directory",
+                bundle_dir.display(),
+                file_name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_path_for_comparison(path: &Path) -> Result<PathBuf> {
+    if let Ok(path) = dunce::canonicalize(path) {
+        return Ok(path);
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .with_context(|| format!("failed to resolve current directory for {}", path.display()))?
+            .join(path)
+    };
+
+    if let Some(parent) = absolute.parent()
+        && let Ok(parent) = dunce::canonicalize(parent)
+    {
+        return Ok(parent.join(absolute.file_name().unwrap_or_default()));
+    }
+
+    Ok(absolute)
+}
+
+fn write_support_bundle_file(path: &Path, content: &str) -> Result<()> {
+    std_fs::write(path, content)
+        .with_context(|| format!("failed to write support bundle file {}", path.display()))
+}
+
+fn support_bundle_file_report(
+    label: &'static str,
+    path: &Path,
+) -> Result<TerminalSupportBundleFileReport> {
+    let metadata = std_fs::metadata(path)
+        .with_context(|| format!("failed to inspect support bundle file {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("support bundle path {} is not a file", path.display());
+    }
+    Ok(TerminalSupportBundleFileReport {
+        label,
+        path: path.to_path_buf(),
+        byte_count: metadata.len(),
+    })
+}
+
 fn print_keymap_backup(
     backup_file: &Path,
     format: TerminalKeymapBackupOutputFormat,
@@ -11032,6 +11465,16 @@ fn parse_config_bundle_output_format(
         "text" => Ok(TerminalConfigBundleOutputFormat::Text),
         "json" => Ok(TerminalConfigBundleOutputFormat::Json),
         format => bail!("unsupported {flag} {format:?}; expected text or json"),
+    }
+}
+
+fn parse_support_bundle_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSupportBundleOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSupportBundleOutputFormat::Text),
+        "json" => Ok(TerminalSupportBundleOutputFormat::Json),
+        format => bail!("unsupported --support-bundle-format {format:?}; expected text or json"),
     }
 }
 
@@ -19459,6 +19902,242 @@ fn format_terminal_support_info(
     output
 }
 
+fn format_support_bundle_report(
+    report: &TerminalSupportBundleReport,
+    format: TerminalSupportBundleOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalSupportBundleOutputFormat::Text => Ok(format_support_bundle_text(report)),
+        TerminalSupportBundleOutputFormat::Json => format_support_bundle_json(report),
+    }
+}
+
+fn format_support_bundle_text(report: &TerminalSupportBundleReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "bundle_dir: {}", report.bundle_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "manifest_file: {}",
+        report.manifest_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "manifest_bytes: {}",
+        report.manifest_byte_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "diagnostics_status: {}",
+        report.diagnostics_status.as_str()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "file_count: {}", report.files.len())
+        .expect("writing to string should not fail");
+    for file in &report.files {
+        writeln!(
+            &mut output,
+            "{}: {} bytes {}",
+            file.label,
+            file.byte_count,
+            file.path.display()
+        )
+        .expect("writing to string should not fail");
+    }
+    output
+}
+
+fn format_support_bundle_json(report: &TerminalSupportBundleReport) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "format": TERMINAL_SUPPORT_BUNDLE_FORMAT,
+        "version": TERMINAL_SUPPORT_BUNDLE_VERSION,
+        "bundle_dir": report.bundle_dir.display().to_string(),
+        "manifest_file": report.manifest_file.display().to_string(),
+        "manifest_byte_count": report.manifest_byte_count,
+        "diagnostics_status": report.diagnostics_status.as_str(),
+        "file_count": report.files.len(),
+        "files": report.files
+            .iter()
+            .map(support_bundle_file_report_json)
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal support bundle report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_support_bundle_manifest_json(
+    version: &str,
+    bundle_dir: &Path,
+    diagnostics_status: TerminalSupportBundleDiagnosticsStatus,
+    paths: &TerminalPathReport,
+    files: &[TerminalSupportBundleFileReport],
+) -> Result<String> {
+    let value = serde_json::json!({
+        "format": TERMINAL_SUPPORT_BUNDLE_FORMAT,
+        "version": TERMINAL_SUPPORT_BUNDLE_VERSION,
+        "app_name": TERMINAL_APP_NAME,
+        "package_name": env!("CARGO_PKG_NAME"),
+        "package_version": version,
+        "target_os": env::consts::OS,
+        "target_arch": env::consts::ARCH,
+        "debug_assertions": cfg!(debug_assertions),
+        "bundle_dir": bundle_dir.display().to_string(),
+        "diagnostics_status": diagnostics_status.as_str(),
+        "path_mode": paths.mode.as_str(),
+        "redaction": {
+            "includes_raw_config_contents": false,
+            "includes_raw_log_contents": false,
+            "includes_environment_values": false,
+            "file_metadata_only": true,
+        },
+        "files": files
+            .iter()
+            .map(support_bundle_file_report_json)
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal support bundle manifest as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn support_bundle_file_report_json(file: &TerminalSupportBundleFileReport) -> serde_json::Value {
+    serde_json::json!({
+        "label": file.label,
+        "path": file.path.display().to_string(),
+        "byte_count": file.byte_count,
+    })
+}
+
+fn format_support_bundle_file_metadata_json(paths: &TerminalPathReport) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "redaction": {
+            "includes_raw_file_contents": false,
+            "includes_environment_values": false,
+        },
+        "files": support_bundle_metadata_paths(paths)
+            .into_iter()
+            .map(|(label, path)| support_bundle_metadata_entry(label, path))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal support bundle file metadata as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn support_bundle_metadata_paths(paths: &TerminalPathReport) -> Vec<(&'static str, PathBuf)> {
+    vec![
+        ("settings_file", paths.settings_file.clone()),
+        ("global_settings_file", paths.global_settings_file.clone()),
+        ("startup_config_file", paths.startup_config_file.clone()),
+        (
+            "startup_config_schema_file",
+            paths.startup_config_schema_file.clone(),
+        ),
+        ("keymap_file", paths.keymap_file.clone()),
+        ("keymap_schema_file", paths.keymap_schema_file.clone()),
+        (
+            "default_keymap_reference_file",
+            paths.default_keymap_reference_file.clone(),
+        ),
+        ("themes_dir", paths.themes_dir.clone()),
+        ("log_file", paths.log_file.clone()),
+        (
+            "old_log_file",
+            paths.logs_dir.join(format!("{TERMINAL_APP_NAME}.log.old")),
+        ),
+        ("logs_dir", paths.logs_dir.clone()),
+        ("config_dir", paths.config_dir.clone()),
+        ("data_dir", paths.data_dir.clone()),
+    ]
+}
+
+fn support_bundle_metadata_entry(label: &'static str, path: PathBuf) -> serde_json::Value {
+    match std_fs::metadata(&path) {
+        Ok(metadata) => serde_json::json!({
+            "label": label,
+            "path": path.display().to_string(),
+            "exists": true,
+            "kind": if metadata.is_file() {
+                "file"
+            } else if metadata.is_dir() {
+                "directory"
+            } else {
+                "other"
+            },
+            "byte_count": if metadata.is_file() { Some(metadata.len()) } else { None },
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({
+            "label": label,
+            "path": path.display().to_string(),
+            "exists": false,
+            "kind": "missing",
+            "byte_count": null,
+        }),
+        Err(error) => serde_json::json!({
+            "label": label,
+            "path": path.display().to_string(),
+            "exists": null,
+            "kind": "error",
+            "byte_count": null,
+            "message": error.to_string(),
+        }),
+    }
+}
+
+fn format_support_bundle_readme() -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "{TERMINAL_APP_NAME} Support Bundle")
+        .expect("writing to string should not fail");
+    writeln!(&mut output).expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "This directory contains redacted diagnostics generated by zed-terminal."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "It intentionally does not include raw config files, raw log contents, shell environment values, or terminal buffer contents."
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output).expect("writing to string should not fail");
+    writeln!(&mut output, "Files:").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "- {TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE}: support bundle manifest and redaction policy."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "- {TERMINAL_SUPPORT_INFO_REPORT_FILE}: plain-text support summary."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "- {TERMINAL_DIAGNOSTICS_REPORT_FILE}: machine-readable diagnostics."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "- {TERMINAL_SUPPORT_BUNDLE_PATHS_FILE}: resolved standalone path report."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "- {TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE}: file existence and byte counts only."
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
 fn write_prefixed_lines(output: &mut String, text: &str, prefix: &str) {
     for line in text.lines() {
         writeln!(output, "{prefix}{line}").expect("writing to string should not fail");
@@ -21225,6 +21904,10 @@ fn active_terminal_support_info_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SUPPORT_INFO_REPORT_FILE)
 }
 
+fn active_terminal_support_bundle_dir() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_SUPPORT_BUNDLE_DIR)
+}
+
 fn active_terminal_startup_description_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
 }
@@ -21343,6 +22026,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_data_directory);
     cx.on_action(open_diagnostics_report);
     cx.on_action(open_support_info_report);
+    cx.on_action(open_support_bundle_directory);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
     cx.on_action(open_settings_validation_report);
@@ -21586,6 +22270,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenLogFile>(),
         TerminalActionSurface::new::<OpenLogsDirectory>(),
         TerminalActionSurface::new::<OpenProfileDescriptionReport>(),
+        TerminalActionSurface::new::<OpenSupportBundleDirectory>(),
         TerminalActionSurface::new::<OpenSupportInfoReport>(),
         TerminalActionSurface::new::<OpenSettingsValidationReport>(),
         TerminalActionSurface::new::<OpenStartupConfigFile>(),
@@ -22295,6 +22980,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
+        MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
         MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
         MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
@@ -23226,6 +23912,21 @@ fn open_support_info_report(_: &OpenSupportInfoReport, cx: &mut App) {
     }
 
     cx.open_with_system(&support_info_report_file);
+}
+
+fn open_support_bundle_directory(_: &OpenSupportBundleDirectory, cx: &mut App) {
+    let support_bundle_dir = active_terminal_support_bundle_dir();
+    if let Err(error) = generate_support_bundle(
+        env!("CARGO_PKG_VERSION"),
+        &active_terminal_path_options(),
+        &support_bundle_dir,
+        cx,
+    ) {
+        log::warn!("failed to generate support bundle directory: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&support_bundle_dir);
 }
 
 fn open_startup_config_validation_report(_: &OpenStartupConfigValidationReport, cx: &mut App) {
@@ -24260,6 +24961,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
         assert_command_palette_action_visible(&filter, &OpenSupportInfoReport);
+        assert_command_palette_action_visible(&filter, &OpenSupportBundleDirectory);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
         assert_command_palette_action_visible(&filter, &OpenSettingsValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
@@ -25475,6 +26177,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Support Bundle Directory",
+            "zed_terminal::OpenSupportBundleDirectory",
+        );
+        assert_menu_action(
+            &items,
             "Copy Support Info",
             "zed_terminal::CopySupportInfoToClipboard",
         );
@@ -26344,6 +27051,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenSupportInfoReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_support_bundle_directory_action_input() {
+        let action =
+            <OpenSupportBundleDirectory as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open support bundle directory action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSupportBundleDirectory>()
                 .is_some()
         );
     }
@@ -29292,6 +30013,132 @@ mod tests {
         assert!(report_text.starts_with("Zed Terminal Support Info\n"));
         assert!(report_text.contains("version: 1.2.3\n"));
         assert!(report_text.contains("diagnostics:\n"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn generates_redacted_support_bundle_directory(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let data_dir = root_dir.join("data");
+        let config_dir = root_dir.join("config");
+        let logs_dir = data_dir.join("logs");
+        let bundle_dir = root_dir.join("support-bundle");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::create_dir_all(&logs_dir).expect("failed to create logs dir");
+
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ \"env\": { \"SECRET_TOKEN\": \"do-not-log-startup-secret\" } }\n",
+        )
+        .expect("failed to write startup config");
+        std_fs::write(
+            config_dir.join("keymap.json"),
+            r#"[{ "bindings": { "ctrl-shift-x": "zed_terminal::NewTerminalTab" } }]"#,
+        )
+        .expect("failed to write keymap");
+        std_fs::write(
+            config_dir.join("settings.json"),
+            "{\n  // do-not-log-settings-secret\n}\n",
+        )
+        .expect("failed to write settings");
+        std_fs::write(config_dir.join("global_settings.json"), "{}\n")
+            .expect("failed to write global settings");
+        std_fs::write(
+            logs_dir.join(format!("{TERMINAL_APP_NAME}.log")),
+            "do-not-log-log-secret\n",
+        )
+        .expect("failed to write log file");
+
+        let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
+            data_dir: data_dir.clone(),
+            config_dir: config_dir.clone(),
+        };
+        let report = generate_support_bundle("9.8.7", &path_options, &bundle_dir, cx)
+            .expect("support bundle should generate");
+
+        assert_eq!(report.bundle_dir, bundle_dir);
+        assert_eq!(
+            report.diagnostics_status,
+            TerminalSupportBundleDiagnosticsStatus::Ok
+        );
+        assert_eq!(report.files.len(), 6);
+        assert!(report.manifest_byte_count > 0);
+
+        for file_name in [
+            TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE,
+            TERMINAL_SUPPORT_INFO_REPORT_FILE,
+            TERMINAL_DIAGNOSTICS_REPORT_FILE,
+            TERMINAL_SUPPORT_BUNDLE_PATHS_FILE,
+            TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE,
+            TERMINAL_SUPPORT_BUNDLE_README_FILE,
+        ] {
+            assert!(
+                bundle_dir.join(file_name).is_file(),
+                "support bundle should include {file_name}"
+            );
+        }
+
+        let manifest_text =
+            std_fs::read_to_string(bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE))
+                .expect("failed to read support bundle manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest_text).expect("manifest should parse as json");
+        assert_eq!(manifest["format"], TERMINAL_SUPPORT_BUNDLE_FORMAT);
+        assert_eq!(manifest["version"], TERMINAL_SUPPORT_BUNDLE_VERSION);
+        assert_eq!(manifest["package_version"], "9.8.7");
+        assert_eq!(manifest["redaction"]["includes_raw_config_contents"], false);
+        assert_eq!(manifest["redaction"]["includes_raw_log_contents"], false);
+        assert_eq!(manifest["redaction"]["includes_environment_values"], false);
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 5);
+
+        let metadata_text =
+            std_fs::read_to_string(bundle_dir.join(TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE))
+                .expect("failed to read support bundle metadata");
+        let metadata: serde_json::Value =
+            serde_json::from_str(&metadata_text).expect("metadata should parse as json");
+        assert_eq!(metadata["redaction"]["includes_raw_file_contents"], false);
+        assert!(metadata["files"].as_array().unwrap().iter().any(|file| {
+            file["label"] == "startup_config_file"
+                && file["exists"] == true
+                && file["byte_count"].as_u64().unwrap() > 0
+        }));
+
+        let combined_bundle_text = std_fs::read_dir(&bundle_dir)
+            .expect("failed to read bundle dir")
+            .map(|entry| {
+                let path = entry.expect("failed to read bundle entry").path();
+                std_fs::read_to_string(path).expect("failed to read bundle file")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!combined_bundle_text.contains("do-not-log-startup-secret"));
+        assert!(!combined_bundle_text.contains("do-not-log-settings-secret"));
+        assert!(!combined_bundle_text.contains("do-not-log-log-secret"));
+
+        let output = format_support_bundle_report(&report, TerminalSupportBundleOutputFormat::Json)
+            .expect("support bundle report should format as json");
+        let output_json: serde_json::Value =
+            serde_json::from_str(&output).expect("support bundle output should parse");
+        assert_eq!(output_json["status"], "ok");
+        assert_eq!(output_json["diagnostics_status"], "ok");
+        assert_eq!(output_json["file_count"], 6);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn support_bundle_directory_rejects_unexpected_existing_entries() {
+        let root_dir = temp_test_dir();
+        let bundle_dir = root_dir.join("support-bundle");
+        std_fs::create_dir_all(&bundle_dir).expect("failed to create support bundle dir");
+        std_fs::write(bundle_dir.join("user-note.txt"), "keep me\n")
+            .expect("failed to write unexpected file");
+
+        let error = ensure_support_bundle_directory_is_safe(&bundle_dir)
+            .expect_err("unexpected existing support bundle entry should be rejected");
+        assert!(format!("{error:#}").contains("contains unexpected entry"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -41017,6 +41864,18 @@ mod tests {
         assert!(help.contains("--import-profile <NAME> --import-profile-file <FILE>"));
         assert!(help.contains("--replace-profile"));
         assert!(help.contains("--import-profile-format <text|json>"));
+        assert!(help.contains("Config bundle backup and restore options:"));
+        assert!(help.contains("--backup-config-bundle --backup-config-bundle-file <FILE>"));
+        assert!(help.contains("--backup-config-bundle-format <text|json>"));
+        assert!(help.contains("--check-config-bundle --check-config-bundle-file <FILE>"));
+        assert!(help.contains("--check-config-bundle-format <text|json>"));
+        assert!(help.contains("--diff-config-bundle --diff-config-bundle-file <FILE>"));
+        assert!(help.contains("--diff-config-bundle-format <text|json>"));
+        assert!(help.contains("--restore-config-bundle --restore-config-bundle-file <FILE>"));
+        assert!(help.contains("--restore-config-bundle-format <text|json>"));
+        assert!(help.contains("Support bundle options:"));
+        assert!(help.contains("--support-bundle --support-bundle-dir <DIR>"));
+        assert!(help.contains("--support-bundle-format <text|json>"));
         assert!(help.contains("Startup config backup and restore options:"));
         assert!(help.contains("--backup-startup-config --backup-startup-config-file <FILE>"));
         assert!(help.contains("--backup-startup-config-format <text|json>"));
@@ -41439,6 +42298,101 @@ mod tests {
         assert!(format!("{error:#}").contains("--check-config-bundle-file"));
 
         std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn support_bundle_format_json_is_carried_through_cli_resolution() {
+        let data_dir = PathBuf::from("data");
+        let config_dir = PathBuf::from("config");
+        let bundle_dir = PathBuf::from("support-bundle");
+
+        let command = TerminalSupportBundleCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--support-bundle",
+            "--support-bundle-dir",
+            bundle_dir.to_str().unwrap(),
+            "--support-bundle-format",
+            "json",
+        ])
+        .expect("support bundle json mode should parse")
+        .expect("support bundle json mode should resolve");
+
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.bundle_dir, bundle_dir);
+        assert_eq!(command.format, TerminalSupportBundleOutputFormat::Json);
+    }
+
+    #[test]
+    fn support_bundle_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        let bundle_dir = data_dir.join("support-bundle");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalSupportBundleCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--support-bundle",
+            "--support-bundle-dir",
+            bundle_dir.to_str().unwrap(),
+        ])
+        .expect("support bundle should not load terminal.json")
+        .expect("expected support bundle command");
+
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.bundle_dir, bundle_dir);
+        assert_eq!(command.format, TerminalSupportBundleOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn support_bundle_rejects_startup_only_and_other_bundle_arguments() {
+        let error = TerminalSupportBundleCommand::from_args([
+            "zed-terminal",
+            "--support-bundle-format",
+            "json",
+        ])
+        .expect_err("support bundle format should require support bundle mode");
+        assert!(format!("{error:#}").contains("--support-bundle-format requires --support-bundle"));
+
+        let error = TerminalSupportBundleCommand::from_args([
+            "zed-terminal",
+            "--support-bundle",
+            "--support-bundle-dir",
+            "support-bundle",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with support bundle");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalSupportBundleCommand::from_args([
+            "zed-terminal",
+            "--support-bundle",
+            "--support-bundle-dir",
+            "support-bundle",
+            "--",
+            "cmd",
+        ])
+        .expect_err("startup command should conflict with support bundle");
+        assert!(format!("{error:#}").contains("cannot be used with --"));
+
+        let error = TerminalSupportBundleCommand::from_args(["zed-terminal", "--support-bundle"])
+            .expect_err("support bundle should require bundle directory");
+        assert!(format!("{error:#}").contains("--support-bundle-dir"));
     }
 
     #[test]

@@ -522,6 +522,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
         $manifest.validation.config_bundle -ne "ok" -or
+        $manifest.validation.support_bundle -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
@@ -533,9 +534,10 @@ function Read-PackageSmokeSummary {
         $summary.validation.portable_paths -ne "ok" -or
         $summary.validation.settings_validation -ne "ok" -or
         $summary.validation.settings_backup -ne "ok" -or
-        $summary.validation.config_bundle -ne "ok"
+        $summary.validation.config_bundle -ne "ok" -or
+        $summary.validation.support_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/settings validation/backup/config bundle status"
+        throw "package smoke summary did not report expected path/version/settings validation/backup/config bundle/support bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
@@ -1081,6 +1083,9 @@ try {
                 "--diff-config-bundle-format <text\|json>",
                 "--restore-config-bundle --restore-config-bundle-file <FILE>",
                 "--restore-config-bundle-format <text\|json>",
+                "Support bundle options:",
+                "--support-bundle --support-bundle-dir <DIR>",
+                "--support-bundle-format <text\|json>",
                 "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
@@ -1203,6 +1208,72 @@ try {
                 "startup_config:",
                 "message:"
             )
+            $supportBundleDir = Join-Path $runDir "support-bundle"
+            Add-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value "`n// do-not-log-release-support-startup-secret"
+            Add-Content -LiteralPath (Join-Path $cliConfigDir "settings.json") -Value "`n// do-not-log-release-support-settings-secret"
+            New-Item -ItemType Directory -Force -Path (Join-Path $cliDataDir "logs") | Out-Null
+            Set-Content -LiteralPath (Join-Path (Join-Path $cliDataDir "logs") "Zed Terminal.log") -Value "do-not-log-release-support-log-secret" -Encoding utf8
+            $supportBundleJson = Invoke-NativeJsonCommandResult "support-bundle" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--support-bundle",
+                "--support-bundle-dir", $supportBundleDir,
+                "--support-bundle-format", "json"
+            )
+            if (
+                $supportBundleJson.status -ne "ok" -or
+                $supportBundleJson.format -ne "zed-terminal-support-bundle" -or
+                $supportBundleJson.bundle_dir -ne $supportBundleDir -or
+                $supportBundleJson.diagnostics_status -ne "ok" -or
+                $supportBundleJson.file_count -ne 6
+            ) {
+                throw "zed-terminal --support-bundle did not report expected release diagnostics"
+            }
+            $supportBundleManifestFile = Join-Path $supportBundleDir "zed-terminal-support-bundle.json"
+            $supportBundleMetadataFile = Join-Path $supportBundleDir "zed-terminal-file-metadata.json"
+            foreach ($file in @(
+                $supportBundleManifestFile,
+                $supportBundleMetadataFile,
+                (Join-Path $supportBundleDir "zed-terminal-support-info.txt"),
+                (Join-Path $supportBundleDir "zed-terminal-diagnostics.json"),
+                (Join-Path $supportBundleDir "zed-terminal-paths.json"),
+                (Join-Path $supportBundleDir "README.txt")
+            )) {
+                if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                    throw "zed-terminal --support-bundle did not write expected release file: $file"
+                }
+            }
+            $supportBundleManifest = Get-Content -LiteralPath $supportBundleManifestFile -Raw | ConvertFrom-Json
+            if (
+                $supportBundleManifest.redaction.includes_raw_config_contents -ne $false -or
+                $supportBundleManifest.redaction.includes_raw_log_contents -ne $false -or
+                $supportBundleManifest.redaction.includes_environment_values -ne $false -or
+                $supportBundleManifest.redaction.file_metadata_only -ne $true
+            ) {
+                throw "zed-terminal support bundle manifest did not report expected redaction policy"
+            }
+            $supportBundleMetadata = Get-Content -LiteralPath $supportBundleMetadataFile -Raw | ConvertFrom-Json
+            $supportBundleMetadataLabels = @($supportBundleMetadata.files | ForEach-Object { $_.label })
+            if (
+                $supportBundleMetadata.redaction.includes_raw_file_contents -ne $false -or
+                $supportBundleMetadataLabels -notcontains "startup_config_file" -or
+                $supportBundleMetadataLabels -notcontains "settings_file" -or
+                $supportBundleMetadataLabels -notcontains "log_file"
+            ) {
+                throw "zed-terminal support bundle metadata did not report expected file metadata"
+            }
+            $supportBundleText = Get-ChildItem -LiteralPath $supportBundleDir -File | ForEach-Object {
+                Get-Content -LiteralPath $_.FullName -Raw
+            } | Out-String
+            foreach ($secret in @(
+                "do-not-log-release-support-startup-secret",
+                "do-not-log-release-support-settings-secret",
+                "do-not-log-release-support-log-secret"
+            )) {
+                if ($supportBundleText.Contains($secret)) {
+                    throw "zed-terminal support bundle leaked release redaction fixture text: $secret"
+                }
+            }
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
