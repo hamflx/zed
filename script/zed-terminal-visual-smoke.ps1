@@ -2,8 +2,13 @@
 Param(
     [Parameter()][string]$Binary,
     [Parameter()][string]$OutputDir,
+    [Parameter()][string]$BaselineImage,
+    [Parameter()][string]$UpdateBaselineImage,
     [Parameter()][int]$StartupTimeoutSeconds = 20,
     [Parameter()][int]$CaptureDelaySeconds = 4,
+    [Parameter()][double]$MaxBaselineDifferentPixelRatio = 0.02,
+    [Parameter()][double]$MaxBaselineAverageChannelDelta = 2.0,
+    [Parameter()][int]$BaselinePixelTolerance = 4,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -20,11 +25,33 @@ if (-not $OutputDir) {
     $OutputDir = Join-Path $PSScriptRoot "..\target\zed-terminal-visual-smoke"
 }
 
+if ($BaselineImage -and $UpdateBaselineImage) {
+    throw "Use either -BaselineImage to compare against an existing baseline or -UpdateBaselineImage to write a new baseline, not both."
+}
+if ($MaxBaselineDifferentPixelRatio -lt 0 -or $MaxBaselineDifferentPixelRatio -gt 1) {
+    throw "-MaxBaselineDifferentPixelRatio must be between 0 and 1."
+}
+if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -gt 255) {
+    throw "-MaxBaselineAverageChannelDelta must be between 0 and 255."
+}
+if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
+    throw "-BaselinePixelTolerance must be between 0 and 255."
+}
+
 $Binary = [System.IO.Path]::GetFullPath($Binary)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
+if ($BaselineImage) {
+    $BaselineImage = [System.IO.Path]::GetFullPath($BaselineImage)
+}
+if ($UpdateBaselineImage) {
+    $UpdateBaselineImage = [System.IO.Path]::GetFullPath($UpdateBaselineImage)
+}
 
 if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
     throw "zed-terminal binary not found: $Binary. Build it first with: cargo +stable build -p zed_terminal --bin zed-terminal"
+}
+if ($BaselineImage -and -not (Test-Path -LiteralPath $BaselineImage -PathType Leaf)) {
+    throw "Baseline image not found: $BaselineImage"
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -324,6 +351,82 @@ function Get-ImageSampleStats {
     }
 }
 
+function Compare-ImageToBaseline {
+    param(
+        [Parameter(Mandatory = $true)][string]$ActualPath,
+        [Parameter(Mandatory = $true)][string]$BaselinePath,
+        [Parameter(Mandatory = $true)][string]$DiffPath,
+        [Parameter(Mandatory = $true)][int]$PixelTolerance
+    )
+
+    $actual = $null
+    $baseline = $null
+    $diff = $null
+    try {
+        $actual = [System.Drawing.Bitmap]::FromFile($ActualPath)
+        $baseline = [System.Drawing.Bitmap]::FromFile($BaselinePath)
+        if ($actual.Width -ne $baseline.Width -or $actual.Height -ne $baseline.Height) {
+            throw "Screenshot dimensions $($actual.Width)x$($actual.Height) do not match baseline dimensions $($baseline.Width)x$($baseline.Height)."
+        }
+
+        $diff = New-Object System.Drawing.Bitmap($actual.Width, $actual.Height)
+        $totalPixels = [int64]$actual.Width * [int64]$actual.Height
+        $differentPixels = [int64]0
+        $channelDeltaTotal = [double]0
+        $maxChannelDelta = 0
+
+        for ($y = 0; $y -lt $actual.Height; $y += 1) {
+            for ($x = 0; $x -lt $actual.Width; $x += 1) {
+                $actualColor = $actual.GetPixel($x, $y)
+                $baselineColor = $baseline.GetPixel($x, $y)
+                $redDelta = [Math]::Abs([int]$actualColor.R - [int]$baselineColor.R)
+                $greenDelta = [Math]::Abs([int]$actualColor.G - [int]$baselineColor.G)
+                $blueDelta = [Math]::Abs([int]$actualColor.B - [int]$baselineColor.B)
+                $alphaDelta = [Math]::Abs([int]$actualColor.A - [int]$baselineColor.A)
+                $pixelMaxDelta = [Math]::Max(
+                    [Math]::Max($redDelta, $greenDelta),
+                    [Math]::Max($blueDelta, $alphaDelta)
+                )
+
+                $maxChannelDelta = [Math]::Max($maxChannelDelta, $pixelMaxDelta)
+                $channelDeltaTotal += (($redDelta + $greenDelta + $blueDelta) / 3.0)
+
+                if ($pixelMaxDelta -gt $PixelTolerance) {
+                    $differentPixels += 1
+                    $diffIntensity = [Math]::Min(255, [Math]::Max(48, $pixelMaxDelta))
+                    $diff.SetPixel($x, $y, [System.Drawing.Color]::FromArgb(255, $diffIntensity, 0, 0))
+                } else {
+                    $diff.SetPixel($x, $y, [System.Drawing.Color]::FromArgb(255, 0, 0, 0))
+                }
+            }
+        }
+
+        $diff.Save($DiffPath, [System.Drawing.Imaging.ImageFormat]::Png)
+        return [PSCustomObject]@{
+            BaselineFile = $BaselinePath
+            DiffFile = $DiffPath
+            Width = $actual.Width
+            Height = $actual.Height
+            TotalPixels = $totalPixels
+            DifferentPixels = $differentPixels
+            DifferentPixelRatio = if ($totalPixels -eq 0) { 0 } else { [double]$differentPixels / [double]$totalPixels }
+            AverageChannelDelta = if ($totalPixels -eq 0) { 0 } else { $channelDeltaTotal / [double]$totalPixels }
+            MaxChannelDelta = $maxChannelDelta
+            PixelTolerance = $PixelTolerance
+        }
+    } finally {
+        if ($diff) {
+            $diff.Dispose()
+        }
+        if ($baseline) {
+            $baseline.Dispose()
+        }
+        if ($actual) {
+            $actual.Dispose()
+        }
+    }
+}
+
 $probeScript = @'
 $Host.UI.RawUI.WindowTitle = "zed-terminal-visual-smoke"
 Set-Content -LiteralPath __PROBE_READY_FILE__ -Value "ready"
@@ -375,6 +478,31 @@ try {
         throw "Screenshot appears blank or nearly blank: $($stats.UniqueColors) sampled colors."
     }
 
+    $baselineComparison = $null
+    $baselineUpdated = $false
+    if ($BaselineImage) {
+        $diffPath = Join-Path $runDir "zed-terminal-visual-smoke-diff.png"
+        $baselineComparison = Compare-ImageToBaseline `
+            -ActualPath $screenshotPath `
+            -BaselinePath $BaselineImage `
+            -DiffPath $diffPath `
+            -PixelTolerance $BaselinePixelTolerance
+
+        if (
+            $baselineComparison.DifferentPixelRatio -gt $MaxBaselineDifferentPixelRatio -or
+            $baselineComparison.AverageChannelDelta -gt $MaxBaselineAverageChannelDelta
+        ) {
+            throw "Screenshot differs from baseline: different_pixel_ratio=$($baselineComparison.DifferentPixelRatio) max=$MaxBaselineDifferentPixelRatio average_channel_delta=$($baselineComparison.AverageChannelDelta) max=$MaxBaselineAverageChannelDelta diff_file=$($baselineComparison.DiffFile)"
+        }
+    } elseif ($UpdateBaselineImage) {
+        $baselineParent = Split-Path -Parent $UpdateBaselineImage
+        if ($baselineParent) {
+            New-Item -ItemType Directory -Force -Path $baselineParent | Out-Null
+        }
+        Copy-Item -LiteralPath $screenshotPath -Destination $UpdateBaselineImage -Force
+        $baselineUpdated = $true
+    }
+
     Write-Output "status: ok"
     Write-Output "binary: $Binary"
     Write-Output "process_id: $($process.Id)"
@@ -387,6 +515,21 @@ try {
     Write-Output "screenshot_bytes: $($stats.FileBytes)"
     Write-Output "sampled_pixels: $($stats.SampledPixels)"
     Write-Output "sampled_unique_colors: $($stats.UniqueColors)"
+    if ($baselineComparison) {
+        Write-Output "baseline_file: $($baselineComparison.BaselineFile)"
+        Write-Output "baseline_diff_file: $($baselineComparison.DiffFile)"
+        Write-Output "baseline_pixels: $($baselineComparison.TotalPixels)"
+        Write-Output "baseline_different_pixels: $($baselineComparison.DifferentPixels)"
+        Write-Output "baseline_different_pixel_ratio: $($baselineComparison.DifferentPixelRatio)"
+        Write-Output "baseline_average_channel_delta: $($baselineComparison.AverageChannelDelta)"
+        Write-Output "baseline_max_channel_delta: $($baselineComparison.MaxChannelDelta)"
+        Write-Output "baseline_pixel_tolerance: $($baselineComparison.PixelTolerance)"
+        Write-Output "baseline_max_different_pixel_ratio: $MaxBaselineDifferentPixelRatio"
+        Write-Output "baseline_max_average_channel_delta: $MaxBaselineAverageChannelDelta"
+    }
+    if ($baselineUpdated) {
+        Write-Output "baseline_updated_file: $UpdateBaselineImage"
+    }
 } finally {
     if ($process -and -not $process.HasExited -and -not $KeepRunning) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
