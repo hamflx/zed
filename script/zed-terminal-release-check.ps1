@@ -443,6 +443,7 @@ try {
                 "--diff-keymap-backup-format <text\|json>",
                 "--restore-keymap --restore-keymap-file <FILE>",
                 "--restore-keymap-format <text\|json>",
+                "--print-keymap-schema",
                 "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -514,6 +515,20 @@ try {
             foreach ($propertyName in @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")) {
                 if (-not $startupSchema.properties.PSObject.Properties[$propertyName]) {
                     throw "Startup config schema is missing expected property '$propertyName'."
+                }
+            }
+            $keymapSchema = Invoke-NativeJsonCommandResult "print-keymap-schema" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--print-keymap-schema"
+            )
+            if ($keymapSchema.title -ne "KeymapFile" -or $keymapSchema.type -ne "array") {
+                throw "Keymap schema did not report the KeymapFile array contract."
+            }
+            $keymapSchemaText = $keymapSchema | ConvertTo-Json -Depth 100
+            foreach ($actionName in @("zed_terminal::NewTerminalTab", "zed_terminal::NewTerminalTabWithProfile", "terminal::Paste", "pane::CloseActiveItem")) {
+                if ($keymapSchemaText -notmatch [regex]::Escape($actionName)) {
+                    throw "Keymap schema is missing expected action '$actionName'."
                 }
             }
             $defaultKeymap = Invoke-NativeTextCommandResult "print-default-keymap" @(

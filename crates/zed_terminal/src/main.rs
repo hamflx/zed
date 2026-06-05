@@ -49,6 +49,7 @@ actions!(
         OpenStartupConfigFile,
         OpenStartupConfigSchemaFile,
         OpenKeymapFile,
+        OpenKeymapSchemaFile,
         OpenDefaultKeymapReferenceFile,
         OpenConfigDirectory,
         OpenDataDirectory,
@@ -146,6 +147,7 @@ const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
+const TERMINAL_KEYMAP_SCHEMA_FILE: &str = "keymap.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
@@ -215,6 +217,8 @@ Keymap backup and restore options:
           Restore keymap.json from a verified backup file without opening a terminal window
       --restore-keymap-format <text|json>
           Set the output format for --restore-keymap
+      --print-keymap-schema
+          Print the JSON Schema for keymap.json without opening a terminal window
 
 Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir and --config-dir only."
 )]
@@ -2888,6 +2892,11 @@ struct TerminalKeymapRestoreCommand {
     format: TerminalKeymapRestoreOutputFormat,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapSchemaCommand {
+    path_options: TerminalPathOptions,
+}
+
 #[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
@@ -2912,6 +2921,7 @@ struct TerminalPathReport {
     startup_config_schema_file: PathBuf,
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
+    keymap_schema_file: PathBuf,
     default_keymap_reference_file: PathBuf,
     themes_dir: PathBuf,
     log_file: PathBuf,
@@ -4853,6 +4863,112 @@ impl TerminalStartupConfigFileCommand {
     }
 }
 
+impl TerminalKeymapSchemaCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalKeymapSchemaParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            match flag {
+                "--user-data-dir" => {
+                    parser.user_data_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--config-dir" => {
+                    parser.config_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--print-keymap-schema" => {
+                    if inline_value.is_some() {
+                        bail!("--print-keymap-schema does not accept a value");
+                    }
+                    parser.mode_name("--print-keymap-schema")?;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        &self.path_options
+    }
+}
+
+#[derive(Default)]
+struct TerminalKeymapSchemaParser {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    mode: Option<&'static str>,
+    seen_keymap_schema_option: bool,
+    pre_keymap_schema_arg: Option<String>,
+}
+
+impl TerminalKeymapSchemaParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_keymap_schema_option = true;
+        if let Some(arg) = &self.pre_keymap_schema_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode {
+            if mode != flag {
+                bail!("{mode} cannot be used with {flag}");
+            }
+        }
+        self.mode = Some(flag);
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_keymap_schema_option {
+            let mode = self.mode.unwrap_or("terminal keymap schema command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_keymap_schema_arg.is_none() {
+            self.pre_keymap_schema_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalKeymapSchemaCommand>> {
+        if !self.seen_keymap_schema_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(
+            self.user_data_dir.as_deref(),
+            self.config_dir.as_deref(),
+        )
+        .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--print-keymap-schema") => Ok(Some(TerminalKeymapSchemaCommand { path_options })),
+            Some(mode) => bail!("unsupported terminal keymap schema mode: {mode}"),
+            None => Ok(None),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TerminalKeymapFileCommand {
     Backup(TerminalKeymapBackupCommand),
@@ -6253,6 +6369,18 @@ fn main() {
         }
     }
 
+    match TerminalKeymapSchemaCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_keymap_schema_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalKeymapFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_keymap_file_command(command);
@@ -6623,6 +6751,15 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
     }
 }
 
+fn run_terminal_keymap_schema_command(command: TerminalKeymapSchemaCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    run_keymap_schema_printing();
+}
+
 fn run_terminal_keymap_file_command(command: TerminalKeymapFileCommand) {
     if let Err(error) = install_terminal_paths(command.path_options()) {
         eprintln!("failed to run zed terminal: {error:#}");
@@ -6769,6 +6906,27 @@ fn run_keymap_validation(format: TerminalKeymapValidationOutputFormat) {
         });
 }
 
+fn run_keymap_schema_printing() {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match format_keymap_schema(cx) {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush keymap schema output");
+                }
+                Err(error) => {
+                    eprintln!("failed to print terminal keymap schema: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
+}
+
 fn format_keymap_validation_report(
     report: &TerminalKeymapValidationReport,
     format: TerminalKeymapValidationOutputFormat,
@@ -6858,6 +7016,7 @@ fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathRepor
         startup_config_schema_file: terminal_startup_config_schema_file(&path_options.config_dir),
         global_settings_file: path_options.config_dir.join("global_settings.json"),
         keymap_file: path_options.config_dir.join("keymap.json"),
+        keymap_schema_file: terminal_keymap_schema_file(&path_options.config_dir),
         default_keymap_reference_file: terminal_default_keymap_reference_file(
             &path_options.config_dir,
         ),
@@ -7547,6 +7706,7 @@ struct TerminalConfigFilePaths {
     settings_file: PathBuf,
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
+    keymap_schema_file: PathBuf,
     default_keymap_reference_file: PathBuf,
     startup_config_file: PathBuf,
     startup_config_schema_file: PathBuf,
@@ -7558,6 +7718,7 @@ impl TerminalConfigFilePaths {
             settings_file: path_options.config_dir.join("settings.json"),
             global_settings_file: path_options.config_dir.join("global_settings.json"),
             keymap_file: path_options.config_dir.join("keymap.json"),
+            keymap_schema_file: terminal_keymap_schema_file(&path_options.config_dir),
             default_keymap_reference_file: terminal_default_keymap_reference_file(
                 &path_options.config_dir,
             ),
@@ -11456,6 +11617,11 @@ fn diagnose_terminal_config_files(
             TerminalDoctorPathKind::File,
         ),
         diagnose_path(
+            "keymap_schema_file",
+            file_paths.keymap_schema_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
             "default_keymap_reference_file",
             file_paths.default_keymap_reference_file,
             TerminalDoctorPathKind::File,
@@ -13159,6 +13325,25 @@ fn write_default_keymap_reference_file(path: &Path) -> Result<()> {
     })
 }
 
+fn format_keymap_schema(cx: &mut App) -> Result<String> {
+    let schema = KeymapFile::generate_json_schema_for_registered_actions(cx);
+    let mut output =
+        serde_json::to_string_pretty(&schema).context("failed to serialize keymap schema")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn write_keymap_schema_file(path: &Path, cx: &mut App) -> Result<()> {
+    let schema = format_keymap_schema(cx)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    std_fs::write(path, schema)
+        .with_context(|| format!("failed to write keymap schema {}", path.display()))
+}
+
 fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> Result<()> {
     let report = format_doctor_report_json(report)?;
     if let Some(parent) = path.parent() {
@@ -13380,6 +13565,12 @@ fn format_terminal_paths(report: &TerminalPathReport) -> String {
         .expect("writing to string should not fail");
     writeln!(
         &mut output,
+        "keymap_schema_file: {}",
+        report.keymap_schema_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
         "default_keymap_reference_file: {}",
         report.default_keymap_reference_file.display()
     )
@@ -13434,6 +13625,7 @@ fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
         "startup_config_schema_file": report.startup_config_schema_file.display().to_string(),
         "global_settings_file": report.global_settings_file.display().to_string(),
         "keymap_file": report.keymap_file.display().to_string(),
+        "keymap_schema_file": report.keymap_schema_file.display().to_string(),
         "default_keymap_reference_file": report.default_keymap_reference_file.display().to_string(),
         "themes_dir": report.themes_dir.display().to_string(),
         "log_file": report.log_file.display().to_string(),
@@ -14978,6 +15170,14 @@ fn active_terminal_default_keymap_reference_file() -> PathBuf {
     terminal_default_keymap_reference_file(paths::config_dir())
 }
 
+fn terminal_keymap_schema_file(config_dir: &Path) -> PathBuf {
+    config_dir.join(TERMINAL_KEYMAP_SCHEMA_FILE)
+}
+
+fn active_terminal_keymap_schema_file() -> PathBuf {
+    terminal_keymap_schema_file(paths::config_dir())
+}
+
 fn active_terminal_diagnostics_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
 }
@@ -15086,6 +15286,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_config_file);
     cx.on_action(open_startup_config_schema_file);
     cx.on_action(open_keymap_file);
+    cx.on_action(open_keymap_schema_file);
     cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
@@ -15318,6 +15519,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenDataDirectory>(),
         TypeId::of::<OpenDefaultKeymapReferenceFile>(),
         TypeId::of::<OpenDiagnosticsReport>(),
+        TypeId::of::<OpenKeymapSchemaFile>(),
         TypeId::of::<OpenKeymapValidationReport>(),
         TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
@@ -15998,6 +16200,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupConfigValidationReport,
         ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+        MenuItem::action("Open Keymap Schema File", OpenKeymapSchemaFile),
         MenuItem::action(
             "Open Default Keymap Reference File",
             OpenDefaultKeymapReferenceFile,
@@ -16845,6 +17048,16 @@ fn open_keymap_file(_: &OpenKeymapFile, cx: &mut App) {
         return;
     }
     cx.open_with_system(paths::keymap_file());
+}
+
+fn open_keymap_schema_file(_: &OpenKeymapSchemaFile, cx: &mut App) {
+    let keymap_schema_file = active_terminal_keymap_schema_file();
+    if let Err(error) = write_keymap_schema_file(&keymap_schema_file, cx) {
+        log::warn!("failed to write keymap schema file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&keymap_schema_file);
 }
 
 fn open_default_keymap_reference_file(_: &OpenDefaultKeymapReferenceFile, cx: &mut App) {
@@ -21323,6 +21536,57 @@ mod tests {
         std_fs::remove_dir_all(root_dir).ok();
     }
 
+    #[gpui::test]
+    fn formats_keymap_schema(cx: &mut App) {
+        let schema = format_keymap_schema(cx).expect("keymap schema should format");
+        let schema_json: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema).expect("keymap schema should parse as json");
+
+        assert_eq!(schema_json["title"], "KeymapFile");
+        assert_eq!(schema_json["type"], "array");
+        assert!(schema.ends_with('\n'));
+
+        for action_name in [
+            "zed_terminal::NewTerminalTab",
+            "zed_terminal::NewTerminalTabWithProfile",
+            "terminal::Paste",
+            "pane::CloseActiveItem",
+        ] {
+            assert!(
+                schema.contains(action_name),
+                "keymap schema should include {action_name}: {schema}"
+            );
+        }
+
+        assert!(
+            schema.contains("\"profile\""),
+            "profile action input schema should be included: {schema}"
+        );
+    }
+
+    #[gpui::test]
+    fn writes_keymap_schema_file_by_refreshing_existing_content(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let schema_file = root_dir.join("config").join("keymap.schema.json");
+        std_fs::create_dir_all(schema_file.parent().unwrap()).expect("failed to create config dir");
+        std_fs::write(&schema_file, "{ stale schema }\n").expect("failed to write stale schema");
+
+        write_keymap_schema_file(&schema_file, cx).expect("keymap schema file should write");
+
+        let schema_text =
+            std_fs::read_to_string(&schema_file).expect("failed to read keymap schema file");
+        let schema_json: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema_text).expect("schema file should parse as json");
+        assert_eq!(schema_json["title"], "KeymapFile");
+        assert!(
+            schema_text.contains("zed_terminal::NewTerminalTab"),
+            "schema file should include standalone terminal actions: {schema_text}"
+        );
+        assert_ne!(schema_text, "{ stale schema }\n");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
     #[test]
     fn writes_diagnostics_report_file_as_doctor_json() {
         let root_dir = temp_test_dir();
@@ -21617,6 +21881,7 @@ mod tests {
                 "startup_config_schema_file: terminal.schema.json\n",
                 "global_settings_file: global-settings.json\n",
                 "keymap_file: keymap.json\n",
+                "keymap_schema_file: keymap.schema.json\n",
                 "default_keymap_reference_file: default-keymap.json\n",
                 "themes_dir: themes\n",
                 "log_file: zed-terminal.log\n",
@@ -21639,6 +21904,7 @@ mod tests {
         assert_eq!(json["startup_config_schema_file"], "terminal.schema.json");
         assert_eq!(json["global_settings_file"], "global-settings.json");
         assert_eq!(json["keymap_file"], "keymap.json");
+        assert_eq!(json["keymap_schema_file"], "keymap.schema.json");
         assert_eq!(json["default_keymap_reference_file"], "default-keymap.json");
         assert_eq!(json["themes_dir"], "themes");
         assert_eq!(json["log_file"], "zed-terminal.log");
@@ -21676,6 +21942,10 @@ mod tests {
         assert_eq!(
             report.keymap_file,
             PathBuf::from("config-root").join("keymap.json")
+        );
+        assert_eq!(
+            report.keymap_schema_file,
+            PathBuf::from("config-root").join(TERMINAL_KEYMAP_SCHEMA_FILE)
         );
         assert_eq!(
             report.default_keymap_reference_file,
@@ -21716,6 +21986,7 @@ mod tests {
                 "  startup_config_schema_file: terminal.schema.json\n",
                 "  global_settings_file: global-settings.json\n",
                 "  keymap_file: keymap.json\n",
+                "  keymap_schema_file: keymap.schema.json\n",
                 "  default_keymap_reference_file: default-keymap.json\n",
                 "  themes_dir: themes\n",
                 "  log_file: zed-terminal.log\n",
@@ -23534,6 +23805,7 @@ mod tests {
             startup_config_schema_file: PathBuf::from("terminal.schema.json"),
             global_settings_file: PathBuf::from("global-settings.json"),
             keymap_file: PathBuf::from("keymap.json"),
+            keymap_schema_file: PathBuf::from("keymap.schema.json"),
             default_keymap_reference_file: PathBuf::from("default-keymap.json"),
             themes_dir: PathBuf::from("themes"),
             log_file: PathBuf::from("zed-terminal.log"),
@@ -23740,6 +24012,7 @@ mod tests {
         let settings_file = config_dir.join("settings.json");
         let global_settings_file = config_dir.join("global_settings.json");
         let keymap_file = config_dir.join("keymap.json");
+        let keymap_schema_file = config_dir.join("keymap.schema.json");
         let default_keymap_reference_file = config_dir.join("default-keymap.json");
         let startup_config_file = config_dir.join("terminal.json");
         let startup_config_schema_file = config_dir.join("terminal.schema.json");
@@ -23750,6 +24023,7 @@ mod tests {
             settings_file: settings_file.clone(),
             global_settings_file: global_settings_file.clone(),
             keymap_file: keymap_file.clone(),
+            keymap_schema_file: keymap_schema_file.clone(),
             default_keymap_reference_file: default_keymap_reference_file.clone(),
             startup_config_file: startup_config_file.clone(),
             startup_config_schema_file: startup_config_schema_file.clone(),
@@ -30921,6 +31195,32 @@ mod tests {
     }
 
     #[test]
+    fn print_keymap_schema_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--print-keymap-schema",
+        ])
+        .expect("keymap schema mode should parse")
+        .expect("keymap schema mode should resolve");
+
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn print_default_keymap_mode_does_not_load_startup_config_file() {
         let data_dir = temp_test_dir();
         let config_dir = data_dir.join("config");
@@ -36523,6 +36823,93 @@ mod tests {
         ])
         .expect_err("hidden profile listing should conflict with schema printing");
         assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn print_keymap_schema_rejects_startup_only_arguments() {
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command-directory"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--",
+            "cmd",
+        ])
+        .expect_err("startup command should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--paths",
+            "--print-keymap-schema",
+        ])
+        .expect_err("path inspection should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("--print-keymap-schema cannot be used with --paths"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-startup-config-schema",
+            "--print-keymap-schema",
+        ])
+        .expect_err("startup schema printing should conflict with keymap schema printing");
+        assert!(
+            format!("{error:#}").contains(
+                "--print-keymap-schema cannot be used with --print-startup-config-schema"
+            )
+        );
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--print-default-keymap",
+        ])
+        .expect_err("default keymap printing should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --print-default-keymap"));
+
+        let error = TerminalKeymapSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--all-profiles",
+        ])
+        .expect_err("hidden profile listing should conflict with keymap schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --all-profiles"));
 
         std_fs::remove_dir_all(dir).ok();
     }
