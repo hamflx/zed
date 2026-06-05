@@ -468,6 +468,28 @@ function Assert-PackageZipArchive {
     return (Get-FileHash -LiteralPath $ZipFile -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Assert-ChecksumSidecar {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumFile,
+        [Parameter(Mandatory = $true)][string]$ExpectedHash,
+        [Parameter(Mandatory = $true)][string]$ExpectedFileName
+    )
+
+    if (-not (Test-Path -LiteralPath $ChecksumFile -PathType Leaf)) {
+        throw "package checksum sidecar was not written: $ChecksumFile"
+    }
+
+    $content = (Get-Content -LiteralPath $ChecksumFile -Raw).Trim()
+    $pattern = '^([a-f0-9]{64}) \*?(.+)$'
+    if ($content -notmatch $pattern) {
+        throw "package checksum sidecar has unexpected format: $ChecksumFile"
+    }
+
+    if ($Matches[1] -ne $ExpectedHash -or $Matches[2] -ne $ExpectedFileName) {
+        throw "package checksum sidecar did not match zip hash or file name: $ChecksumFile"
+    }
+}
+
 $version = Get-ZedTerminalVersion
 $platform = Get-PlatformName
 $architecture = Get-ArchitectureName
@@ -682,8 +704,10 @@ Assert-PackageManifest `
 
 $zipFile = $null
 $zipHash = $null
+$zipChecksumFile = $null
 if ($Zip) {
     $zipFile = Join-Path $runDir "$packageName.zip"
+    $zipChecksumFile = "$zipFile.sha256"
     Compress-Archive -LiteralPath $packageDir -DestinationPath $zipFile -Force
     $zipHash = Assert-PackageZipArchive `
         -ZipFile $zipFile `
@@ -695,6 +719,12 @@ if ($Zip) {
         -Architecture $architecture `
         -BinaryFileName $binaryFileName `
         -BinaryHash $binaryHash
+    $zipFileName = Split-Path -Leaf $zipFile
+    Set-Content -LiteralPath $zipChecksumFile -Value "$zipHash *$zipFileName" -Encoding ascii
+    Assert-ChecksumSidecar `
+        -ChecksumFile $zipChecksumFile `
+        -ExpectedHash $zipHash `
+        -ExpectedFileName $zipFileName
 }
 
 Write-Host "status: ok"
@@ -705,4 +735,5 @@ Write-Host "binary_sha256: $binaryHash"
 if ($zipFile) {
     Write-Host "zip_file: $zipFile"
     Write-Host "zip_sha256: $zipHash"
+    Write-Host "zip_checksum_file: $zipChecksumFile"
 }
