@@ -84,6 +84,13 @@ struct NewTerminalTabWithProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct NewTerminalWindowWithProfile {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct NewTerminalSplitWithProfile {
     profile: String,
     direction: TerminalStartupSplitDirection,
@@ -4102,6 +4109,24 @@ impl LaunchOptions {
             additional_tabs: Vec::new(),
             new_terminal_tab: initial_tab,
         }
+    }
+
+    fn from_profile(
+        path_options: TerminalPathOptions,
+        startup_config: &TerminalStartupConfig,
+        profile: &str,
+    ) -> Result<Self> {
+        let mut initial_tab = startup_config
+            .profile_initial_tab(profile)
+            .with_context(|| format!("failed to resolve startup profile {profile:?}"))?;
+        initial_tab.split = None;
+
+        Ok(Self {
+            path_options,
+            initial_tab: initial_tab.clone(),
+            additional_tabs: Vec::new(),
+            new_terminal_tab: initial_tab,
+        })
     }
 }
 
@@ -11169,6 +11194,18 @@ fn launch_tab_for_profile(
     .with_context(|| format!("failed to resolve startup profile {profile:?}"))
 }
 
+fn launch_options_for_profile_window(profile: &str) -> Result<LaunchOptions> {
+    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
+    LaunchOptions::from_profile(active_terminal_path_options(), &startup_config, profile)
+}
+
+fn active_terminal_path_options() -> TerminalPathOptions {
+    TerminalPathOptions {
+        data_dir: paths::data_dir().clone(),
+        config_dir: paths::config_dir().clone(),
+    }
+}
+
 fn terminal_log_file() -> &'static PathBuf {
     TERMINAL_LOG_FILE.get_or_init(|| paths::logs_dir().join(format!("{TERMINAL_APP_NAME}.log")))
 }
@@ -11414,6 +11451,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
+        TypeId::of::<NewTerminalWindowWithProfile>(),
         TypeId::of::<NewTerminalTab>(),
         TypeId::of::<NewTerminalSplitDown>(),
         TypeId::of::<NewTerminalSplitLeft>(),
@@ -11523,6 +11561,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("New Tab With Profile: {label}"),
             NewTerminalTabWithProfile {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("New Window With Profile: {label}"),
+            NewTerminalWindowWithProfile {
                 profile: profile_name.clone(),
             }
             .boxed_clone(),
@@ -11744,6 +11790,18 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
                 )
             }),
         )));
+        shell_items.push(MenuItem::submenu(
+            Menu::new("New Window With Profile").items(profile_entries.iter().cloned().map(
+                |entry| {
+                    MenuItem::action(
+                        entry.label,
+                        NewTerminalWindowWithProfile {
+                            profile: entry.profile,
+                        },
+                    )
+                },
+            )),
+        ));
         for split_direction in terminal_profile_split_direction_entries() {
             shell_items.push(MenuItem::submenu(
                 Menu::new(format!("Split {} With Profile", split_direction.label)).items(
@@ -12015,6 +12073,32 @@ fn open_terminal_window(
                         }
                     }
                 });
+                let profile_terminal_window_app_state = app_state.clone();
+                workspace.register_action(
+                    move |_, action: &NewTerminalWindowWithProfile, _, cx| {
+                        match launch_options_for_profile_window(&action.profile) {
+                            Ok(launch_options) => match open_terminal_window(
+                                profile_terminal_window_app_state.clone(),
+                                launch_options,
+                                cx,
+                            ) {
+                                Ok(()) => cx.activate(true),
+                                Err(error) => {
+                                    log::warn!(
+                                        "failed to open terminal window for profile {:?}: {error:#}",
+                                        action.profile
+                                    );
+                                }
+                            },
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to resolve terminal window profile {:?}: {error:#}",
+                                    action.profile
+                                );
+                            }
+                        }
+                    },
+                );
                 workspace.register_action(move |workspace, _: &NewTerminalTab, window, cx| {
                     add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
                         .detach_and_log_err(cx);
@@ -12847,13 +12931,11 @@ mod tests {
         assert_eq!(action.name(), action_name);
     }
 
-    fn assert_profile_split_submenu_action(
-        menu_items: &[MenuItem],
+    fn profile_submenu_action<'a>(
+        menu_items: &'a [MenuItem],
         submenu_label: &str,
         action_label: &str,
-        expected_profile: &str,
-        expected_direction: TerminalStartupSplitDirection,
-    ) {
+    ) -> &'a dyn Action {
         let submenu = menu_items
             .iter()
             .find_map(|item| match item {
@@ -12875,10 +12957,55 @@ mod tests {
         let MenuItem::Action { action, .. } = item else {
             panic!("submenu item {action_label:?} should be an action");
         };
-        let action = action
+        action.as_ref()
+    }
+
+    fn assert_profile_submenu_action<'a, A: Action + 'static>(
+        menu_items: &'a [MenuItem],
+        submenu_label: &str,
+        action_label: &str,
+        expected_profile: &str,
+    ) -> &'a A {
+        let action = profile_submenu_action(menu_items, submenu_label, action_label);
+        let profile = if let Some(action) =
+            action.as_any().downcast_ref::<NewTerminalTabWithProfile>()
+        {
+            &action.profile
+        } else if let Some(action) = action
+            .as_any()
+            .downcast_ref::<NewTerminalWindowWithProfile>()
+        {
+            &action.profile
+        } else if let Some(action) = action
             .as_any()
             .downcast_ref::<NewTerminalSplitWithProfile>()
-            .expect("expected profile split action");
+        {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<SetDefaultStartupProfile>() {
+            &action.profile
+        } else {
+            panic!("profile submenu action has no profile field");
+        };
+        assert_eq!(profile, expected_profile);
+        action
+            .as_any()
+            .downcast_ref::<A>()
+            .unwrap_or_else(|| panic!("unexpected profile submenu action {}", action.name()))
+    }
+
+    fn assert_profile_split_submenu_action(
+        menu_items: &[MenuItem],
+        submenu_label: &str,
+        action_label: &str,
+        expected_profile: &str,
+        expected_direction: TerminalStartupSplitDirection,
+    ) {
+        let action = assert_profile_submenu_action::<NewTerminalSplitWithProfile>(
+            menu_items,
+            submenu_label,
+            action_label,
+            expected_profile,
+        );
         assert_eq!(action.profile, expected_profile);
         assert_eq!(action.direction, expected_direction);
     }
@@ -13143,6 +13270,12 @@ mod tests {
         );
         assert_command_palette_action_visible(
             &filter,
+            &NewTerminalWindowWithProfile {
+                profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &NewTerminalSplitWithProfile {
                 profile: "work".into(),
                 direction: TerminalStartupSplitDirection::Right,
@@ -13245,6 +13378,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "New Tab With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "New Window With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Split Right With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Split Down With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Split Left With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
@@ -13255,28 +13389,29 @@ mod tests {
         );
 
         assert_profile_tab_action(&result.results[0], "work");
+        assert_profile_window_action(&result.results[1], "work");
         assert_profile_split_action(
-            &result.results[1],
+            &result.results[2],
             "work",
             TerminalStartupSplitDirection::Right,
         );
         assert_profile_split_action(
-            &result.results[2],
+            &result.results[3],
             "work",
             TerminalStartupSplitDirection::Down,
         );
         assert_profile_split_action(
-            &result.results[3],
+            &result.results[4],
             "work",
             TerminalStartupSplitDirection::Left,
         );
         assert_profile_split_action(
-            &result.results[4],
+            &result.results[5],
             "work",
             TerminalStartupSplitDirection::Up,
         );
-        assert_set_default_profile_action(&result.results[5], "work");
-        assert_open_profile_config_action(&result.results[6]);
+        assert_set_default_profile_action(&result.results[6], "work");
+        assert_open_profile_config_action(&result.results[7]);
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -13308,7 +13443,7 @@ mod tests {
             config.profile_summaries(false),
         );
 
-        assert_eq!(result.results.len(), 7);
+        assert_eq!(result.results.len(), 8);
         assert!(
             result
                 .results
@@ -13350,7 +13485,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 7);
+        assert_eq!(result.results.len(), 8);
         assert!(
             result
                 .results
@@ -13374,7 +13509,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 7);
+        assert_eq!(description_result.results.len(), 8);
         assert!(
             description_result
                 .results
@@ -13384,7 +13519,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 7);
+        assert_eq!(icon_result.results.len(), 8);
         assert!(
             icon_result
                 .results
@@ -13394,7 +13529,7 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 7);
+        assert_eq!(color_result.results.len(), 8);
         assert!(
             color_result
                 .results
@@ -13494,6 +13629,18 @@ mod tests {
             .as_any()
             .downcast_ref::<NewTerminalTabWithProfile>()
             .expect("expected profile tab action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_profile_window_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<NewTerminalWindowWithProfile>()
+            .expect("expected profile window action");
         assert_eq!(action.profile, expected_profile);
     }
 
@@ -13850,6 +13997,18 @@ mod tests {
             label: "Work Shell (work)".into(),
         }]);
 
+        assert_profile_submenu_action::<NewTerminalTabWithProfile>(
+            &items,
+            "New Tab With Profile",
+            "Work Shell (work)",
+            "work",
+        );
+        assert_profile_submenu_action::<NewTerminalWindowWithProfile>(
+            &items,
+            "New Window With Profile",
+            "Work Shell (work)",
+            "work",
+        );
         assert_profile_split_submenu_action(
             &items,
             "Split Right With Profile",
@@ -14269,6 +14428,32 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown profile action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_window_with_profile_action_input() {
+        let action = <NewTerminalWindowWithProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("profile window action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalWindowWithProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &NewTerminalWindowWithProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <NewTerminalWindowWithProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown profile window action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -30957,6 +31142,72 @@ mod tests {
 
         std_fs::remove_dir_all(configured_dir).ok();
         std_fs::remove_dir_all(cli_dir).ok();
+        std_fs::remove_dir_all(additional_dir).ok();
+    }
+
+    #[test]
+    fn profile_new_window_uses_profile_initial_tab_without_replaying_profile_tabs() {
+        let initial_dir = temp_test_dir();
+        let additional_dir = temp_test_dir();
+        let path_options = TerminalPathOptions {
+            data_dir: PathBuf::from("profile-window-data"),
+            config_dir: PathBuf::from("profile-window-config"),
+        };
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                command: Some("cmd /C work".into()),
+                title: Some("Work".into()),
+                shell: Some(TerminalStartupShellConfig::Program("pwsh.exe".into())),
+                env: test_env(&[("ZED_TERMINAL_PROFILE", "work")]),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(additional_dir.clone()),
+                    command: Some("cmd /C logs".into()),
+                    title: Some("Logs".into()),
+                    split: Some(TerminalStartupSplitDirection::Down),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let options = LaunchOptions::from_profile(path_options.clone(), &config, "work")
+            .expect("profile window launch options should resolve");
+
+        assert_eq!(options.path_options, path_options);
+        assert!(options.additional_tabs.is_empty());
+        assert_eq!(options.initial_tab, options.new_terminal_tab);
+        assert_tab_working_directory(&options.initial_tab, &initial_dir);
+        assert_ne!(
+            options.initial_tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&additional_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "work".into()],
+            })
+        );
+        assert_eq!(
+            options.initial_tab.env,
+            test_env(&[("ZED_TERMINAL_PROFILE", "work")])
+        );
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Work"));
+        assert_eq!(options.initial_tab.shell, None);
+        assert_eq!(options.initial_tab.split, None);
+        assert_eq!(
+            options.startup_working_directories(),
+            vec![dunce::canonicalize(&initial_dir).unwrap()]
+        );
+
+        std_fs::remove_dir_all(initial_dir).ok();
         std_fs::remove_dir_all(additional_dir).ok();
     }
 
