@@ -11462,10 +11462,6 @@ fn clear_default_startup_profile(path: &Path) -> Result<TerminalDefaultProfileUp
     update_default_startup_profile(path, None)
 }
 
-fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupProfileRemoval> {
-    remove_startup_profile_with_references(path, profile, false)
-}
-
 fn remove_startup_profile_with_references(
     path: &Path,
     profile: &str,
@@ -31982,7 +31978,7 @@ mod tests {
         )
         .expect("failed to write startup config");
 
-        let removal = remove_startup_profile(&startup_config_file, " old ")
+        let removal = remove_startup_profile_with_references(&startup_config_file, " old ", false)
             .expect("startup profile should be removed");
 
         assert_eq!(removal.path, startup_config_file);
@@ -32028,7 +32024,7 @@ mod tests {
 "#;
         std_fs::write(&startup_config_file, original).expect("failed to write startup config");
 
-        let removal = remove_startup_profile(&startup_config_file, "old")
+        let removal = remove_startup_profile_with_references(&startup_config_file, "old", false)
             .expect("missing profile should be an unchanged no-op");
 
         assert_eq!(removal.path, startup_config_file);
@@ -32049,7 +32045,7 @@ mod tests {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
 
-        let removal = remove_startup_profile(&startup_config_file, "old")
+        let removal = remove_startup_profile_with_references(&startup_config_file, "old", false)
             .expect("missing startup config should be a no-op when removing a profile");
 
         assert_eq!(removal.path, startup_config_file);
@@ -32148,7 +32144,7 @@ mod tests {
 "#;
         std_fs::write(&startup_config_file, original).expect("failed to write startup config");
 
-        let error = remove_startup_profile(&startup_config_file, "work")
+        let error = remove_startup_profile_with_references(&startup_config_file, "work", false)
             .expect_err("default profile reference should block removal");
         let message = format!("{error:#}");
 
@@ -32180,7 +32176,7 @@ mod tests {
 "#;
         std_fs::write(&startup_config_file, original).expect("failed to write startup config");
 
-        let error = remove_startup_profile(&startup_config_file, "work")
+        let error = remove_startup_profile_with_references(&startup_config_file, "work", false)
             .expect_err("startup tab reference should block removal");
         let message = format!("{error:#}");
 
@@ -32204,7 +32200,7 @@ mod tests {
         let original = r#"{ "profiles": { "work": {} } }"#;
         std_fs::write(&startup_config_file, original).expect("failed to write startup config");
 
-        let error = remove_startup_profile(&startup_config_file, "  ")
+        let error = remove_startup_profile_with_references(&startup_config_file, "  ", false)
             .expect_err("blank profile should be rejected");
 
         assert!(format!("{error:#}").contains("startup profile name is empty"));

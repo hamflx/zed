@@ -407,7 +407,17 @@ try {
         }
 
         Invoke-Step "cargo check zed_terminal" {
-            Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "check", "-p", "zed_terminal")
+            $previousRustFlags = $env:RUSTFLAGS
+            try {
+                if ([string]::IsNullOrWhiteSpace($previousRustFlags)) {
+                    $env:RUSTFLAGS = "-D warnings"
+                } else {
+                    $env:RUSTFLAGS = "$previousRustFlags -D warnings"
+                }
+                Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "check", "-p", "zed_terminal")
+            } finally {
+                $env:RUSTFLAGS = $previousRustFlags
+            }
         }
 
         Invoke-Step "cargo build zed_terminal" {
