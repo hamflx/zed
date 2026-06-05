@@ -219,6 +219,10 @@ Keymap backup and restore options:
           Set the output format for --restore-keymap
       --print-keymap-schema
           Print the JSON Schema for keymap.json without opening a terminal window
+      --list-keymap-actions
+          List standalone terminal keymap actions and their bundled default bindings
+      --list-keymap-actions-format <text|json>
+          Set the output format for --list-keymap-actions
 
 Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir and --config-dir only."
 )]
@@ -2897,6 +2901,18 @@ struct TerminalKeymapSchemaCommand {
     path_options: TerminalPathOptions,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapActionListCommand {
+    path_options: TerminalPathOptions,
+    format: TerminalKeymapActionListOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalKeymapDiscoveryCommand {
+    Schema(TerminalKeymapSchemaCommand),
+    Actions(TerminalKeymapActionListCommand),
+}
+
 #[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
@@ -3859,6 +3875,66 @@ struct TerminalKeymapValidationReport {
     validation: TerminalKeymapValidation,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapActionListReport {
+    default_keymap: &'static str,
+    actions: Vec<TerminalKeymapActionEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapActionEntry {
+    name: &'static str,
+    namespace: &'static str,
+    input: TerminalKeymapActionInput,
+    documentation: Option<&'static str>,
+    default_bindings: Vec<TerminalKeymapActionBinding>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalKeymapActionInput {
+    None,
+    Object,
+}
+
+impl TerminalKeymapActionInput {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Object => "object",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapActionBinding {
+    keystrokes: String,
+    context: Option<String>,
+    input: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalActionSurface {
+    type_id: fn() -> TypeId,
+    name: fn() -> &'static str,
+}
+
+impl TerminalActionSurface {
+    fn new<A: Action>() -> Self {
+        Self {
+            type_id: TypeId::of::<A>,
+            name: A::name_for_type,
+        }
+    }
+
+    fn type_id(self) -> TypeId {
+        (self.type_id)()
+    }
+
+    fn name(self) -> &'static str {
+        (self.name)()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalUserKeymapSource {
     File,
@@ -4104,6 +4180,13 @@ enum TerminalKeymapBackupDiffOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalKeymapRestoreOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalKeymapActionListOutputFormat {
     #[default]
     Text,
     Json,
@@ -4864,6 +4947,23 @@ impl TerminalStartupConfigFileCommand {
 }
 
 impl TerminalKeymapSchemaCommand {
+    #[cfg(test)]
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        match TerminalKeymapDiscoveryCommand::from_args(args)? {
+            Some(TerminalKeymapDiscoveryCommand::Schema(command)) => Ok(Some(command)),
+            Some(TerminalKeymapDiscoveryCommand::Actions(_)) => {
+                bail!("--list-keymap-actions cannot be parsed as a keymap schema command")
+            }
+            None => Ok(None),
+        }
+    }
+}
+
+impl TerminalKeymapDiscoveryCommand {
     fn from_env_args() -> Result<Option<Self>> {
         Self::from_args(env::args_os())
     }
@@ -4876,7 +4976,7 @@ impl TerminalKeymapSchemaCommand {
         let mut args = args.into_iter().map(Into::into);
         let _program = args.next();
 
-        let mut parser = TerminalKeymapSchemaParser::default();
+        let mut parser = TerminalKeymapDiscoveryParser::default();
         while let Some(arg) = args.next() {
             let Some(arg) = arg.to_str() else {
                 parser.reject_arg("<non-UTF-8 argument>")?;
@@ -4903,6 +5003,17 @@ impl TerminalKeymapSchemaCommand {
                     }
                     parser.mode_name("--print-keymap-schema")?;
                 }
+                "--list-keymap-actions" => {
+                    if inline_value.is_some() {
+                        bail!("--list-keymap-actions does not accept a value");
+                    }
+                    parser.mode_name("--list-keymap-actions")?;
+                }
+                "--list-keymap-actions-format" => {
+                    parser.action_list_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_discovery_option = true;
+                }
                 _ => parser.reject_arg(arg)?,
             }
         }
@@ -4911,23 +5022,27 @@ impl TerminalKeymapSchemaCommand {
     }
 
     fn path_options(&self) -> &TerminalPathOptions {
-        &self.path_options
+        match self {
+            Self::Schema(command) => &command.path_options,
+            Self::Actions(command) => &command.path_options,
+        }
     }
 }
 
 #[derive(Default)]
-struct TerminalKeymapSchemaParser {
+struct TerminalKeymapDiscoveryParser {
     user_data_dir: Option<PathBuf>,
     config_dir: Option<PathBuf>,
     mode: Option<&'static str>,
-    seen_keymap_schema_option: bool,
-    pre_keymap_schema_arg: Option<String>,
+    seen_keymap_discovery_option: bool,
+    pre_keymap_discovery_arg: Option<String>,
+    action_list_format: Option<String>,
 }
 
-impl TerminalKeymapSchemaParser {
+impl TerminalKeymapDiscoveryParser {
     fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
-        self.seen_keymap_schema_option = true;
-        if let Some(arg) = &self.pre_keymap_schema_arg {
+        self.seen_keymap_discovery_option = true;
+        if let Some(arg) = &self.pre_keymap_discovery_arg {
             bail!("{flag} cannot be used with {arg}");
         }
         if let Some(mode) = self.mode {
@@ -4940,18 +5055,18 @@ impl TerminalKeymapSchemaParser {
     }
 
     fn reject_arg(&mut self, arg: &str) -> Result<()> {
-        if self.seen_keymap_schema_option {
-            let mode = self.mode.unwrap_or("terminal keymap schema command");
+        if self.seen_keymap_discovery_option {
+            let mode = self.mode.unwrap_or("terminal keymap discovery command");
             bail!("{mode} cannot be used with {arg}");
         }
-        if self.pre_keymap_schema_arg.is_none() {
-            self.pre_keymap_schema_arg = Some(arg.to_string());
+        if self.pre_keymap_discovery_arg.is_none() {
+            self.pre_keymap_discovery_arg = Some(arg.to_string());
         }
         Ok(())
     }
 
-    fn finish(self) -> Result<Option<TerminalKeymapSchemaCommand>> {
-        if !self.seen_keymap_schema_option {
+    fn finish(self) -> Result<Option<TerminalKeymapDiscoveryCommand>> {
+        if !self.seen_keymap_discovery_option {
             return Ok(None);
         }
 
@@ -4962,9 +5077,29 @@ impl TerminalKeymapSchemaParser {
         .context("failed to resolve terminal paths")?;
 
         match self.mode {
-            Some("--print-keymap-schema") => Ok(Some(TerminalKeymapSchemaCommand { path_options })),
-            Some(mode) => bail!("unsupported terminal keymap schema mode: {mode}"),
-            None => Ok(None),
+            Some("--print-keymap-schema") => {
+                if self.action_list_format.is_some() {
+                    bail!("--print-keymap-schema cannot be used with --list-keymap-actions-format");
+                }
+                Ok(Some(TerminalKeymapDiscoveryCommand::Schema(
+                    TerminalKeymapSchemaCommand { path_options },
+                )))
+            }
+            Some("--list-keymap-actions") => Ok(Some(TerminalKeymapDiscoveryCommand::Actions(
+                TerminalKeymapActionListCommand {
+                    path_options,
+                    format: parse_keymap_action_list_output_format(
+                        self.action_list_format.as_deref(),
+                    )?,
+                },
+            ))),
+            Some(mode) => bail!("unsupported terminal keymap discovery mode: {mode}"),
+            None => {
+                if self.action_list_format.is_some() {
+                    bail!("--list-keymap-actions-format requires --list-keymap-actions");
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -6369,9 +6504,9 @@ fn main() {
         }
     }
 
-    match TerminalKeymapSchemaCommand::from_env_args() {
+    match TerminalKeymapDiscoveryCommand::from_env_args() {
         Ok(Some(command)) => {
-            run_terminal_keymap_schema_command(command);
+            run_terminal_keymap_discovery_command(command);
             return;
         }
         Ok(None) => {}
@@ -6751,13 +6886,18 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
     }
 }
 
-fn run_terminal_keymap_schema_command(command: TerminalKeymapSchemaCommand) {
+fn run_terminal_keymap_discovery_command(command: TerminalKeymapDiscoveryCommand) {
     if let Err(error) = install_terminal_paths(command.path_options()) {
         eprintln!("failed to run zed terminal: {error:#}");
         process::exit(2);
     }
 
-    run_keymap_schema_printing();
+    match command {
+        TerminalKeymapDiscoveryCommand::Schema(_) => run_keymap_schema_printing(),
+        TerminalKeymapDiscoveryCommand::Actions(command) => {
+            run_keymap_action_list_printing(command.format)
+        }
+    }
 }
 
 fn run_terminal_keymap_file_command(command: TerminalKeymapFileCommand) {
@@ -6919,6 +7059,29 @@ fn run_keymap_schema_printing() {
                 }
                 Err(error) => {
                     eprintln!("failed to print terminal keymap schema: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
+}
+
+fn run_keymap_action_list_printing(format: TerminalKeymapActionListOutputFormat) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match terminal_keymap_action_list_report(cx)
+                .and_then(|report| format_keymap_action_list_report(&report, format))
+            {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush keymap action list output");
+                }
+                Err(error) => {
+                    eprintln!("failed to list terminal keymap actions: {error:#}");
                     io::stderr().flush().ok();
                     process::exit(2);
                 }
@@ -8119,6 +8282,18 @@ fn parse_keymap_restore_output_format(
         "text" => Ok(TerminalKeymapRestoreOutputFormat::Text),
         "json" => Ok(TerminalKeymapRestoreOutputFormat::Json),
         format => bail!("unsupported --restore-keymap-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_keymap_action_list_output_format(
+    format: Option<&str>,
+) -> Result<TerminalKeymapActionListOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalKeymapActionListOutputFormat::Text),
+        "json" => Ok(TerminalKeymapActionListOutputFormat::Json),
+        format => {
+            bail!("unsupported --list-keymap-actions-format {format:?}; expected text or json")
+        }
     }
 }
 
@@ -13333,6 +13508,148 @@ fn format_keymap_schema(cx: &mut App) -> Result<String> {
     Ok(output)
 }
 
+fn terminal_keymap_action_list_report(cx: &mut App) -> Result<TerminalKeymapActionListReport> {
+    let mut default_bindings_by_action =
+        BTreeMap::<&'static str, Vec<TerminalKeymapActionBinding>>::new();
+    let default_key_bindings =
+        KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
+            .context("failed to load zed terminal default keymap")?;
+    for binding in default_key_bindings {
+        default_bindings_by_action
+            .entry(binding.action().name())
+            .or_default()
+            .push(TerminalKeymapActionBinding {
+                keystrokes: binding
+                    .keystrokes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                context: binding.predicate().map(|predicate| predicate.to_string()),
+                input: binding.action_input().map(|input| input.to_string()),
+            });
+    }
+
+    let mut generator = KeymapFile::action_schema_generator();
+    let action_schemas = cx
+        .action_schemas(&mut generator)
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let empty_object_schema = schemars::json_schema!({ "type": "object" });
+    let documentation = cx.action_documentation();
+    let mut actions = terminal_action_surfaces()
+        .into_iter()
+        .map(|action| {
+            let name = action.name();
+            let input = match action_schemas.get(name).and_then(|schema| schema.as_ref()) {
+                Some(schema) if schema != &empty_object_schema => TerminalKeymapActionInput::Object,
+                _ => TerminalKeymapActionInput::None,
+            };
+            TerminalKeymapActionEntry {
+                name,
+                namespace: action_namespace(name),
+                input,
+                documentation: documentation.get(name).copied(),
+                default_bindings: default_bindings_by_action.remove(name).unwrap_or_default(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    actions.sort_by(|left, right| left.name.cmp(right.name));
+
+    Ok(TerminalKeymapActionListReport {
+        default_keymap: TERMINAL_KEYMAP_PATH,
+        actions,
+    })
+}
+
+fn action_namespace(action_name: &'static str) -> &'static str {
+    action_name
+        .split_once("::")
+        .map_or("", |(namespace, _)| namespace)
+}
+
+fn format_keymap_action_list_report(
+    report: &TerminalKeymapActionListReport,
+    format: TerminalKeymapActionListOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalKeymapActionListOutputFormat::Text => Ok(format_keymap_action_list(report)),
+        TerminalKeymapActionListOutputFormat::Json => format_keymap_action_list_json(report),
+    }
+}
+
+fn format_keymap_action_list(report: &TerminalKeymapActionListReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "default_keymap: {}", report.default_keymap)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "action_count: {}", report.actions.len())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "actions:").expect("writing to string should not fail");
+    for action in &report.actions {
+        writeln!(
+            &mut output,
+            "  - {} [{}] input: {}",
+            action.name,
+            action.namespace,
+            action.input.as_str()
+        )
+        .expect("writing to string should not fail");
+        if !action.default_bindings.is_empty() {
+            let bindings = action
+                .default_bindings
+                .iter()
+                .map(|binding| {
+                    let mut summary = binding.keystrokes.clone();
+                    if let Some(context) = &binding.context {
+                        write!(&mut summary, " ({context})")
+                            .expect("writing to string should not fail");
+                    }
+                    if let Some(input) = &binding.input {
+                        write!(&mut summary, " input: {input}")
+                            .expect("writing to string should not fail");
+                    }
+                    summary
+                })
+                .collect::<Vec<_>>();
+            writeln!(&mut output, "    default_bindings: {}", bindings.join(", "))
+                .expect("writing to string should not fail");
+        }
+    }
+    output
+}
+
+fn format_keymap_action_list_json(report: &TerminalKeymapActionListReport) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "default_keymap": report.default_keymap,
+        "action_count": report.actions.len(),
+        "actions": report
+            .actions
+            .iter()
+            .map(|action| serde_json::json!({
+                "name": action.name,
+                "namespace": action.namespace,
+                "input": action.input.as_str(),
+                "documentation": action.documentation,
+                "default_bindings": action
+                    .default_bindings
+                    .iter()
+                    .map(|binding| serde_json::json!({
+                        "keystrokes": binding.keystrokes,
+                        "context": binding.context,
+                        "input": binding.input,
+                    }))
+                    .collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap action list as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
 fn write_keymap_schema_file(path: &Path, cx: &mut App) -> Result<()> {
     let schema = format_keymap_schema(cx)?;
     if let Some(parent) = path.parent() {
@@ -15446,7 +15763,11 @@ fn apply_terminal_command_palette_filter(filter: &mut command_palette_hooks::Com
     for namespace in terminal_command_palette_hidden_namespaces() {
         filter.hide_namespace(namespace);
     }
-    filter.show_action_types(terminal_command_palette_visible_action_types().iter());
+    let visible_action_types = terminal_action_surfaces()
+        .iter()
+        .map(|action| action.type_id())
+        .collect::<Vec<_>>();
+    filter.show_action_types(visible_action_types.iter());
 }
 
 fn terminal_command_palette_hidden_namespaces() -> &'static [&'static str] {
@@ -15492,120 +15813,120 @@ fn terminal_command_palette_hidden_namespaces() -> &'static [&'static str] {
     ]
 }
 
-fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
+fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
     vec![
-        TypeId::of::<ClearDefaultStartupProfile>(),
-        TypeId::of::<CloseTerminalWindow>(),
-        TypeId::of::<CopySupportInfoToClipboard>(),
-        TypeId::of::<DuplicateTerminalSplitAuto>(),
-        TypeId::of::<DuplicateTerminalSplitDown>(),
-        TypeId::of::<DuplicateTerminalSplitLeft>(),
-        TypeId::of::<DuplicateTerminalSplitRight>(),
-        TypeId::of::<DuplicateTerminalSplitUp>(),
-        TypeId::of::<DuplicateTerminalTab>(),
-        TypeId::of::<HideStartupProfile>(),
-        TypeId::of::<MinimizeTerminalWindow>(),
-        TypeId::of::<NewTerminalWindow>(),
-        TypeId::of::<NewTerminalWindowWithProfile>(),
-        TypeId::of::<NewTerminalTab>(),
-        TypeId::of::<NewTerminalSplitAuto>(),
-        TypeId::of::<NewTerminalSplitDown>(),
-        TypeId::of::<NewTerminalSplitLeft>(),
-        TypeId::of::<NewTerminalSplitRight>(),
-        TypeId::of::<NewTerminalSplitUp>(),
-        TypeId::of::<NewTerminalSplitWithProfile>(),
-        TypeId::of::<NewTerminalTabWithProfile>(),
-        TypeId::of::<OpenConfigDirectory>(),
-        TypeId::of::<OpenDataDirectory>(),
-        TypeId::of::<OpenDefaultKeymapReferenceFile>(),
-        TypeId::of::<OpenDiagnosticsReport>(),
-        TypeId::of::<OpenKeymapSchemaFile>(),
-        TypeId::of::<OpenKeymapValidationReport>(),
-        TypeId::of::<OpenLogFile>(),
-        TypeId::of::<OpenLogsDirectory>(),
-        TypeId::of::<OpenProfileDescriptionReport>(),
-        TypeId::of::<OpenSupportInfoReport>(),
-        TypeId::of::<OpenStartupConfigFile>(),
-        TypeId::of::<OpenStartupConfigSchemaFile>(),
-        TypeId::of::<OpenStartupConfigValidationReport>(),
-        TypeId::of::<OpenStartupDescriptionReport>(),
-        TypeId::of::<OpenStartupProfilesReport>(),
-        TypeId::of::<OpenThemesDirectory>(),
-        TypeId::of::<ResetPaneSizes>(),
-        TypeId::of::<ResizePaneDown>(),
-        TypeId::of::<ResizePaneLeft>(),
-        TypeId::of::<ResizePaneRight>(),
-        TypeId::of::<ResizePaneUp>(),
-        TypeId::of::<SetDefaultStartupProfile>(),
-        TypeId::of::<ShowStartupProfile>(),
-        TypeId::of::<ToggleFullScreen>(),
-        TypeId::of::<ZoomTerminalWindow>(),
-        TypeId::of::<editor::actions::SelectAll>(),
-        TypeId::of::<terminal::Clear>(),
-        TypeId::of::<terminal::Copy>(),
-        TypeId::of::<terminal::Paste>(),
-        TypeId::of::<terminal::PasteText>(),
-        TypeId::of::<terminal::ScrollLineDown>(),
-        TypeId::of::<terminal::ScrollLineUp>(),
-        TypeId::of::<terminal::ScrollPageDown>(),
-        TypeId::of::<terminal::ScrollPageUp>(),
-        TypeId::of::<terminal::ScrollToBottom>(),
-        TypeId::of::<terminal::ScrollToTop>(),
-        TypeId::of::<terminal::ShowCharacterPalette>(),
-        TypeId::of::<terminal::ToggleViMode>(),
-        TypeId::of::<terminal_view::RenameTerminal>(),
-        TypeId::of::<terminal_view::RerunTask>(),
-        TypeId::of::<workspace::ActivateLastPane>(),
-        TypeId::of::<workspace::ActivateNextPane>(),
-        TypeId::of::<workspace::ActivatePaneDown>(),
-        TypeId::of::<workspace::ActivatePaneLeft>(),
-        TypeId::of::<workspace::ActivatePaneRight>(),
-        TypeId::of::<workspace::ActivatePaneUp>(),
-        TypeId::of::<workspace::ActivatePreviousPane>(),
-        TypeId::of::<workspace::CloseAllItemsAndPanes>(),
-        TypeId::of::<workspace::CloseInactiveTabsAndPanes>(),
-        TypeId::of::<workspace::FocusCenterPane>(),
-        TypeId::of::<workspace::MovePaneDown>(),
-        TypeId::of::<workspace::MovePaneLeft>(),
-        TypeId::of::<workspace::MovePaneRight>(),
-        TypeId::of::<workspace::MovePaneUp>(),
-        TypeId::of::<workspace::SwapPaneAdjacent>(),
-        TypeId::of::<workspace::SwapPaneDown>(),
-        TypeId::of::<workspace::SwapPaneLeft>(),
-        TypeId::of::<workspace::SwapPaneRight>(),
-        TypeId::of::<workspace::SwapPaneUp>(),
-        TypeId::of::<workspace::ToggleZoom>(),
-        TypeId::of::<workspace::pane::ActivateItem>(),
-        TypeId::of::<workspace::pane::ActivateLastItem>(),
-        TypeId::of::<workspace::pane::ActivateNextItem>(),
-        TypeId::of::<workspace::pane::ActivatePreviousItem>(),
-        TypeId::of::<workspace::pane::CloseActiveItem>(),
-        TypeId::of::<workspace::pane::CloseAllItems>(),
-        TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
-        TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
-        TypeId::of::<workspace::pane::CloseOtherItems>(),
-        TypeId::of::<workspace::pane::GoBack>(),
-        TypeId::of::<workspace::pane::GoForward>(),
-        TypeId::of::<workspace::pane::JoinAll>(),
-        TypeId::of::<workspace::pane::JoinIntoNext>(),
-        TypeId::of::<workspace::pane::ReopenClosedItem>(),
-        TypeId::of::<workspace::pane::SplitAndMoveDown>(),
-        TypeId::of::<workspace::pane::SplitAndMoveLeft>(),
-        TypeId::of::<workspace::pane::SplitAndMoveRight>(),
-        TypeId::of::<workspace::pane::SplitAndMoveUp>(),
-        TypeId::of::<workspace::pane::SwapItemLeft>(),
-        TypeId::of::<workspace::pane::SwapItemRight>(),
-        TypeId::of::<workspace::pane::TogglePinTab>(),
-        TypeId::of::<workspace::pane::UnpinAllTabs>(),
-        TypeId::of::<zed_actions::buffer_search::Deploy>(),
-        TypeId::of::<zed_actions::command_palette::Toggle>(),
-        TypeId::of::<zed_actions::DecreaseBufferFontSize>(),
-        TypeId::of::<zed_actions::IncreaseBufferFontSize>(),
-        TypeId::of::<zed_actions::OpenKeymapFile>(),
-        TypeId::of::<zed_actions::OpenSettings>(),
-        TypeId::of::<zed_actions::OpenSettingsFile>(),
-        TypeId::of::<zed_actions::Quit>(),
-        TypeId::of::<zed_actions::ResetBufferFontSize>(),
+        TerminalActionSurface::new::<ClearDefaultStartupProfile>(),
+        TerminalActionSurface::new::<CloseTerminalWindow>(),
+        TerminalActionSurface::new::<CopySupportInfoToClipboard>(),
+        TerminalActionSurface::new::<DuplicateTerminalSplitAuto>(),
+        TerminalActionSurface::new::<DuplicateTerminalSplitDown>(),
+        TerminalActionSurface::new::<DuplicateTerminalSplitLeft>(),
+        TerminalActionSurface::new::<DuplicateTerminalSplitRight>(),
+        TerminalActionSurface::new::<DuplicateTerminalSplitUp>(),
+        TerminalActionSurface::new::<DuplicateTerminalTab>(),
+        TerminalActionSurface::new::<HideStartupProfile>(),
+        TerminalActionSurface::new::<MinimizeTerminalWindow>(),
+        TerminalActionSurface::new::<NewTerminalWindow>(),
+        TerminalActionSurface::new::<NewTerminalWindowWithProfile>(),
+        TerminalActionSurface::new::<NewTerminalTab>(),
+        TerminalActionSurface::new::<NewTerminalSplitAuto>(),
+        TerminalActionSurface::new::<NewTerminalSplitDown>(),
+        TerminalActionSurface::new::<NewTerminalSplitLeft>(),
+        TerminalActionSurface::new::<NewTerminalSplitRight>(),
+        TerminalActionSurface::new::<NewTerminalSplitUp>(),
+        TerminalActionSurface::new::<NewTerminalSplitWithProfile>(),
+        TerminalActionSurface::new::<NewTerminalTabWithProfile>(),
+        TerminalActionSurface::new::<OpenConfigDirectory>(),
+        TerminalActionSurface::new::<OpenDataDirectory>(),
+        TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
+        TerminalActionSurface::new::<OpenDiagnosticsReport>(),
+        TerminalActionSurface::new::<OpenKeymapSchemaFile>(),
+        TerminalActionSurface::new::<OpenKeymapValidationReport>(),
+        TerminalActionSurface::new::<OpenLogFile>(),
+        TerminalActionSurface::new::<OpenLogsDirectory>(),
+        TerminalActionSurface::new::<OpenProfileDescriptionReport>(),
+        TerminalActionSurface::new::<OpenSupportInfoReport>(),
+        TerminalActionSurface::new::<OpenStartupConfigFile>(),
+        TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
+        TerminalActionSurface::new::<OpenStartupConfigValidationReport>(),
+        TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
+        TerminalActionSurface::new::<OpenStartupProfilesReport>(),
+        TerminalActionSurface::new::<OpenThemesDirectory>(),
+        TerminalActionSurface::new::<ResetPaneSizes>(),
+        TerminalActionSurface::new::<ResizePaneDown>(),
+        TerminalActionSurface::new::<ResizePaneLeft>(),
+        TerminalActionSurface::new::<ResizePaneRight>(),
+        TerminalActionSurface::new::<ResizePaneUp>(),
+        TerminalActionSurface::new::<SetDefaultStartupProfile>(),
+        TerminalActionSurface::new::<ShowStartupProfile>(),
+        TerminalActionSurface::new::<ToggleFullScreen>(),
+        TerminalActionSurface::new::<ZoomTerminalWindow>(),
+        TerminalActionSurface::new::<editor::actions::SelectAll>(),
+        TerminalActionSurface::new::<terminal::Clear>(),
+        TerminalActionSurface::new::<terminal::Copy>(),
+        TerminalActionSurface::new::<terminal::Paste>(),
+        TerminalActionSurface::new::<terminal::PasteText>(),
+        TerminalActionSurface::new::<terminal::ScrollLineDown>(),
+        TerminalActionSurface::new::<terminal::ScrollLineUp>(),
+        TerminalActionSurface::new::<terminal::ScrollPageDown>(),
+        TerminalActionSurface::new::<terminal::ScrollPageUp>(),
+        TerminalActionSurface::new::<terminal::ScrollToBottom>(),
+        TerminalActionSurface::new::<terminal::ScrollToTop>(),
+        TerminalActionSurface::new::<terminal::ShowCharacterPalette>(),
+        TerminalActionSurface::new::<terminal::ToggleViMode>(),
+        TerminalActionSurface::new::<terminal_view::RenameTerminal>(),
+        TerminalActionSurface::new::<terminal_view::RerunTask>(),
+        TerminalActionSurface::new::<workspace::ActivateLastPane>(),
+        TerminalActionSurface::new::<workspace::ActivateNextPane>(),
+        TerminalActionSurface::new::<workspace::ActivatePaneDown>(),
+        TerminalActionSurface::new::<workspace::ActivatePaneLeft>(),
+        TerminalActionSurface::new::<workspace::ActivatePaneRight>(),
+        TerminalActionSurface::new::<workspace::ActivatePaneUp>(),
+        TerminalActionSurface::new::<workspace::ActivatePreviousPane>(),
+        TerminalActionSurface::new::<workspace::CloseAllItemsAndPanes>(),
+        TerminalActionSurface::new::<workspace::CloseInactiveTabsAndPanes>(),
+        TerminalActionSurface::new::<workspace::FocusCenterPane>(),
+        TerminalActionSurface::new::<workspace::MovePaneDown>(),
+        TerminalActionSurface::new::<workspace::MovePaneLeft>(),
+        TerminalActionSurface::new::<workspace::MovePaneRight>(),
+        TerminalActionSurface::new::<workspace::MovePaneUp>(),
+        TerminalActionSurface::new::<workspace::SwapPaneAdjacent>(),
+        TerminalActionSurface::new::<workspace::SwapPaneDown>(),
+        TerminalActionSurface::new::<workspace::SwapPaneLeft>(),
+        TerminalActionSurface::new::<workspace::SwapPaneRight>(),
+        TerminalActionSurface::new::<workspace::SwapPaneUp>(),
+        TerminalActionSurface::new::<workspace::ToggleZoom>(),
+        TerminalActionSurface::new::<workspace::pane::ActivateItem>(),
+        TerminalActionSurface::new::<workspace::pane::ActivateLastItem>(),
+        TerminalActionSurface::new::<workspace::pane::ActivateNextItem>(),
+        TerminalActionSurface::new::<workspace::pane::ActivatePreviousItem>(),
+        TerminalActionSurface::new::<workspace::pane::CloseActiveItem>(),
+        TerminalActionSurface::new::<workspace::pane::CloseAllItems>(),
+        TerminalActionSurface::new::<workspace::pane::CloseItemsToTheLeft>(),
+        TerminalActionSurface::new::<workspace::pane::CloseItemsToTheRight>(),
+        TerminalActionSurface::new::<workspace::pane::CloseOtherItems>(),
+        TerminalActionSurface::new::<workspace::pane::GoBack>(),
+        TerminalActionSurface::new::<workspace::pane::GoForward>(),
+        TerminalActionSurface::new::<workspace::pane::JoinAll>(),
+        TerminalActionSurface::new::<workspace::pane::JoinIntoNext>(),
+        TerminalActionSurface::new::<workspace::pane::ReopenClosedItem>(),
+        TerminalActionSurface::new::<workspace::pane::SplitAndMoveDown>(),
+        TerminalActionSurface::new::<workspace::pane::SplitAndMoveLeft>(),
+        TerminalActionSurface::new::<workspace::pane::SplitAndMoveRight>(),
+        TerminalActionSurface::new::<workspace::pane::SplitAndMoveUp>(),
+        TerminalActionSurface::new::<workspace::pane::SwapItemLeft>(),
+        TerminalActionSurface::new::<workspace::pane::SwapItemRight>(),
+        TerminalActionSurface::new::<workspace::pane::TogglePinTab>(),
+        TerminalActionSurface::new::<workspace::pane::UnpinAllTabs>(),
+        TerminalActionSurface::new::<zed_actions::buffer_search::Deploy>(),
+        TerminalActionSurface::new::<zed_actions::command_palette::Toggle>(),
+        TerminalActionSurface::new::<zed_actions::DecreaseBufferFontSize>(),
+        TerminalActionSurface::new::<zed_actions::IncreaseBufferFontSize>(),
+        TerminalActionSurface::new::<zed_actions::OpenKeymapFile>(),
+        TerminalActionSurface::new::<zed_actions::OpenSettings>(),
+        TerminalActionSurface::new::<zed_actions::OpenSettingsFile>(),
+        TerminalActionSurface::new::<zed_actions::Quit>(),
+        TerminalActionSurface::new::<zed_actions::ResetBufferFontSize>(),
     ]
 }
 
@@ -21585,6 +21906,55 @@ mod tests {
         assert_ne!(schema_text, "{ stale schema }\n");
 
         std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn formats_keymap_action_list(cx: &mut App) {
+        let report =
+            terminal_keymap_action_list_report(cx).expect("keymap action list should build");
+        let new_tab = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::NewTerminalTab")
+            .expect("new tab action should be listed");
+        assert_eq!(new_tab.namespace, "zed_terminal");
+        assert_eq!(new_tab.input, TerminalKeymapActionInput::None);
+        assert!(
+            new_tab.default_bindings.iter().any(|binding| {
+                binding.keystrokes == "ctrl-shift-T" && binding.context.is_none()
+            })
+        );
+
+        let profile_tab = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::NewTerminalTabWithProfile")
+            .expect("profile new tab action should be listed");
+        assert_eq!(profile_tab.input, TerminalKeymapActionInput::Object);
+
+        let paste = report
+            .actions
+            .iter()
+            .find(|action| action.name == "terminal::Paste")
+            .expect("paste action should be listed");
+        assert!(paste.default_bindings.iter().any(|binding| {
+            binding.keystrokes == "ctrl-shift-V" && binding.context.as_deref() == Some("Terminal")
+        }));
+
+        let output =
+            format_keymap_action_list_report(&report, TerminalKeymapActionListOutputFormat::Json)
+                .expect("keymap action list should format as json");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("keymap action list json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["default_keymap"], TERMINAL_KEYMAP_PATH);
+        assert_eq!(
+            json["action_count"].as_u64().unwrap(),
+            report.actions.len() as u64
+        );
+        assert!(output.contains("\"name\": \"zed_terminal::NewTerminalTab\""));
+        assert!(output.contains("\"input\": \"object\""));
+        assert!(!output.contains("do-not-log-keymap"));
     }
 
     #[test]
@@ -31221,6 +31591,38 @@ mod tests {
     }
 
     #[test]
+    fn list_keymap_actions_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--list-keymap-actions",
+            "--list-keymap-actions-format",
+            "json",
+        ])
+        .expect("keymap action list mode should parse")
+        .expect("keymap action list mode should resolve");
+
+        let TerminalKeymapDiscoveryCommand::Actions(command) = command else {
+            panic!("expected keymap action list command");
+        };
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.format, TerminalKeymapActionListOutputFormat::Json);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn print_default_keymap_mode_does_not_load_startup_config_file() {
         let data_dir = temp_test_dir();
         let config_dir = data_dir.join("config");
@@ -36910,6 +37312,78 @@ mod tests {
         ])
         .expect_err("hidden profile listing should conflict with keymap schema printing");
         assert!(format!("{error:#}").contains("cannot be used with --all-profiles"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn list_keymap_actions_rejects_startup_only_arguments() {
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with keymap action listing");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with keymap action listing");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with keymap action listing");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--paths",
+            "--list-keymap-actions",
+        ])
+        .expect_err("path inspection should conflict with keymap action listing");
+        assert!(format!("{error:#}").contains("--list-keymap-actions cannot be used with --paths"));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--list-keymap-actions",
+        ])
+        .expect_err("keymap discovery commands should conflict with each other");
+        assert!(
+            format!("{error:#}")
+                .contains("--print-keymap-schema cannot be used with --list-keymap-actions")
+        );
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions-format",
+            "json",
+        ])
+        .expect_err("keymap action list format should require keymap action listing");
+        assert!(
+            format!("{error:#}")
+                .contains("--list-keymap-actions-format requires --list-keymap-actions")
+        );
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions",
+            "--list-keymap-actions-format",
+            "yaml",
+        ])
+        .expect_err("keymap action list format should reject unknown formats");
+        assert!(format!("{error:#}").contains("unsupported --list-keymap-actions-format \"yaml\""));
 
         std_fs::remove_dir_all(dir).ok();
     }

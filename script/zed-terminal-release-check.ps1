@@ -444,6 +444,8 @@ try {
                 "--restore-keymap --restore-keymap-file <FILE>",
                 "--restore-keymap-format <text\|json>",
                 "--print-keymap-schema",
+                "--list-keymap-actions",
+                "--list-keymap-actions-format <text\|json>",
                 "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -530,6 +532,34 @@ try {
                 if ($keymapSchemaText -notmatch [regex]::Escape($actionName)) {
                     throw "Keymap schema is missing expected action '$actionName'."
                 }
+            }
+            $keymapActions = Invoke-NativeJsonCommandResult "list-keymap-actions" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--list-keymap-actions",
+                "--list-keymap-actions-format", "json"
+            )
+            if ($keymapActions.status -ne "ok" -or $keymapActions.default_keymap -ne "keymaps/zed-terminal.json" -or $keymapActions.action_count -lt 4) {
+                throw "Keymap action list did not report the expected action catalog contract."
+            }
+            $newTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTab" } | Select-Object -First 1
+            if (-not $newTabAction -or $newTabAction.namespace -ne "zed_terminal" -or $newTabAction.input -ne "none") {
+                throw "Keymap action list is missing the NewTerminalTab action metadata."
+            }
+            if (-not ($newTabAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-T" -and $null -eq $_.context })) {
+                throw "Keymap action list is missing the NewTerminalTab default binding."
+            }
+            $profileTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfile" } | Select-Object -First 1
+            if (-not $profileTabAction -or $profileTabAction.input -ne "object") {
+                throw "Keymap action list did not mark NewTerminalTabWithProfile as an object-input action."
+            }
+            $pasteAction = $keymapActions.actions | Where-Object { $_.name -eq "terminal::Paste" } | Select-Object -First 1
+            if (-not ($pasteAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-V" -and $_.context -eq "Terminal" })) {
+                throw "Keymap action list is missing the terminal Paste default binding."
+            }
+            $keymapActionsText = $keymapActions | ConvertTo-Json -Depth 20
+            if ($keymapActionsText -match "do-not-log") {
+                throw "Keymap action list output unexpectedly contained release fixture content."
             }
             $defaultKeymap = Invoke-NativeTextCommandResult "print-default-keymap" @(
                 "--user-data-dir", $cliDataDir,
