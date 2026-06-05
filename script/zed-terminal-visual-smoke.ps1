@@ -274,6 +274,10 @@ public static class ZedTerminalVisualSmokeNative {
         };
     }
 
+    public static string GetWindowTitle(IntPtr handle) {
+        return GetTitle(handle);
+    }
+
     public static void BringToFront(IntPtr handle) {
         ShowWindow(handle, SW_SHOW);
         BringWindowToTop(handle);
@@ -307,6 +311,18 @@ function Get-ProcessWindow {
     } while ((Get-Date) -lt $deadline)
 
     throw "Timed out waiting for a visible zed-terminal window for process $($Process.Id)."
+}
+
+function Assert-ZedTerminalWindowTitle {
+    param(
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$ExpectedTitle
+    )
+
+    $Window.Title = [ZedTerminalVisualSmokeNative]::GetWindowTitle($Window.Handle)
+    if ($Window.Title -ne $ExpectedTitle) {
+        throw "zed-terminal window title mismatch. Expected '$ExpectedTitle', got '$($Window.Title)'."
+    }
 }
 
 function Wait-ProbeReadyFile {
@@ -611,6 +627,7 @@ try {
     }
 
     Start-Sleep -Seconds $CaptureDelaySeconds
+    Assert-ZedTerminalWindowTitle -Window $window -ExpectedTitle "Zed Terminal"
 
     $screenshotPath = Join-Path $runDir "zed-terminal-visual-smoke.png"
     Save-WindowScreenshot -Window $window -Path $screenshotPath

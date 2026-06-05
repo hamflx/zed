@@ -18056,7 +18056,10 @@ fn open_terminal_window(
 
     cx.open_window(
         WindowOptions {
-            titlebar: Some(Default::default()),
+            titlebar: Some(gpui::TitlebarOptions {
+                title: Some(SharedString::from(APP_TITLE)),
+                ..Default::default()
+            }),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             ..Default::default()
         },
