@@ -1371,6 +1371,12 @@ struct FailedToSpawnTerminal {
     focus_handle: FocusHandle,
 }
 
+const FAILED_TO_SPAWN_TERMINAL_TITLE: &str = "Failed to spawn terminal";
+const FAILED_TO_SPAWN_TERMINAL_SHELL_GUIDANCE: &str =
+    "Check the terminal shell in settings.json and confirm the shell program exists.";
+const FAILED_TO_SPAWN_TERMINAL_TASK_GUIDANCE: &str =
+    "For task terminals, also verify the task command and working directory.";
+
 fn failed_to_spawn_terminal(
     error: String,
     cx: &mut impl gpui::AppContext,
@@ -1423,12 +1429,27 @@ impl Render for FailedToSpawnTerminal {
                     .items_center()
                     .justify_center()
                     .text_center()
-                    .child(Label::new("Failed to spawn terminal"))
+                    .child(Label::new(FAILED_TO_SPAWN_TERMINAL_TITLE))
                     .child(
                         Label::new(self.error.to_string())
                             .size(LabelSize::Small)
                             .color(Color::Muted)
-                            .mb_4(),
+                            .mb_2(),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .mb_4()
+                            .child(
+                                Label::new(FAILED_TO_SPAWN_TERMINAL_SHELL_GUIDANCE)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new(FAILED_TO_SPAWN_TERMINAL_TASK_GUIDANCE)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
                     )
                     .child(SplitButton::new(
                         ButtonLike::new("open-settings-ui")
@@ -1448,7 +1469,7 @@ impl workspace::Item for FailedToSpawnTerminal {
     type Event = ();
 
     fn tab_content_text(&self, _detail: usize, _cx: &App) -> SharedString {
-        SharedString::new_static("Failed to spawn terminal")
+        SharedString::new_static(FAILED_TO_SPAWN_TERMINAL_TITLE)
     }
 }
 
@@ -1967,6 +1988,15 @@ mod tests {
                 })
             })
             .unwrap();
+    }
+
+    #[test]
+    fn failed_to_spawn_terminal_guidance_covers_shell_and_task_failures() {
+        assert_eq!(FAILED_TO_SPAWN_TERMINAL_TITLE, "Failed to spawn terminal");
+        assert!(FAILED_TO_SPAWN_TERMINAL_SHELL_GUIDANCE.contains("settings.json"));
+        assert!(FAILED_TO_SPAWN_TERMINAL_SHELL_GUIDANCE.contains("shell program"));
+        assert!(FAILED_TO_SPAWN_TERMINAL_TASK_GUIDANCE.contains("task command"));
+        assert!(FAILED_TO_SPAWN_TERMINAL_TASK_GUIDANCE.contains("working directory"));
     }
 
     #[gpui::test]
