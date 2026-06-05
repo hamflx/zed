@@ -11843,6 +11843,15 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::ActivatePreviousPane>(),
         TypeId::of::<workspace::CloseInactiveTabsAndPanes>(),
         TypeId::of::<workspace::FocusCenterPane>(),
+        TypeId::of::<workspace::MovePaneDown>(),
+        TypeId::of::<workspace::MovePaneLeft>(),
+        TypeId::of::<workspace::MovePaneRight>(),
+        TypeId::of::<workspace::MovePaneUp>(),
+        TypeId::of::<workspace::SwapPaneAdjacent>(),
+        TypeId::of::<workspace::SwapPaneDown>(),
+        TypeId::of::<workspace::SwapPaneLeft>(),
+        TypeId::of::<workspace::SwapPaneRight>(),
+        TypeId::of::<workspace::SwapPaneUp>(),
         TypeId::of::<workspace::ToggleZoom>(),
         TypeId::of::<workspace::pane::ActivateItem>(),
         TypeId::of::<workspace::pane::ActivateLastItem>(),
@@ -12412,6 +12421,17 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Focus Right", workspace::ActivatePaneRight),
         MenuItem::action("Focus Up", workspace::ActivatePaneUp),
         MenuItem::action("Focus Down", workspace::ActivatePaneDown),
+        MenuItem::separator(),
+        MenuItem::action("Swap Pane Left", workspace::SwapPaneLeft),
+        MenuItem::action("Swap Pane Right", workspace::SwapPaneRight),
+        MenuItem::action("Swap Pane Up", workspace::SwapPaneUp),
+        MenuItem::action("Swap Pane Down", workspace::SwapPaneDown),
+        MenuItem::action("Swap Pane Adjacent", workspace::SwapPaneAdjacent),
+        MenuItem::separator(),
+        MenuItem::action("Move Pane to Left Edge", workspace::MovePaneLeft),
+        MenuItem::action("Move Pane to Right Edge", workspace::MovePaneRight),
+        MenuItem::action("Move Pane to Top Edge", workspace::MovePaneUp),
+        MenuItem::action("Move Pane to Bottom Edge", workspace::MovePaneDown),
         MenuItem::separator(),
         MenuItem::action("Next Pane", workspace::ActivateNextPane),
         MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
@@ -14139,6 +14159,15 @@ mod tests {
             &filter,
             &workspace::CloseInactiveTabsAndPanes::default(),
         );
+        assert_command_palette_action_visible(&filter, &workspace::MovePaneLeft);
+        assert_command_palette_action_visible(&filter, &workspace::MovePaneRight);
+        assert_command_palette_action_visible(&filter, &workspace::MovePaneUp);
+        assert_command_palette_action_visible(&filter, &workspace::MovePaneDown);
+        assert_command_palette_action_visible(&filter, &workspace::SwapPaneAdjacent);
+        assert_command_palette_action_visible(&filter, &workspace::SwapPaneLeft);
+        assert_command_palette_action_visible(&filter, &workspace::SwapPaneRight);
+        assert_command_palette_action_visible(&filter, &workspace::SwapPaneUp);
+        assert_command_palette_action_visible(&filter, &workspace::SwapPaneDown);
         assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinAll);
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinIntoNext);
@@ -15030,6 +15059,29 @@ mod tests {
 
         assert_menu_action(&items, "Join Pane Into Next", "pane::JoinIntoNext");
         assert_menu_action(&items, "Join All Panes", "pane::JoinAll");
+    }
+
+    #[test]
+    fn pane_menu_exposes_pane_arrangement_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Swap Pane Left", "workspace::SwapPaneLeft");
+        assert_menu_action(&items, "Swap Pane Right", "workspace::SwapPaneRight");
+        assert_menu_action(&items, "Swap Pane Up", "workspace::SwapPaneUp");
+        assert_menu_action(&items, "Swap Pane Down", "workspace::SwapPaneDown");
+        assert_menu_action(&items, "Swap Pane Adjacent", "workspace::SwapPaneAdjacent");
+        assert_menu_action(&items, "Move Pane to Left Edge", "workspace::MovePaneLeft");
+        assert_menu_action(
+            &items,
+            "Move Pane to Right Edge",
+            "workspace::MovePaneRight",
+        );
+        assert_menu_action(&items, "Move Pane to Top Edge", "workspace::MovePaneUp");
+        assert_menu_action(
+            &items,
+            "Move Pane to Bottom Edge",
+            "workspace::MovePaneDown",
+        );
     }
 
     #[test]
