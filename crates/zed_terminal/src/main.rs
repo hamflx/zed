@@ -142,6 +142,13 @@ struct OpenProfileDescriptionReport {
     profile: String,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct OpenStartupProfileConfig {
+    profile: String,
+}
+
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const APP_TITLE: &str = TERMINAL_APP_NAME;
@@ -17023,6 +17030,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_active_keymap_bindings_report);
     cx.on_action(copy_support_info_to_clipboard);
     cx.on_action(open_profile_description_report);
+    cx.on_action(open_startup_profile_config);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
     cx.on_action(open_themes_directory);
@@ -17260,6 +17268,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
         TerminalActionSurface::new::<OpenStartupConfigValidationReport>(),
         TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
+        TerminalActionSurface::new::<OpenStartupProfileConfig>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenThemesDirectory>(),
         TerminalActionSurface::new::<ResetPaneSizes>(),
@@ -17427,7 +17436,10 @@ fn terminal_profile_command_palette_items(
         items.push(terminal_profile_command_palette_item(
             query,
             format!("Open Config For Profile: {label}"),
-            OpenStartupConfigFile.boxed_clone(),
+            OpenStartupProfileConfig {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
         ));
         items.push(terminal_profile_command_palette_item(
             query,
@@ -18772,6 +18784,38 @@ fn open_startup_config_file(_: &OpenStartupConfigFile, cx: &mut App) {
     cx.open_with_system(&active_terminal_startup_config_file());
 }
 
+fn open_startup_profile_config(action: &OpenStartupProfileConfig, cx: &mut App) {
+    let profile = match normalize_startup_profile_name(&action.profile) {
+        Ok(profile) => profile,
+        Err(error) => {
+            log::warn!(
+                "failed to open startup config for profile {:?}: {error:#}",
+                action.profile
+            );
+            return;
+        }
+    };
+
+    if !ensure_startup_config_file() {
+        return;
+    }
+    let startup_config_file = active_terminal_startup_config_file();
+    match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => {
+            if !startup_config.profiles.contains_key(&profile) {
+                log::warn!("startup profile {profile:?} was not found before opening config");
+            }
+        }
+        Err(error) => {
+            log::warn!(
+                "failed to load startup config before opening config for profile {profile:?}: {error:#}"
+            );
+        }
+    }
+
+    cx.open_with_system(&startup_config_file);
+}
+
 fn open_startup_config_schema_file(_: &OpenStartupConfigSchemaFile, cx: &mut App) {
     let startup_config_schema_file = active_terminal_startup_config_schema_file();
     if let Err(error) = write_startup_config_schema_file(&startup_config_schema_file) {
@@ -19719,6 +19763,12 @@ mod tests {
                 profile: "work".into(),
             },
         );
+        assert_command_palette_action_visible(
+            &filter,
+            &OpenStartupProfileConfig {
+                profile: "work".into(),
+            },
+        );
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
         assert_command_palette_action_visible(&filter, &OpenThemesDirectory);
@@ -19871,7 +19921,7 @@ mod tests {
             TerminalStartupSplitDirection::Up,
         );
         assert_set_default_profile_action(&result.results[6], "work");
-        assert_open_profile_config_action(&result.results[7]);
+        assert_open_profile_config_action(&result.results[7], "work");
         assert_open_profile_description_report_action(&result.results[8], "work");
         assert_hide_profile_action(&result.results[9], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
@@ -20039,7 +20089,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["Open Config For Profile: Work Shell (work) - Project shell - icon terminal"]
         );
-        assert_open_profile_config_action(&result.results[0]);
+        assert_open_profile_config_action(&result.results[0], "work");
     }
 
     #[test]
@@ -20201,11 +20251,16 @@ mod tests {
         assert_eq!(action.profile, expected_profile);
     }
 
-    fn assert_open_profile_config_action(item: &command_palette_hooks::CommandInterceptItem) {
-        item.action
+    fn assert_open_profile_config_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
             .as_any()
-            .downcast_ref::<OpenStartupConfigFile>()
-            .expect("expected open startup config action");
+            .downcast_ref::<OpenStartupProfileConfig>()
+            .expect("expected open startup profile config action");
+        assert_eq!(action.profile, expected_profile);
     }
 
     fn assert_open_profile_description_report_action(
@@ -21331,6 +21386,32 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown profile description report action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_open_startup_profile_config_action_input() {
+        let action = <OpenStartupProfileConfig as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("open startup profile config action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<OpenStartupProfileConfig>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &OpenStartupProfileConfig {
+                profile: "work".into()
+            }
+        );
+
+        let error = <OpenStartupProfileConfig as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown startup profile config action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -23362,6 +23443,7 @@ mod tests {
         for action_name in [
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::OpenStartupProfileConfig",
             "terminal::Paste",
             "pane::CloseActiveItem",
         ] {
@@ -23423,6 +23505,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::NewTerminalTabWithProfile")
             .expect("profile new tab action should be listed");
         assert_eq!(profile_tab.input, TerminalKeymapActionInput::Object);
+
+        let profile_config = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileConfig")
+            .expect("profile config action should be listed");
+        assert_eq!(profile_config.input, TerminalKeymapActionInput::Object);
 
         let paste = report
             .actions
@@ -23503,6 +23592,14 @@ mod tests {
         .expect("profile keymap action description should build");
         assert_eq!(
             profile_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+
+        let profile_config_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::OpenStartupProfileConfig")
+                .expect("profile config action description should build");
+        assert_eq!(
+            profile_config_report.actions[0].input,
             TerminalKeymapActionInput::Object
         );
 
