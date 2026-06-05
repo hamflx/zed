@@ -255,6 +255,151 @@ function Resolve-PackageContentPath {
     return $contentPath
 }
 
+function New-PackageReadme {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$BinaryFileName
+    )
+
+    $template = @'
+# Zed Terminal
+
+Zed Terminal is a standalone terminal application built from Zed's terminal view and workspace components. It keeps terminal rendering, shell/task integration, themes, keymaps, and diagnostics aligned with Zed while using independent config, data, and log roots.
+
+## Quick Start
+
+Extract `{{PACKAGE}}.zip` into a writable directory, then start the app:
+
+```powershell
+.\{{BINARY}}
+```
+
+Initialize editable user config files when you want to customize startup profiles, key bindings, or settings:
+
+```powershell
+.\{{BINARY}} --init-config
+```
+
+Inspect the active standalone paths without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --paths --paths-format json
+```
+
+## Verify Download
+
+When a release includes the sibling `{{PACKAGE}}.zip.sha256` file, verify the archive before extracting it. The checksum sidecar is shipped next to the zip file, not inside this package directory.
+
+```powershell
+Get-Content .\{{PACKAGE}}.zip.sha256
+Get-FileHash .\{{PACKAGE}}.zip -Algorithm SHA256
+```
+
+The hash printed by `Get-FileHash` should match the hash in `{{PACKAGE}}.zip.sha256`.
+
+## Run
+
+Start with the default standalone config and data roots:
+
+```powershell
+.\{{BINARY}}
+```
+
+Run with explicit portable roots:
+
+```powershell
+.\{{BINARY}} --user-data-dir .\portable\data --config-dir .\portable\config
+```
+
+Preview the resolved startup layout without opening a window:
+
+```powershell
+.\{{BINARY}} --print-startup-layout
+```
+
+## Configuration
+
+Use `--init-config` to create user-editable files under the active config directory. The packaged `config-template/` directory is a generated reference containing first-run config files, the default keymap, and JSON schemas for editor support.
+
+Key files:
+
+- `terminal.json`: startup layout, profiles, titles, split panes, working directories, and startup commands.
+- `keymap.json`: user key bindings for the standalone app.
+- `settings.json` and `global_settings.json`: Zed settings loaded by the standalone terminal.
+- `terminal.schema.json` and `keymap.schema.json`: generated JSON schemas.
+
+## Diagnostics
+
+Run a read-only health check:
+
+```powershell
+.\{{BINARY}} --doctor
+```
+
+Run a script-friendly health check:
+
+```powershell
+.\{{BINARY}} --doctor --doctor-format json
+```
+
+Generate support information without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --support-info > zed-terminal-support-info.txt
+```
+
+## Included Files
+
+- `{{BINARY}}`: standalone Zed Terminal executable.
+- `default-keymap.json`: bundled default standalone keymap reference.
+- `config-template/`: generated first-run config, default keymap, and JSON schemas.
+- `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
+- `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
+
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
+'@
+
+    return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
+}
+
+function Assert-PackageReadme {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageDir,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$BinaryFileName
+    )
+
+    $readmeFile = Join-Path $PackageDir "README.md"
+    if (-not (Test-Path -LiteralPath $readmeFile -PathType Leaf)) {
+        throw "package README was not written: $readmeFile"
+    }
+
+    $readme = Get-Content -LiteralPath $readmeFile -Raw
+    $requiredSnippets = @(
+        "# Zed Terminal",
+        "## Quick Start",
+        "## Verify Download",
+        "## Run",
+        "## Configuration",
+        "## Diagnostics",
+        "## Included Files",
+        ".\$BinaryFileName",
+        ".\$BinaryFileName --paths --paths-format json",
+        ".\$BinaryFileName --init-config",
+        ".\$BinaryFileName --doctor",
+        ".\$BinaryFileName --support-info",
+        "$PackageName.zip.sha256",
+        "config-template/",
+        "zed-terminal-package.json"
+    )
+
+    foreach ($snippet in $requiredSnippets) {
+        if ($readme.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0) {
+            throw "package README is missing required content: $snippet"
+        }
+    }
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -297,12 +442,18 @@ function Assert-PackageManifest {
         "default_keymap",
         "doctor",
         "support_info",
+        "readme",
         "manifest"
     )) {
         if ($manifest.validation.$validationName -ne "ok") {
             throw "package manifest validation entry was not ok: $validationName"
         }
     }
+
+    Assert-PackageReadme `
+        -PackageDir $PackageDir `
+        -PackageName $PackageName `
+        -BinaryFileName $BinaryFileName
 
     $requiredContent = @(
         $BinaryFileName,
@@ -615,41 +766,7 @@ if (
 }
 
 $binaryHash = (Get-FileHash -LiteralPath $packagedBinary -Algorithm SHA256).Hash.ToLowerInvariant()
-$readme = @"
-# Zed Terminal
-
-This package contains the standalone `zed-terminal` binary.
-
-## Run
-
-On Windows:
-
-```powershell
-.\$binaryFileName
-```
-
-Inspect standalone paths without opening a terminal window:
-
-```powershell
-.\$binaryFileName --paths
-```
-
-Initialize user-editable config files:
-
-```powershell
-.\$binaryFileName --init-config
-```
-
-## Included Files
-
-- `$binaryFileName`: standalone Zed Terminal executable.
-- `default-keymap.json`: bundled default standalone keymap reference.
-- `config-template/`: generated first-run config, default keymap, and JSON schemas.
-- `zed-terminal-package.json`: package manifest with SHA256 hashes and validation status.
-- `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
-
-The app uses standalone config, data, and log roots by default. Use `--user-data-dir` and `--config-dir` for portable launches or isolated validation.
-"@
+$readme = New-PackageReadme -PackageName $packageName -BinaryFileName $binaryFileName
 Set-Content -LiteralPath (Join-Path $packageDir "README.md") -Value $readme -Encoding utf8
 
 $manifestFile = Join-Path $packageDir "zed-terminal-package.json"
@@ -685,6 +802,7 @@ $manifest = [pscustomobject]@{
         default_keymap = "ok"
         doctor = "ok"
         support_info = "ok"
+        readme = "ok"
         manifest = "ok"
     }
     contents = $contents
