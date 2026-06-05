@@ -1324,6 +1324,7 @@ try {
             foreach ($actionName in @(
                 "zed_terminal::NewTerminalTab",
                 "zed_terminal::NewTerminalTabWithProfile",
+                "zed_terminal::OpenConfigInitializationReport",
                 "zed_terminal::OpenKeymapToolsPicker",
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfilePicker",
@@ -1358,6 +1359,10 @@ try {
             $profileTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfile" } | Select-Object -First 1
             if (-not $profileTabAction -or $profileTabAction.input -ne "object") {
                 throw "Keymap action list did not mark NewTerminalTabWithProfile as an object-input action."
+            }
+            $configInitializationReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigInitializationReport" } | Select-Object -First 1
+            if (-not $configInitializationReportAction -or $configInitializationReportAction.namespace -ne "zed_terminal" -or $configInitializationReportAction.input -ne "none") {
+                throw "Keymap action list is missing the OpenConfigInitializationReport action metadata."
             }
             $profileConfigAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileConfig" } | Select-Object -First 1
             if (-not $profileConfigAction -or $profileConfigAction.namespace -ne "zed_terminal" -or $profileConfigAction.input -ne "object") {
@@ -1419,6 +1424,15 @@ try {
             )
             if ($profileTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfile" -or $profileTabActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile-tab input contract."
+            }
+            $configInitializationReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-initialization-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenConfigInitializationReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($configInitializationReportActionDescription.action.name -ne "zed_terminal::OpenConfigInitializationReport" -or $configInitializationReportActionDescription.action.namespace -ne "zed_terminal" -or $configInitializationReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected config initialization report action contract."
             }
             $profileConfigActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-config" @(
                 "--user-data-dir", $cliDataDir,
@@ -1504,6 +1518,7 @@ try {
             $keymapActionDescriptionText = @(
                 $newTabActionDescription,
                 $profileTabActionDescription,
+                $configInitializationReportActionDescription,
                 $profileConfigActionDescription,
                 $profilePickerActionDescription,
                 $startupToolsPickerActionDescription,

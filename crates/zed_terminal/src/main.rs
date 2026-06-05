@@ -55,6 +55,7 @@ actions!(
         OpenDefaultKeymapReferenceFile,
         OpenStartupToolsPicker,
         OpenKeymapToolsPicker,
+        OpenConfigInitializationReport,
         OpenKeymapActionCatalogReport,
         OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
@@ -177,6 +178,7 @@ const TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE: &str = "zed-terminal-support-bundle
 const TERMINAL_SUPPORT_BUNDLE_PATHS_FILE: &str = "zed-terminal-paths.json";
 const TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE: &str = "zed-terminal-file-metadata.json";
 const TERMINAL_SUPPORT_BUNDLE_README_FILE: &str = "README.txt";
+const TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE: &str = "zed-terminal-config-initialization.json";
 const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
@@ -19634,6 +19636,28 @@ fn write_support_info_report_file(path: &Path, report: &str) -> Result<()> {
         .with_context(|| format!("failed to write support info report {}", path.display()))
 }
 
+fn write_config_initialization_report_file(
+    path: &Path,
+    initialization: &TerminalConfigInitialization,
+) -> Result<()> {
+    let report = format_config_initialization_json(initialization)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create config initialization report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write config initialization report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_config_validation_report_file(
     path: &Path,
     report: &TerminalDoctorStartupConfigCheck,
@@ -21970,6 +21994,10 @@ fn active_terminal_support_bundle_dir() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SUPPORT_BUNDLE_DIR)
 }
 
+fn active_terminal_config_initialization_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
+}
+
 fn active_terminal_startup_layout_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_LAYOUT_REPORT_FILE)
 }
@@ -22095,6 +22123,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_version_info_report);
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
+    cx.on_action(open_config_initialization_report);
     cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
@@ -22330,6 +22359,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenConfigDirectory>(),
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
+        TerminalActionSurface::new::<OpenConfigInitializationReport>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -23013,6 +23043,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
         MenuItem::separator(),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+        MenuItem::action(
+            "Open Config Initialization Report",
+            OpenConfigInitializationReport,
+        ),
         MenuItem::action("Open Startup Tools...", OpenStartupToolsPicker),
         MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
         MenuItem::action(
@@ -24024,6 +24058,23 @@ fn open_support_bundle_directory(_: &OpenSupportBundleDirectory, cx: &mut App) {
     }
 
     cx.open_with_system(&support_bundle_dir);
+}
+
+fn open_config_initialization_report(_: &OpenConfigInitializationReport, cx: &mut App) {
+    let report_file = active_terminal_config_initialization_report_file();
+    let initialization = match initialize_terminal_config_files() {
+        Ok(initialization) => initialization,
+        Err(error) => {
+            log::warn!("failed to initialize terminal config files for report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) = write_config_initialization_report_file(&report_file, &initialization) {
+        log::warn!("failed to write config initialization report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&report_file);
 }
 
 fn open_startup_config_validation_report(_: &OpenStartupConfigValidationReport, cx: &mut App) {
@@ -25079,6 +25130,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
+        assert_command_palette_action_visible(&filter, &OpenConfigInitializationReport);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -26234,6 +26286,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Config Initialization Report",
+            "zed_terminal::OpenConfigInitializationReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
         );
@@ -27036,6 +27093,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupConfigSchemaFile>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_config_initialization_report_action_input() {
+        let action =
+            <OpenConfigInitializationReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open config initialization report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenConfigInitializationReport>()
                 .is_some()
         );
     }
@@ -30397,6 +30468,47 @@ mod tests {
         assert_eq!(json["files"][0]["parse_status"], "success");
         assert_eq!(json["files"][1]["label"], "global_settings_file");
         assert_eq!(json["files"][1]["source"], "initial");
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_config_initialization_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE);
+        let initialization = TerminalConfigInitialization {
+            files: vec![
+                TerminalConfigFileInitialization {
+                    label: "settings_file",
+                    path: PathBuf::from("settings.json"),
+                    status: TerminalConfigFileInitializationStatus::Created,
+                },
+                TerminalConfigFileInitialization {
+                    label: "keymap_file",
+                    path: PathBuf::from("keymap.json"),
+                    status: TerminalConfigFileInitializationStatus::Existing,
+                },
+            ],
+        };
+
+        write_config_initialization_report_file(&report_file, &initialization)
+            .expect("config initialization report should write");
+
+        let report_text = std_fs::read_to_string(&report_file)
+            .expect("failed to read config initialization report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("config initialization report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["file_count"], 2);
+        assert_eq!(json["created_count"], 1);
+        assert_eq!(json["existing_count"], 1);
+        assert_eq!(json["files"][0]["label"], "settings_file");
+        assert_eq!(json["files"][0]["status"], "created");
+        assert_eq!(json["files"][1]["label"], "keymap_file");
+        assert_eq!(json["files"][1]["status"], "existing");
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
