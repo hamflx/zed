@@ -413,6 +413,58 @@ function Assert-PackageZipArchive {
         -BinaryFileName $BinaryFileName `
         -BinaryHash $BinaryHash
 
+    $extractedBinary = Join-Path $extractedPackageDir $BinaryFileName
+    $extractedConfigDir = Join-Path $extractedPackageDir "config-template"
+    $extractedDataDir = Join-Path $ValidationRoot "zip-validation-data"
+    New-Item -ItemType Directory -Force -Path $extractedDataDir | Out-Null
+
+    $help = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @("--help") -WorkingDirectory $extractedPackageDir
+    if ($help.Stdout -notmatch "Launch the standalone Zed terminal" -or $help.Stdout -notmatch "--init-config") {
+        throw "extracted package zed-terminal --help did not expose expected standalone help text"
+    }
+
+    $paths = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--paths",
+        "--paths-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    $pathsJson = $paths.Stdout | ConvertFrom-Json
+    if ($pathsJson.config_dir -ne $extractedConfigDir -or $pathsJson.data_dir -ne $extractedDataDir) {
+        throw "extracted package zed-terminal --paths did not report the expected standalone paths"
+    }
+
+    $doctor = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--doctor",
+        "--doctor-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    $doctorJson = $doctor.Stdout | ConvertFrom-Json
+    if (
+        $doctorJson.status -ne "ok" -or
+        -not $doctorJson.directories -or
+        -not $doctorJson.config_files -or
+        $doctorJson.startup_config.status -ne "ok" -or
+        $doctorJson.keymap.status -ne "ok"
+    ) {
+        throw "extracted package zed-terminal --doctor did not pass against the extracted config template"
+    }
+
+    $supportInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--support-info"
+    ) -WorkingDirectory $extractedPackageDir
+    if (
+        $supportInfo.Stdout -notmatch "^Zed Terminal Support Info" -or
+        $supportInfo.Stdout -notmatch "app_name: Zed Terminal" -or
+        $supportInfo.Stdout -notmatch "status: ok" -or
+        $supportInfo.Stdout -notmatch "diagnostics:"
+    ) {
+        throw "extracted package zed-terminal --support-info did not expose expected package diagnostics"
+    }
+
     return (Get-FileHash -LiteralPath $ZipFile -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
