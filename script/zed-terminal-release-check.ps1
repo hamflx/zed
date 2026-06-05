@@ -77,12 +77,14 @@ $runId = [guid]::NewGuid().ToString("N").Substring(0, 8)
 $runDir = Join-Path $OutputDir "run-$timestamp-$runId"
 $cliDataDir = Join-Path $runDir "cli-data"
 $cliConfigDir = Join-Path $runDir "cli-config"
+$brokenCliDataDir = Join-Path $runDir "broken-cli-data"
+$brokenCliConfigDir = Join-Path $runDir "broken-cli-config"
 $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 
-New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir | Out-Null
+New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $brokenCliDataDir, $brokenCliConfigDir | Out-Null
 Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
 $script:StepResults = New-Object System.Collections.Generic.List[object]
@@ -416,6 +418,17 @@ try {
                 "app_name: Zed Terminal",
                 "paths:",
                 "diagnostics:"
+            )
+            Set-Content -LiteralPath (Join-Path $brokenCliConfigDir "terminal.json") -Value "{ broken terminal config" -Encoding utf8
+            Invoke-NativeTextCommand "support-info-broken-startup" @(
+                "--user-data-dir", $brokenCliDataDir,
+                "--config-dir", $brokenCliConfigDir,
+                "--support-info"
+            ) @(
+                "^Zed Terminal Support Info",
+                "status: error",
+                "startup_config:",
+                "message:"
             )
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,

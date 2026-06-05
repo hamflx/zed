@@ -5170,10 +5170,6 @@ fn run_terminal_support_info(path_options: TerminalPathOptions) {
             io::stdout()
                 .flush()
                 .expect("failed to flush terminal support info output");
-            if doctor_report.has_errors() {
-                cx.quit();
-                process::exit(2);
-            }
             cx.quit();
         });
 }
