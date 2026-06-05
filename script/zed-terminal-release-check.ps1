@@ -285,11 +285,11 @@ function Invoke-NativeJsonCommand {
     $null = Invoke-NativeJsonCommandResult -Name $Name -Arguments $Arguments
 }
 
-function Invoke-NativeTextCommand {
+function Invoke-NativeTextCommandResult {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [Parameter(Mandatory = $true)][string[]]$RequiredPatterns
+        [Parameter()][string[]]$RequiredPatterns = @()
     )
 
     $stderrFile = Join-Path $runDir "$Name.stderr.log"
@@ -317,6 +317,18 @@ function Invoke-NativeTextCommand {
             throw "Command output for $Name did not match required pattern '$pattern'"
         }
     }
+
+    return $text
+}
+
+function Invoke-NativeTextCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string[]]$RequiredPatterns
+    )
+
+    $null = Invoke-NativeTextCommandResult -Name $Name -Arguments $Arguments -RequiredPatterns $RequiredPatterns
 }
 
 function Assert-PowerShellSyntax {
@@ -459,6 +471,33 @@ try {
                 "--print-startup-layout",
                 "--startup-layout-format", "json"
             )
+            $startupSchema = Invoke-NativeJsonCommandResult "print-startup-config-schema" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--print-startup-config-schema"
+            )
+            if ($startupSchema.title -ne "TerminalStartupConfig" -or $startupSchema.type -ne "object") {
+                throw "Startup config schema did not report the TerminalStartupConfig object contract."
+            }
+            foreach ($propertyName in @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")) {
+                if (-not $startupSchema.properties.PSObject.Properties[$propertyName]) {
+                    throw "Startup config schema is missing expected property '$propertyName'."
+                }
+            }
+            $defaultKeymap = Invoke-NativeTextCommandResult "print-default-keymap" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--print-default-keymap"
+            ) @(
+                "^// Zed Terminal keymap",
+                '"ctrl-shift-t": "zed_terminal::NewTerminalTab"',
+                '"ctrl-shift-p": "command_palette::Toggle"',
+                '"alt-shift-d": "zed_terminal::DuplicateTerminalSplitAuto"',
+                '"alt-f4": "zed_terminal::CloseTerminalWindow"'
+            )
+            if ($defaultKeymap -match "do-not-log") {
+                throw "Default keymap output unexpectedly contained release fixture content."
+            }
             Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
 {
   "default_profile": "work",
