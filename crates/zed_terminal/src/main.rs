@@ -10,7 +10,7 @@ use std::{
     process,
     sync::{Arc, OnceLock},
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -56,6 +56,7 @@ actions!(
         OpenStartupToolsPicker,
         OpenKeymapToolsPicker,
         OpenConfigInitializationReport,
+        OpenConfigBundleBackupDirectory,
         OpenKeymapActionCatalogReport,
         OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
@@ -179,6 +180,9 @@ const TERMINAL_SUPPORT_BUNDLE_PATHS_FILE: &str = "zed-terminal-paths.json";
 const TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE: &str = "zed-terminal-file-metadata.json";
 const TERMINAL_SUPPORT_BUNDLE_README_FILE: &str = "README.txt";
 const TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE: &str = "zed-terminal-config-initialization.json";
+const TERMINAL_CONFIG_BUNDLE_BACKUP_DIR: &str = "zed-terminal-config-bundles";
+const TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_PREFIX: &str = "zed-terminal-config-bundle-";
+const TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION: &str = ".json";
 const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
@@ -21998,6 +22002,48 @@ fn active_terminal_config_initialization_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
 }
 
+fn active_terminal_config_bundle_backup_dir() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_CONFIG_BUNDLE_BACKUP_DIR)
+}
+
+fn terminal_config_bundle_backup_file_name(timestamp_seconds: u64, suffix: Option<u32>) -> String {
+    match suffix {
+        Some(suffix) => format!(
+            "{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_PREFIX}{timestamp_seconds}-{suffix}{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION}"
+        ),
+        None => format!(
+            "{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_PREFIX}{timestamp_seconds}{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION}"
+        ),
+    }
+}
+
+fn terminal_config_bundle_backup_timestamp_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn active_terminal_config_bundle_backup_file() -> PathBuf {
+    terminal_config_bundle_backup_file_at(
+        &active_terminal_config_bundle_backup_dir(),
+        terminal_config_bundle_backup_timestamp_seconds(),
+    )
+}
+
+fn terminal_config_bundle_backup_file_at(backup_dir: &Path, timestamp_seconds: u64) -> PathBuf {
+    for suffix in std::iter::once(None).chain((1..).map(Some)) {
+        let candidate = backup_dir.join(terminal_config_bundle_backup_file_name(
+            timestamp_seconds,
+            suffix,
+        ));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded config bundle backup suffix iterator should always return")
+}
+
 fn active_terminal_startup_layout_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_LAYOUT_REPORT_FILE)
 }
@@ -22124,6 +22170,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
     cx.on_action(open_config_initialization_report);
+    cx.on_action(open_config_bundle_backup_directory);
     cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
@@ -22360,6 +22407,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
         TerminalActionSurface::new::<OpenConfigInitializationReport>(),
+        TerminalActionSurface::new::<OpenConfigBundleBackupDirectory>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -23047,6 +23095,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Config Initialization Report",
             OpenConfigInitializationReport,
         ),
+        MenuItem::action("Back Up Config Bundle...", OpenConfigBundleBackupDirectory),
         MenuItem::action("Open Startup Tools...", OpenStartupToolsPicker),
         MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
         MenuItem::action(
@@ -24058,6 +24107,24 @@ fn open_support_bundle_directory(_: &OpenSupportBundleDirectory, cx: &mut App) {
     }
 
     cx.open_with_system(&support_bundle_dir);
+}
+
+fn open_config_bundle_backup_directory(_: &OpenConfigBundleBackupDirectory, cx: &mut App) {
+    let backup_dir = active_terminal_config_bundle_backup_dir();
+    let backup_file = active_terminal_config_bundle_backup_file();
+    match backup_config_bundle(&active_terminal_config_file_paths(), &backup_file, cx) {
+        Ok(backup) => {
+            log::info!(
+                "wrote zed terminal config bundle backup {} ({} bytes)",
+                backup.bundle_file.display(),
+                backup.bundle_byte_count
+            );
+            cx.open_with_system(&backup_dir);
+        }
+        Err(error) => {
+            log::warn!("failed to back up terminal config bundle: {error:#}");
+        }
+    }
 }
 
 fn open_config_initialization_report(_: &OpenConfigInitializationReport, cx: &mut App) {
@@ -25131,6 +25198,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenConfigInitializationReport);
+        assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupDirectory);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -26291,6 +26359,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Back Up Config Bundle...",
+            "zed_terminal::OpenConfigBundleBackupDirectory",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
         );
@@ -27107,6 +27180,21 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenConfigInitializationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_config_bundle_backup_directory_action_input() {
+        let action = <OpenConfigBundleBackupDirectory as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open config bundle backup directory action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenConfigBundleBackupDirectory>()
                 .is_some()
         );
     }
@@ -30510,6 +30598,27 @@ mod tests {
         assert_eq!(json["files"][1]["label"], "keymap_file");
         assert_eq!(json["files"][1]["status"], "existing");
         assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn config_bundle_backup_file_path_uses_unique_timestamped_names() {
+        let root_dir = temp_test_dir();
+        let backup_dir = root_dir.join(TERMINAL_CONFIG_BUNDLE_BACKUP_DIR);
+        std_fs::create_dir_all(&backup_dir).expect("failed to create backup dir");
+        let first_backup = backup_dir.join(format!(
+            "{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_PREFIX}42{TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION}"
+        ));
+        std_fs::write(&first_backup, "{}\n").expect("failed to write existing backup");
+
+        let next_backup = terminal_config_bundle_backup_file_at(&backup_dir, 42);
+
+        assert_eq!(
+            next_backup.file_name().and_then(|name| name.to_str()),
+            Some("zed-terminal-config-bundle-42-1.json")
+        );
+        assert_eq!(next_backup.parent(), Some(backup_dir.as_path()));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
