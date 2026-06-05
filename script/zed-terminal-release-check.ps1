@@ -538,7 +538,7 @@ try {
                 throw "Keymap schema did not report the KeymapFile array contract."
             }
             $keymapSchemaText = $keymapSchema | ConvertTo-Json -Depth 100
-            foreach ($actionName in @("zed_terminal::NewTerminalTab", "zed_terminal::NewTerminalTabWithProfile", "terminal::Paste", "pane::CloseActiveItem")) {
+            foreach ($actionName in @("zed_terminal::NewTerminalTab", "zed_terminal::NewTerminalTabWithProfile", "zed_terminal::OpenActiveKeymapBindingsReport", "terminal::Paste", "pane::CloseActiveItem")) {
                 if ($keymapSchemaText -notmatch [regex]::Escape($actionName)) {
                     throw "Keymap schema is missing expected action '$actionName'."
                 }
@@ -562,6 +562,10 @@ try {
             $profileTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfile" } | Select-Object -First 1
             if (-not $profileTabAction -or $profileTabAction.input -ne "object") {
                 throw "Keymap action list did not mark NewTerminalTabWithProfile as an object-input action."
+            }
+            $activeBindingsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenActiveKeymapBindingsReport" } | Select-Object -First 1
+            if (-not $activeBindingsReportAction -or $activeBindingsReportAction.namespace -ne "zed_terminal" -or $activeBindingsReportAction.input -ne "none") {
+                throw "Keymap action list is missing the OpenActiveKeymapBindingsReport action metadata."
             }
             $pasteAction = $keymapActions.actions | Where-Object { $_.name -eq "terminal::Paste" } | Select-Object -First 1
             if (-not ($pasteAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-V" -and $_.context -eq "Terminal" })) {
@@ -592,6 +596,15 @@ try {
             if ($profileTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfile" -or $profileTabActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile-tab input contract."
             }
+            $activeBindingsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-active-bindings-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenActiveKeymapBindingsReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($activeBindingsReportActionDescription.action.name -ne "zed_terminal::OpenActiveKeymapBindingsReport" -or $activeBindingsReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected active bindings report action contract."
+            }
             $pasteActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-paste" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -604,6 +617,7 @@ try {
             $keymapActionDescriptionText = @(
                 $newTabActionDescription,
                 $profileTabActionDescription,
+                $activeBindingsReportActionDescription,
                 $pasteActionDescription
             ) | ConvertTo-Json -Depth 20
             if ($keymapActionDescriptionText -match "do-not-log") {

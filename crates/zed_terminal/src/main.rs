@@ -53,6 +53,7 @@ actions!(
         OpenKeymapSchemaFile,
         OpenDefaultKeymapReferenceFile,
         OpenKeymapActionCatalogReport,
+        OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
         OpenDataDirectory,
         OpenDiagnosticsReport,
@@ -158,6 +159,8 @@ const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json"
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
 const TERMINAL_KEYMAP_ACTION_CATALOG_REPORT_FILE: &str = "zed-terminal-keymap-actions.json";
+const TERMINAL_ACTIVE_KEYMAP_BINDINGS_REPORT_FILE: &str =
+    "zed-terminal-active-keymap-bindings.json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
@@ -15107,6 +15110,28 @@ fn write_keymap_action_catalog_report_file(
     })
 }
 
+fn write_active_keymap_bindings_report_file(
+    path: &Path,
+    report: &TerminalActiveKeymapBindingListReport,
+) -> Result<()> {
+    let report = format_active_keymap_binding_list_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create active keymap bindings report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write active keymap bindings report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_description_report_file(
     path: &Path,
     report: &TerminalStartupDescription,
@@ -16896,6 +16921,10 @@ fn active_terminal_keymap_action_catalog_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_KEYMAP_ACTION_CATALOG_REPORT_FILE)
 }
 
+fn active_terminal_active_keymap_bindings_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_ACTIVE_KEYMAP_BINDINGS_REPORT_FILE)
+}
+
 fn active_terminal_profile_description_report_file(profile: &str) -> Result<PathBuf> {
     Ok(paths::logs_dir().join(format!(
         "{}{}{}",
@@ -16991,6 +17020,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
     cx.on_action(open_keymap_action_catalog_report);
+    cx.on_action(open_active_keymap_bindings_report);
     cx.on_action(copy_support_info_to_clipboard);
     cx.on_action(open_profile_description_report);
     cx.on_action(open_log_file);
@@ -17218,6 +17248,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
+        TerminalActionSurface::new::<OpenActiveKeymapBindingsReport>(),
         TerminalActionSurface::new::<OpenKeymapActionCatalogReport>(),
         TerminalActionSurface::new::<OpenKeymapSchemaFile>(),
         TerminalActionSurface::new::<OpenKeymapValidationReport>(),
@@ -17908,6 +17939,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action(
             "Open Keymap Action Catalog Report",
             OpenKeymapActionCatalogReport,
+        ),
+        MenuItem::action(
+            "Open Active Keymap Bindings Report",
+            OpenActiveKeymapBindingsReport,
         ),
         MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
@@ -18837,6 +18872,23 @@ fn open_keymap_action_catalog_report(_: &OpenKeymapActionCatalogReport, cx: &mut
     cx.open_with_system(&report_file);
 }
 
+fn open_active_keymap_bindings_report(_: &OpenActiveKeymapBindingsReport, cx: &mut App) {
+    let report_file = active_terminal_active_keymap_bindings_report_file();
+    let report = match terminal_active_keymap_binding_list_report(cx, paths::keymap_file(), &[]) {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!("failed to build active keymap bindings report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) = write_active_keymap_bindings_report_file(&report_file, &report) {
+        log::warn!("failed to write active keymap bindings report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&report_file);
+}
+
 fn copy_support_info_to_clipboard(_: &CopySupportInfoToClipboard, cx: &mut App) {
     let support_info = active_terminal_support_info(cx);
 
@@ -19658,6 +19710,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapActionCatalogReport);
+        assert_command_palette_action_visible(&filter, &OpenActiveKeymapBindingsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(
@@ -20797,6 +20850,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Active Keymap Bindings Report",
+            "zed_terminal::OpenActiveKeymapBindingsReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Keymap Validation Report",
             "zed_terminal::OpenKeymapValidationReport",
         );
@@ -21569,6 +21627,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenKeymapActionCatalogReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_active_keymap_bindings_report_action_input() {
+        let action =
+            <OpenActiveKeymapBindingsReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open active keymap bindings report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenActiveKeymapBindingsReport>()
                 .is_some()
         );
     }
@@ -23844,6 +23916,72 @@ mod tests {
         assert!(report_text.contains("\"name\": \"zed_terminal::NewTerminalTab\""));
         assert!(report_text.contains("\"keystrokes\": \"ctrl-shift-T\""));
         assert!(!report_text.contains("do-not-log-keymap"));
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn writes_active_keymap_bindings_report_file(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        std_fs::write(
+            &keymap_file,
+            r#"// do-not-log-active-keymap-report
+[
+  {
+    "bindings": {
+      "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab"
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-shift-v": "terminal::PasteText"
+    }
+  }
+]
+"#,
+        )
+        .expect("failed to write active keymap report fixture");
+        let report = terminal_active_keymap_binding_list_report(cx, &keymap_file, &[])
+            .expect("active keymap binding list should build");
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_ACTIVE_KEYMAP_BINDINGS_REPORT_FILE);
+
+        write_active_keymap_bindings_report_file(&report_file, &report)
+            .expect("active keymap bindings report should write");
+
+        let report_text = std_fs::read_to_string(&report_file)
+            .expect("failed to read active keymap bindings report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("active keymap report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["default_keymap"], TERMINAL_KEYMAP_PATH);
+        assert_eq!(json["keymap_file"], keymap_file.display().to_string());
+        assert_eq!(json["user_keymap_source"], "file");
+        assert_eq!(
+            json["binding_count"].as_u64().unwrap(),
+            report.bindings.len() as u64
+        );
+        assert!(
+            json["contexts"].as_array().unwrap()[0]
+                .as_str()
+                .unwrap()
+                .contains("Terminal")
+        );
+        assert!(json["bindings"].as_array().unwrap().iter().any(|binding| {
+            binding["keystrokes"] == "ctrl-shift-T"
+                && binding["matches"][0]["source"] == "User"
+                && binding["matches"][0]["action"] == "zed_terminal::DuplicateTerminalTab"
+        }));
+        assert!(json["bindings"].as_array().unwrap().iter().any(|binding| {
+            binding["keystrokes"] == "ctrl-shift-V"
+                && binding["matches"][0]["source"] == "User"
+                && binding["matches"][0]["action"] == "terminal::PasteText"
+        }));
+        assert!(!report_text.contains("do-not-log-active-keymap-report"));
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
