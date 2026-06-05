@@ -5,10 +5,14 @@ Param(
     [Parameter()][string]$VisualBaselineImage,
     [Parameter()][int]$StartupTimeoutSeconds = 20,
     [Parameter()][int]$CaptureDelaySeconds = 4,
+    [Parameter()][double]$MaxBaselineDifferentPixelRatio = 0.02,
+    [Parameter()][double]$MaxBaselineAverageChannelDelta = 2.0,
+    [Parameter()][int]$BaselinePixelTolerance = 4,
     [Parameter()][switch]$SkipCargo,
     [Parameter()][switch]$SkipRustTests,
     [Parameter()][switch]$SkipCliDiagnostics,
     [Parameter()][switch]$SkipVisualSmoke,
+    [Parameter()][switch]$SkipVisualBaseline,
     [Parameter()][switch]$SkipSplitVisualSmoke
 )
 
@@ -20,6 +24,12 @@ if (-not $Binary) {
 }
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repoRoot "target\zed-terminal-release-check"
+}
+if ($SkipVisualBaseline -and $VisualBaselineImage) {
+    throw "-SkipVisualBaseline cannot be used with -VisualBaselineImage."
+}
+if (-not $VisualBaselineImage -and -not $SkipVisualSmoke -and -not $SkipVisualBaseline) {
+    $VisualBaselineImage = Join-Path $repoRoot "crates\zed_terminal\test_fixtures\visual\zed-terminal-default-windows.png"
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -33,6 +43,15 @@ if ($StartupTimeoutSeconds -lt 1) {
 }
 if ($CaptureDelaySeconds -lt 0) {
     throw "-CaptureDelaySeconds must be at least 0."
+}
+if ($MaxBaselineDifferentPixelRatio -lt 0 -or $MaxBaselineDifferentPixelRatio -gt 1) {
+    throw "-MaxBaselineDifferentPixelRatio must be between 0 and 1."
+}
+if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -gt 255) {
+    throw "-MaxBaselineAverageChannelDelta must be between 0 and 255."
+}
+if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
+    throw "-BaselinePixelTolerance must be between 0 and 255."
 }
 if ($VisualBaselineImage -and -not (Test-Path -LiteralPath $VisualBaselineImage -PathType Leaf)) {
     throw "Visual baseline image not found: $VisualBaselineImage"
@@ -260,6 +279,11 @@ function Write-ReleaseSummary {
         run_dir = $runDir
         binary = $Binary
         log_file = $releaseLog
+        visual_baseline_image = $VisualBaselineImage
+        visual_baseline_skipped = [bool]$SkipVisualBaseline
+        baseline_pixel_tolerance = $BaselinePixelTolerance
+        baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
+        baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
         steps = $script:StepResults
     }
     $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $summaryFile -Encoding utf8
@@ -270,6 +294,11 @@ try {
     Write-Host "repo_root: $repoRoot"
     Write-Host "run_dir: $runDir"
     Write-Host "binary: $Binary"
+    if ($VisualBaselineImage) {
+        Write-Host "visual_baseline_image: $VisualBaselineImage"
+    } elseif ($SkipVisualBaseline) {
+        Write-Host "visual_baseline_image: skipped"
+    }
 
     Invoke-Step "PowerShell syntax: visual smoke" {
         Assert-PowerShellSyntax (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1")
@@ -357,7 +386,12 @@ try {
             "-CaptureDelaySeconds", "$CaptureDelaySeconds"
         )
         if ($VisualBaselineImage) {
-            $visualSmokeArgs += @("-BaselineImage", $VisualBaselineImage)
+            $visualSmokeArgs += @(
+                "-BaselineImage", $VisualBaselineImage,
+                "-MaxBaselineDifferentPixelRatio", "$MaxBaselineDifferentPixelRatio",
+                "-MaxBaselineAverageChannelDelta", "$MaxBaselineAverageChannelDelta",
+                "-BaselinePixelTolerance", "$BaselinePixelTolerance"
+            )
         }
 
         Invoke-Step "visual smoke" {

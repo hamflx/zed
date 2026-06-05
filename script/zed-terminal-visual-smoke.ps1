@@ -482,7 +482,7 @@ Write-Host "ZED TERMINAL VISUAL SMOKE"
 Write-Host "style: official zed terminal renderer"
 Write-Host "tabs: shell startup path"
 Write-Host "glyphs: ABC xyz 0123456789 <> [] {}"
-Write-Host "cwd: $PWD"
+Write-Host "cwd: isolated smoke workspace"
 while ($true) {
     Start-Sleep -Seconds 60
 }
