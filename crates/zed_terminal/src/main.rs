@@ -167,7 +167,20 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 #[command(
     name = "zed-terminal",
     version,
-    about = "Launch the standalone Zed terminal."
+    about = "Launch the standalone Zed terminal.",
+    after_help = "Profile transfer options:
+      --export-profile <NAME> --export-profile-file <FILE>
+          Export one startup profile to a portable JSON file without opening a terminal window
+      --export-profile-format <text|json>
+          Set the output format for --export-profile
+      --import-profile <NAME> --import-profile-file <FILE>
+          Import one startup profile from an exported or raw profile JSON file without opening a terminal window
+      --replace-profile
+          Allow --import-profile to replace an existing startup profile
+      --import-profile-format <text|json>
+          Set the output format for --import-profile
+
+Profile transfer options may be combined with --user-data-dir and --config-dir only."
 )]
 #[command(group(
     ArgGroup::new("default_profile_command")
@@ -14553,6 +14566,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
     use std::collections::BTreeSet;
 
     fn temp_test_dir() -> PathBuf {
@@ -28436,6 +28450,21 @@ mod tests {
         assert_eq!(parsed_import_file, import_file);
         assert!(replace);
         assert_eq!(format, TerminalStartupProfileImportOutputFormat::Json);
+    }
+
+    #[test]
+    fn help_documents_profile_transfer_options() {
+        let help = Cli::command().render_help().to_string();
+
+        assert!(help.contains("Profile transfer options:"));
+        assert!(help.contains("--export-profile <NAME> --export-profile-file <FILE>"));
+        assert!(help.contains("--export-profile-format <text|json>"));
+        assert!(help.contains("--import-profile <NAME> --import-profile-file <FILE>"));
+        assert!(help.contains("--replace-profile"));
+        assert!(help.contains("--import-profile-format <text|json>"));
+        assert!(help.contains(
+            "Profile transfer options may be combined with --user-data-dir and --config-dir only."
+        ));
     }
 
     #[test]

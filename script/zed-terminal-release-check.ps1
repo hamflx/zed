@@ -416,6 +416,17 @@ try {
 
     if (-not $SkipCliDiagnostics) {
         Invoke-Step "CLI diagnostics" {
+            Invoke-NativeTextCommand "help-profile-transfer" @(
+                "--help"
+            ) @(
+                "Profile transfer options:",
+                "--export-profile <NAME> --export-profile-file <FILE>",
+                "--export-profile-format <text\|json>",
+                "--import-profile <NAME> --import-profile-file <FILE>",
+                "--replace-profile",
+                "--import-profile-format <text\|json>",
+                "Profile transfer options may be combined with --user-data-dir and --config-dir only."
+            )
             Invoke-NativeJsonCommand "init-config" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
