@@ -521,6 +521,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.portable_paths -ne "ok" -or
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
+        $manifest.validation.config_bundle -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
@@ -531,9 +532,10 @@ function Read-PackageSmokeSummary {
         $summary.validation.paths -ne "ok" -or
         $summary.validation.portable_paths -ne "ok" -or
         $summary.validation.settings_validation -ne "ok" -or
-        $summary.validation.settings_backup -ne "ok"
+        $summary.validation.settings_backup -ne "ok" -or
+        $summary.validation.config_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/settings validation/backup status"
+        throw "package smoke summary did not report expected path/version/settings validation/backup/config bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
@@ -1070,6 +1072,15 @@ try {
                 "--import-profile <NAME> --import-profile-file <FILE>",
                 "--replace-profile",
                 "--import-profile-format <text\|json>",
+                "Config bundle backup and restore options:",
+                "--backup-config-bundle --backup-config-bundle-file <FILE>",
+                "--backup-config-bundle-format <text\|json>",
+                "--check-config-bundle --check-config-bundle-file <FILE>",
+                "--check-config-bundle-format <text\|json>",
+                "--diff-config-bundle --diff-config-bundle-file <FILE>",
+                "--diff-config-bundle-format <text\|json>",
+                "--restore-config-bundle --restore-config-bundle-file <FILE>",
+                "--restore-config-bundle-format <text\|json>",
                 "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
@@ -1609,6 +1620,80 @@ try {
             $restoredSettingsFileText = Get-Content -Raw -LiteralPath $mutationSettingsFile
             if ($restoredSettingsFileText -notmatch "do-not-log-settings" -or $restoredSettingsFileText -notmatch '"theme": "One Dark"') {
                 throw "Settings restore did not restore settings.json from the backup package."
+            }
+            $mutationConfigBundleFile = Join-Path $mutationCliConfigDir "backups\zed-terminal-config.bundle.json"
+            $configBundle = Invoke-NativeJsonCommandResult "mutation-backup-config-bundle" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--backup-config-bundle",
+                "--backup-config-bundle-file", $mutationConfigBundleFile,
+                "--backup-config-bundle-format", "json"
+            )
+            $configBundleFiles = @($configBundle.files)
+            $configBundleLabels = @($configBundleFiles | ForEach-Object { $_.label })
+            if ($configBundle.status -ne "ok" -or $configBundle.bundle_file -ne $mutationConfigBundleFile -or $configBundleFiles.Count -ne 4 -or $configBundle.bundle_byte_count -le 0 -or $configBundleLabels -notcontains "startup_config_file" -or $configBundleLabels -notcontains "keymap_file" -or $configBundleLabels -notcontains "settings_file" -or $configBundleLabels -notcontains "global_settings_file") {
+                throw "Config bundle backup did not report the expected complete config summary."
+            }
+            $configBundleText = $configBundle | ConvertTo-Json -Depth 10
+            if ($configBundleText -match "do-not-log-settings" -or $configBundleText -match "One Dark" -or $configBundleText -match "do-not-log-keymap") {
+                throw "Config bundle backup output leaked config file contents."
+            }
+            $configBundleFileText = Get-Content -Raw -LiteralPath $mutationConfigBundleFile
+            if ($configBundleFileText -notmatch "do-not-log-settings" -or $configBundleFileText -notmatch "do-not-log-keymap") {
+                throw "Config bundle package did not preserve the full config payload."
+            }
+            $configBundleCheck = Invoke-NativeJsonCommandResult "mutation-check-config-bundle-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-config-bundle",
+                "--check-config-bundle-file", $mutationConfigBundleFile,
+                "--check-config-bundle-format", "json"
+            )
+            if (-not $configBundleCheck.matches -or $configBundleCheck.bundle_file -ne $mutationConfigBundleFile -or @($configBundleCheck.files).Count -ne 4) {
+                throw "Config bundle check did not report the expected matching config summary."
+            }
+            Add-Content -LiteralPath (Join-Path $mutationCliConfigDir "terminal.json") -Value "`n// release-check startup config drift"
+            Add-Content -LiteralPath $mutationSettingsFile -Value "`n// release-check config bundle settings drift"
+            $configBundleDiff = Invoke-NativeJsonCommandResult "mutation-diff-config-bundle-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-config-bundle",
+                "--diff-config-bundle-file", $mutationConfigBundleFile,
+                "--diff-config-bundle-format", "json"
+            )
+            $configBundleStartupDiff = @($configBundleDiff.files) | Where-Object { $_.label -eq "startup_config_file" } | Select-Object -First 1
+            $configBundleSettingsDiff = @($configBundleDiff.files) | Where-Object { $_.label -eq "settings_file" } | Select-Object -First 1
+            if ($configBundleDiff.matches -or -not $configBundleStartupDiff -or $configBundleStartupDiff.text_matches -or -not $configBundleStartupDiff.config_matches -or @($configBundleStartupDiff.categories) -notcontains "text") {
+                throw "Config bundle diff did not distinguish text-only startup config drift."
+            }
+            if (-not $configBundleSettingsDiff -or $configBundleSettingsDiff.text_matches -or -not $configBundleSettingsDiff.settings_matches -or @($configBundleSettingsDiff.categories) -notcontains "text") {
+                throw "Config bundle diff did not distinguish text-only settings drift."
+            }
+            $configBundleDiffText = $configBundleDiff | ConvertTo-Json -Depth 10
+            if ($configBundleDiffText -match "do-not-log-settings" -or $configBundleDiffText -match "One Dark" -or $configBundleDiffText -match "do-not-log-keymap") {
+                throw "Config bundle diff output leaked config file contents."
+            }
+            Set-Content -LiteralPath (Join-Path $mutationCliConfigDir "terminal.json") -Value "{ broken startup" -NoNewline
+            Set-Content -LiteralPath $mutationSettingsFile -Value "{ broken settings" -NoNewline
+            $configBundleRestore = Invoke-NativeJsonCommandResult "mutation-restore-config-bundle" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--restore-config-bundle",
+                "--restore-config-bundle-file", $mutationConfigBundleFile,
+                "--restore-config-bundle-format", "json"
+            )
+            if ($configBundleRestore.status -ne "ok" -or $configBundleRestore.bundle_file -ne $mutationConfigBundleFile -or @($configBundleRestore.files).Count -ne 4) {
+                throw "Config bundle restore did not report the expected restored config summary."
+            }
+            $postConfigBundleCheck = Invoke-NativeJsonCommandResult "mutation-check-config-bundle-post-restore" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-config-bundle",
+                "--check-config-bundle-file", $mutationConfigBundleFile,
+                "--check-config-bundle-format", "json"
+            )
+            if (-not $postConfigBundleCheck.matches) {
+                throw "Config bundle restore did not restore the active config files to the bundle state."
             }
             $mutationKeymapBackupFile = Join-Path $mutationCliConfigDir "backups\keymap.backup.json"
             $keymapBackup = Invoke-NativeJsonCommandResult "mutation-backup-keymap" @(

@@ -180,6 +180,8 @@ const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
 const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
+const TERMINAL_CONFIG_BUNDLE_FORMAT: &str = "zed-terminal-config-bundle";
+const TERMINAL_CONFIG_BUNDLE_VERSION: u64 = 1;
 const TERMINAL_SETTINGS_BACKUP_FORMAT: &str = "zed-terminal-settings-backup";
 const TERMINAL_SETTINGS_BACKUP_VERSION: u64 = 1;
 const TERMINAL_CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -203,6 +205,24 @@ static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
           Allow --import-profile to replace an existing startup profile
       --import-profile-format <text|json>
           Set the output format for --import-profile
+
+Config bundle backup and restore options:
+      --backup-config-bundle --backup-config-bundle-file <FILE>
+          Back up terminal.json, keymap.json, settings.json, and global_settings.json to a portable bundle without opening a terminal window
+      --backup-config-bundle-format <text|json>
+          Set the output format for --backup-config-bundle
+      --check-config-bundle --check-config-bundle-file <FILE>
+          Validate and compare active terminal config files with a bundle without opening a terminal window
+      --check-config-bundle-format <text|json>
+          Set the output format for --check-config-bundle
+      --diff-config-bundle --diff-config-bundle-file <FILE>
+          Summarize differences between active terminal config files and a bundle without opening a terminal window
+      --diff-config-bundle-format <text|json>
+          Set the output format for --diff-config-bundle
+      --restore-config-bundle --restore-config-bundle-file <FILE>
+          Restore terminal.json, keymap.json, settings.json, and global_settings.json from a verified bundle without opening a terminal window
+      --restore-config-bundle-format <text|json>
+          Set the output format for --restore-config-bundle
 
 Startup config backup and restore options:
       --backup-startup-config --backup-startup-config-file <FILE>
@@ -2994,6 +3014,42 @@ enum TerminalProfileTransferCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalConfigBundleCommand {
+    Backup(TerminalConfigBundleBackupCommand),
+    Check(TerminalConfigBundleCheckCommand),
+    Diff(TerminalConfigBundleDiffCommand),
+    Restore(TerminalConfigBundleRestoreCommand),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleBackupCommand {
+    path_options: TerminalPathOptions,
+    bundle_file: PathBuf,
+    format: TerminalConfigBundleOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleCheckCommand {
+    path_options: TerminalPathOptions,
+    bundle_file: PathBuf,
+    format: TerminalConfigBundleOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleDiffCommand {
+    path_options: TerminalPathOptions,
+    bundle_file: PathBuf,
+    format: TerminalConfigBundleOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleRestoreCommand {
+    path_options: TerminalPathOptions,
+    bundle_file: PathBuf,
+    format: TerminalConfigBundleOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigBackupCommand {
     path_options: TerminalPathOptions,
     backup_file: PathBuf,
@@ -3794,6 +3850,265 @@ struct TerminalStartupProfileVisibilityUpdate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleBackup {
+    bundle_file: PathBuf,
+    bundle_byte_count: u64,
+    startup_config_file: TerminalStartupConfigBackupFileSummary,
+    keymap_file: TerminalKeymapBackupFileSummary,
+    settings_file: TerminalSettingsBackupFileSummary,
+    global_settings_file: TerminalSettingsBackupFileSummary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleCheck {
+    bundle_file: PathBuf,
+    matches: bool,
+    startup_config_file: TerminalStartupConfigBackupFileComparison,
+    keymap_file: TerminalKeymapBackupFileComparison,
+    settings_file: TerminalSettingsBackupFileComparison,
+    global_settings_file: TerminalSettingsBackupFileComparison,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleDiff {
+    bundle_file: PathBuf,
+    matches: bool,
+    startup_config_file: TerminalStartupConfigBackupFileComparison,
+    keymap_file: TerminalKeymapBackupFileComparison,
+    settings_file: TerminalSettingsBackupFileComparison,
+    global_settings_file: TerminalSettingsBackupFileComparison,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleRestore {
+    bundle_file: PathBuf,
+    startup_config_file: TerminalConfigBundleRestoreFileSummary,
+    keymap_file: TerminalConfigBundleRestoreFileSummary,
+    settings_file: TerminalConfigBundleRestoreFileSummary,
+    global_settings_file: TerminalConfigBundleRestoreFileSummary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupFileSummary {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    byte_count: Option<u64>,
+    layout_count: Option<usize>,
+    tab_count: Option<usize>,
+    profile_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupFileSummary {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    byte_count: Option<u64>,
+    section_count: Option<usize>,
+    binding_count: Option<usize>,
+    unbind_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupFileComparison {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    backup_exists: bool,
+    text_matches: bool,
+    config_matches: bool,
+    byte_count: Option<u64>,
+    backup_byte_count: Option<u64>,
+    layout_count: Option<usize>,
+    backup_layout_count: Option<usize>,
+    tab_count: Option<usize>,
+    backup_tab_count: Option<usize>,
+    profile_count: Option<usize>,
+    backup_profile_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalKeymapBackupFileComparison {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    backup_exists: bool,
+    text_matches: bool,
+    keymap_matches: bool,
+    byte_count: Option<u64>,
+    backup_byte_count: Option<u64>,
+    section_count: Option<usize>,
+    backup_section_count: Option<usize>,
+    binding_count: Option<usize>,
+    backup_binding_count: Option<usize>,
+    unbind_count: Option<usize>,
+    backup_unbind_count: Option<usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalConfigBundleRestoreFileSummary {
+    label: &'static str,
+    path: PathBuf,
+    restored_exists: bool,
+    byte_count: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalConfigBundleFileKind {
+    StartupConfig,
+    Keymap,
+    Settings,
+    GlobalSettings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalStartupConfigBackupFileDiffCategory {
+    Presence,
+    Text,
+    Config,
+    ByteCount,
+    LayoutCount,
+    TabCount,
+    ProfileCount,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalKeymapBackupFileDiffCategory {
+    Presence,
+    Text,
+    Keymap,
+    ByteCount,
+    SectionCount,
+    BindingCount,
+    UnbindCount,
+}
+
+impl TerminalConfigBundleFileKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::StartupConfig => "startup_config_file",
+            Self::Keymap => "keymap_file",
+            Self::Settings => "settings_file",
+            Self::GlobalSettings => "global_settings_file",
+        }
+    }
+
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::StartupConfig => TERMINAL_STARTUP_CONFIG_FILE,
+            Self::Keymap => "keymap.json",
+            Self::Settings => "settings.json",
+            Self::GlobalSettings => "global_settings.json",
+        }
+    }
+}
+
+impl TerminalStartupConfigBackupFileComparison {
+    fn is_exact_match(&self) -> bool {
+        self.exists == self.backup_exists
+            && self.text_matches
+            && self.config_matches
+            && self.byte_count == self.backup_byte_count
+            && self.layout_count == self.backup_layout_count
+            && self.tab_count == self.backup_tab_count
+            && self.profile_count == self.backup_profile_count
+    }
+
+    fn categories(&self) -> Vec<TerminalStartupConfigBackupFileDiffCategory> {
+        let mut categories = Vec::new();
+        if self.exists != self.backup_exists {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::Presence);
+        }
+        if !self.text_matches {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::Text);
+        }
+        if !self.config_matches {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::Config);
+        }
+        if self.byte_count != self.backup_byte_count {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::ByteCount);
+        }
+        if self.layout_count != self.backup_layout_count {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::LayoutCount);
+        }
+        if self.tab_count != self.backup_tab_count {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::TabCount);
+        }
+        if self.profile_count != self.backup_profile_count {
+            categories.push(TerminalStartupConfigBackupFileDiffCategory::ProfileCount);
+        }
+        categories
+    }
+}
+
+impl TerminalKeymapBackupFileComparison {
+    fn is_exact_match(&self) -> bool {
+        self.exists == self.backup_exists
+            && self.text_matches
+            && self.keymap_matches
+            && self.byte_count == self.backup_byte_count
+            && self.section_count == self.backup_section_count
+            && self.binding_count == self.backup_binding_count
+            && self.unbind_count == self.backup_unbind_count
+    }
+
+    fn categories(&self) -> Vec<TerminalKeymapBackupFileDiffCategory> {
+        let mut categories = Vec::new();
+        if self.exists != self.backup_exists {
+            categories.push(TerminalKeymapBackupFileDiffCategory::Presence);
+        }
+        if !self.text_matches {
+            categories.push(TerminalKeymapBackupFileDiffCategory::Text);
+        }
+        if !self.keymap_matches {
+            categories.push(TerminalKeymapBackupFileDiffCategory::Keymap);
+        }
+        if self.byte_count != self.backup_byte_count {
+            categories.push(TerminalKeymapBackupFileDiffCategory::ByteCount);
+        }
+        if self.section_count != self.backup_section_count {
+            categories.push(TerminalKeymapBackupFileDiffCategory::SectionCount);
+        }
+        if self.binding_count != self.backup_binding_count {
+            categories.push(TerminalKeymapBackupFileDiffCategory::BindingCount);
+        }
+        if self.unbind_count != self.backup_unbind_count {
+            categories.push(TerminalKeymapBackupFileDiffCategory::UnbindCount);
+        }
+        categories
+    }
+}
+
+impl TerminalStartupConfigBackupFileDiffCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Presence => "presence",
+            Self::Text => "text",
+            Self::Config => "config",
+            Self::ByteCount => "byte_count",
+            Self::LayoutCount => "layout_count",
+            Self::TabCount => "tab_count",
+            Self::ProfileCount => "profile_count",
+        }
+    }
+}
+
+impl TerminalKeymapBackupFileDiffCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Presence => "presence",
+            Self::Text => "text",
+            Self::Keymap => "keymap",
+            Self::ByteCount => "byte_count",
+            Self::SectionCount => "section_count",
+            Self::BindingCount => "binding_count",
+            Self::UnbindCount => "unbind_count",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigBackup {
     path: PathBuf,
     backup_file: PathBuf,
@@ -4056,6 +4371,23 @@ struct TerminalStartupProfileExportFile {
 struct TerminalStartupProfileImportFile {
     source_profile: Option<String>,
     config: TerminalStartupProfileConfig,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalConfigBundleFile {
+    label: String,
+    file_name: String,
+    exists: bool,
+    content: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalConfigBundlePackage {
+    format: String,
+    version: u64,
+    files: Vec<TerminalConfigBundleFile>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -4656,6 +4988,13 @@ enum TerminalStartupProfileRenameOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileVisibilityOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalConfigBundleOutputFormat {
     #[default]
     Text,
     Json,
@@ -5589,6 +5928,293 @@ impl TerminalProfileTransferCommand {
     fn path_options(&self) -> &TerminalPathOptions {
         match self {
             Self::Export { path_options, .. } | Self::Import { path_options, .. } => path_options,
+        }
+    }
+}
+
+impl TerminalConfigBundleCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalConfigBundleParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--backup-config-bundle" => {
+                    if inline_value.is_some() {
+                        bail!("--backup-config-bundle does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--backup-config-bundle")?);
+                }
+                "--backup-config-bundle-file" => {
+                    parser.backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_bundle_option = true;
+                }
+                "--backup-config-bundle-format" => {
+                    parser.backup_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_bundle_option = true;
+                }
+                "--check-config-bundle" => {
+                    if inline_value.is_some() {
+                        bail!("--check-config-bundle does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--check-config-bundle")?);
+                }
+                "--check-config-bundle-file" => {
+                    parser.check_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_bundle_option = true;
+                }
+                "--check-config-bundle-format" => {
+                    parser.check_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_bundle_option = true;
+                }
+                "--diff-config-bundle" => {
+                    if inline_value.is_some() {
+                        bail!("--diff-config-bundle does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--diff-config-bundle")?);
+                }
+                "--diff-config-bundle-file" => {
+                    parser.diff_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_bundle_option = true;
+                }
+                "--diff-config-bundle-format" => {
+                    parser.diff_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_bundle_option = true;
+                }
+                "--restore-config-bundle" => {
+                    if inline_value.is_some() {
+                        bail!("--restore-config-bundle does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--restore-config-bundle")?);
+                }
+                "--restore-config-bundle-file" => {
+                    parser.restore_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_bundle_option = true;
+                }
+                "--restore-config-bundle-format" => {
+                    parser.restore_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_bundle_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Backup(command) => &command.path_options,
+            Self::Check(command) => &command.path_options,
+            Self::Diff(command) => &command.path_options,
+            Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalConfigBundleParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_bundle_option: bool,
+    pre_bundle_arg: Option<String>,
+    backup_file: Option<PathBuf>,
+    backup_format: Option<String>,
+    check_file: Option<PathBuf>,
+    check_format: Option<String>,
+    diff_file: Option<PathBuf>,
+    diff_format: Option<String>,
+    restore_file: Option<PathBuf>,
+    restore_format: Option<String>,
+}
+
+impl TerminalConfigBundleParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_bundle_option = true;
+        if let Some(arg) = &self.pre_bundle_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_bundle_option {
+            let mode = self.mode.unwrap_or("terminal config bundle command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_bundle_arg.is_none() {
+            self.pre_bundle_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalConfigBundleCommand>> {
+        if !self.seen_bundle_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--backup-config-bundle") => {
+                if self.check_file.is_some()
+                    || self.check_format.is_some()
+                    || self.diff_file.is_some()
+                    || self.diff_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--backup-config-bundle cannot be used with other config bundle options");
+                }
+                let bundle_file = self
+                    .backup_file
+                    .context("--backup-config-bundle requires --backup-config-bundle-file")?;
+                Ok(Some(TerminalConfigBundleCommand::Backup(
+                    TerminalConfigBundleBackupCommand {
+                        path_options,
+                        bundle_file,
+                        format: parse_config_bundle_output_format(
+                            "--backup-config-bundle-format",
+                            self.backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--check-config-bundle") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.diff_file.is_some()
+                    || self.diff_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--check-config-bundle cannot be used with other config bundle options");
+                }
+                let bundle_file = self
+                    .check_file
+                    .context("--check-config-bundle requires --check-config-bundle-file")?;
+                Ok(Some(TerminalConfigBundleCommand::Check(
+                    TerminalConfigBundleCheckCommand {
+                        path_options,
+                        bundle_file,
+                        format: parse_config_bundle_output_format(
+                            "--check-config-bundle-format",
+                            self.check_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--diff-config-bundle") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_file.is_some()
+                    || self.check_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--diff-config-bundle cannot be used with other config bundle options");
+                }
+                let bundle_file = self
+                    .diff_file
+                    .context("--diff-config-bundle requires --diff-config-bundle-file")?;
+                Ok(Some(TerminalConfigBundleCommand::Diff(
+                    TerminalConfigBundleDiffCommand {
+                        path_options,
+                        bundle_file,
+                        format: parse_config_bundle_output_format(
+                            "--diff-config-bundle-format",
+                            self.diff_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--restore-config-bundle") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_file.is_some()
+                    || self.check_format.is_some()
+                    || self.diff_file.is_some()
+                    || self.diff_format.is_some()
+                {
+                    bail!(
+                        "--restore-config-bundle cannot be used with other config bundle options"
+                    );
+                }
+                let bundle_file = self
+                    .restore_file
+                    .context("--restore-config-bundle requires --restore-config-bundle-file")?;
+                Ok(Some(TerminalConfigBundleCommand::Restore(
+                    TerminalConfigBundleRestoreCommand {
+                        path_options,
+                        bundle_file,
+                        format: parse_config_bundle_output_format(
+                            "--restore-config-bundle-format",
+                            self.restore_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some(mode) => bail!("unsupported terminal config bundle mode: {mode}"),
+            None => {
+                if self.backup_file.is_some() {
+                    bail!("--backup-config-bundle-file requires --backup-config-bundle");
+                }
+                if self.backup_format.is_some() {
+                    bail!("--backup-config-bundle-format requires --backup-config-bundle");
+                }
+                if self.check_file.is_some() {
+                    bail!("--check-config-bundle-file requires --check-config-bundle");
+                }
+                if self.check_format.is_some() {
+                    bail!("--check-config-bundle-format requires --check-config-bundle");
+                }
+                if self.diff_file.is_some() {
+                    bail!("--diff-config-bundle-file requires --diff-config-bundle");
+                }
+                if self.diff_format.is_some() {
+                    bail!("--diff-config-bundle-format requires --diff-config-bundle");
+                }
+                if self.restore_file.is_some() {
+                    bail!("--restore-config-bundle-file requires --restore-config-bundle");
+                }
+                if self.restore_format.is_some() {
+                    bail!("--restore-config-bundle-format requires --restore-config-bundle");
+                }
+                Ok(None)
+            }
         }
     }
 }
@@ -8103,6 +8729,18 @@ fn main() {
         }
     }
 
+    match TerminalConfigBundleCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_config_bundle_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalStartupConfigFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_startup_config_file_command(command);
@@ -8645,6 +9283,45 @@ fn run_terminal_profile_transfer_command(command: TerminalProfileTransferCommand
             }
         }
     }
+}
+
+fn run_terminal_config_bundle_command(command: TerminalConfigBundleCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let result = match command {
+                TerminalConfigBundleCommand::Backup(command) => {
+                    print_config_bundle_backup(&command.bundle_file, command.format, cx)
+                }
+                TerminalConfigBundleCommand::Check(command) => {
+                    print_config_bundle_check(&command.bundle_file, command.format, cx)
+                }
+                TerminalConfigBundleCommand::Diff(command) => {
+                    print_config_bundle_diff(&command.bundle_file, command.format, cx)
+                }
+                TerminalConfigBundleCommand::Restore(command) => {
+                    print_config_bundle_restore(&command.bundle_file, command.format, cx)
+                }
+            };
+
+            match result {
+                Ok(()) => io::stdout()
+                    .flush()
+                    .expect("failed to flush terminal config bundle output"),
+                Err(error) => {
+                    eprintln!("failed to manage terminal config bundle: {error:#}");
+                    io::stderr().flush().ok();
+                    cx.quit();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
 }
 
 fn run_terminal_support_info(path_options: TerminalPathOptions) {
@@ -9543,6 +10220,70 @@ fn print_startup_profile_visibility_update(
     Ok(())
 }
 
+fn print_config_bundle_backup(
+    bundle_file: &Path,
+    format: TerminalConfigBundleOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let bundle = backup_config_bundle(&active_terminal_config_file_paths(), bundle_file, cx)?;
+    match format {
+        TerminalConfigBundleOutputFormat::Text => {
+            print!("{}", format_config_bundle_backup(&bundle))
+        }
+        TerminalConfigBundleOutputFormat::Json => {
+            print!("{}", format_config_bundle_backup_json(&bundle)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_config_bundle_check(
+    bundle_file: &Path,
+    format: TerminalConfigBundleOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let check = check_config_bundle(&active_terminal_config_file_paths(), bundle_file, cx)?;
+    match format {
+        TerminalConfigBundleOutputFormat::Text => print!("{}", format_config_bundle_check(&check)),
+        TerminalConfigBundleOutputFormat::Json => {
+            print!("{}", format_config_bundle_check_json(&check)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_config_bundle_diff(
+    bundle_file: &Path,
+    format: TerminalConfigBundleOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let diff = diff_config_bundle(&active_terminal_config_file_paths(), bundle_file, cx)?;
+    match format {
+        TerminalConfigBundleOutputFormat::Text => print!("{}", format_config_bundle_diff(&diff)),
+        TerminalConfigBundleOutputFormat::Json => {
+            print!("{}", format_config_bundle_diff_json(&diff)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_config_bundle_restore(
+    bundle_file: &Path,
+    format: TerminalConfigBundleOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let restore = restore_config_bundle(&active_terminal_config_file_paths(), bundle_file, cx)?;
+    match format {
+        TerminalConfigBundleOutputFormat::Text => {
+            print!("{}", format_config_bundle_restore(&restore))
+        }
+        TerminalConfigBundleOutputFormat::Json => {
+            print!("{}", format_config_bundle_restore_json(&restore)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_config_backup(
     backup_file: &Path,
     format: TerminalStartupConfigBackupOutputFormat,
@@ -9691,6 +10432,162 @@ fn print_settings_restore(
         }
     }
     Ok(())
+}
+
+fn backup_config_bundle(
+    file_paths: &TerminalConfigFilePaths,
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleBackup> {
+    reject_config_bundle_target(file_paths, bundle_file, "bundle")?;
+
+    let startup_config = read_config_bundle_startup_snapshot(&file_paths.startup_config_file, cx)?;
+    let keymap = read_config_bundle_keymap_snapshot(&file_paths.keymap_file, cx)?;
+    let settings = read_settings_snapshot(
+        TerminalSettingsFileKind::User,
+        &file_paths.settings_file,
+        cx,
+    )?;
+    let global_settings = read_settings_snapshot(
+        TerminalSettingsFileKind::Global,
+        &file_paths.global_settings_file,
+        cx,
+    )?;
+
+    let package = TerminalConfigBundlePackage {
+        format: TERMINAL_CONFIG_BUNDLE_FORMAT.into(),
+        version: TERMINAL_CONFIG_BUNDLE_VERSION,
+        files: vec![
+            startup_config.to_bundle_file(),
+            keymap.to_bundle_file(),
+            config_bundle_settings_to_file(&settings),
+            config_bundle_settings_to_file(&global_settings),
+        ],
+    };
+    let mut content = serde_json::to_string_pretty(&package)
+        .context("failed to serialize terminal config bundle")?;
+    content.push('\n');
+
+    if let Some(parent) = bundle_file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create terminal config bundle directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std_fs::write(bundle_file, content).with_context(|| {
+        format!(
+            "failed to write terminal config bundle {}",
+            bundle_file.display()
+        )
+    })?;
+    let bundle_byte_count = std_fs::metadata(bundle_file)
+        .with_context(|| {
+            format!(
+                "failed to inspect terminal config bundle {}",
+                bundle_file.display()
+            )
+        })?
+        .len();
+
+    Ok(TerminalConfigBundleBackup {
+        bundle_file: bundle_file.to_path_buf(),
+        bundle_byte_count,
+        startup_config_file: startup_config.summary(),
+        keymap_file: keymap.summary(),
+        settings_file: settings.summary(),
+        global_settings_file: global_settings.summary(),
+    })
+}
+
+fn check_config_bundle(
+    file_paths: &TerminalConfigFilePaths,
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleCheck> {
+    reject_config_bundle_target(file_paths, bundle_file, "bundle")?;
+
+    let active = read_config_bundle_snapshots(file_paths, cx)?;
+    let backup = read_config_bundle_package(bundle_file, cx)?;
+    let startup_config_file = compare_config_bundle_startup_snapshot(
+        &active.startup_config_file,
+        &backup.startup_config_file,
+    );
+    let keymap_file =
+        compare_config_bundle_keymap_snapshot(&active.keymap_file, &backup.keymap_file);
+    let settings_file = compare_settings_snapshot(&active.settings_file, &backup.settings_file);
+    let global_settings_file =
+        compare_settings_snapshot(&active.global_settings_file, &backup.global_settings_file);
+    let matches = startup_config_file.is_exact_match()
+        && keymap_file.is_exact_match()
+        && settings_file.is_exact_match()
+        && global_settings_file.is_exact_match();
+
+    Ok(TerminalConfigBundleCheck {
+        bundle_file: bundle_file.to_path_buf(),
+        matches,
+        startup_config_file,
+        keymap_file,
+        settings_file,
+        global_settings_file,
+    })
+}
+
+fn diff_config_bundle(
+    file_paths: &TerminalConfigFilePaths,
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleDiff> {
+    let check = check_config_bundle(file_paths, bundle_file, cx)?;
+    Ok(TerminalConfigBundleDiff {
+        bundle_file: check.bundle_file,
+        matches: check.matches,
+        startup_config_file: check.startup_config_file,
+        keymap_file: check.keymap_file,
+        settings_file: check.settings_file,
+        global_settings_file: check.global_settings_file,
+    })
+}
+
+fn restore_config_bundle(
+    file_paths: &TerminalConfigFilePaths,
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleRestore> {
+    reject_config_bundle_target(file_paths, bundle_file, "bundle")?;
+
+    let backup = read_config_bundle_package(bundle_file, cx)?;
+    let startup_config_file =
+        restore_config_bundle_file(&file_paths.startup_config_file, &backup.startup_config_file)?;
+    let keymap_file =
+        restore_config_bundle_keymap_file(&file_paths.keymap_file, &backup.keymap_file)?;
+    let settings_file =
+        restore_settings_snapshot(&file_paths.settings_file, &backup.settings_file)?;
+    let global_settings_file = restore_settings_snapshot(
+        &file_paths.global_settings_file,
+        &backup.global_settings_file,
+    )?;
+
+    Ok(TerminalConfigBundleRestore {
+        bundle_file: bundle_file.to_path_buf(),
+        startup_config_file,
+        keymap_file,
+        settings_file: TerminalConfigBundleRestoreFileSummary {
+            label: settings_file.label,
+            path: settings_file.path,
+            restored_exists: settings_file.restored_exists,
+            byte_count: settings_file.byte_count,
+        },
+        global_settings_file: TerminalConfigBundleRestoreFileSummary {
+            label: global_settings_file.label,
+            path: global_settings_file.path,
+            restored_exists: global_settings_file.restored_exists,
+            byte_count: global_settings_file.byte_count,
+        },
+    })
 }
 
 fn print_keymap_backup(
@@ -10124,6 +11021,17 @@ fn parse_profile_import_output_format(
         "text" => Ok(TerminalStartupProfileImportOutputFormat::Text),
         "json" => Ok(TerminalStartupProfileImportOutputFormat::Json),
         format => bail!("unsupported --import-profile-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_config_bundle_output_format(
+    flag: &str,
+    format: Option<&str>,
+) -> Result<TerminalConfigBundleOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalConfigBundleOutputFormat::Text),
+        "json" => Ok(TerminalConfigBundleOutputFormat::Json),
+        format => bail!("unsupported {flag} {format:?}; expected text or json"),
     }
 }
 
@@ -13672,6 +14580,668 @@ fn reject_settings_backup_target(
     Ok(())
 }
 
+fn reject_config_bundle_target(
+    file_paths: &TerminalConfigFilePaths,
+    bundle_file: &Path,
+    operation: &str,
+) -> Result<()> {
+    for config_path in [
+        &file_paths.startup_config_file,
+        &file_paths.keymap_file,
+        &file_paths.settings_file,
+        &file_paths.global_settings_file,
+    ] {
+        if paths_refer_to_same_file(config_path, bundle_file)? {
+            bail!(
+                "{operation} file {} must be different from terminal config file {}",
+                bundle_file.display(),
+                config_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+struct TerminalConfigBundleSnapshots {
+    startup_config_file: TerminalConfigBundleStartupSnapshot,
+    keymap_file: TerminalConfigBundleKeymapSnapshot,
+    settings_file: TerminalSettingsSnapshot,
+    global_settings_file: TerminalSettingsSnapshot,
+}
+
+struct TerminalConfigBundleBackupSnapshots {
+    startup_config_file: TerminalConfigBundleStartupSnapshot,
+    keymap_file: TerminalConfigBundleKeymapSnapshot,
+    settings_file: TerminalSettingsSnapshot,
+    global_settings_file: TerminalSettingsSnapshot,
+}
+
+struct TerminalConfigBundleStartupSnapshot {
+    path: PathBuf,
+    exists: bool,
+    content: Option<String>,
+    byte_count: Option<u64>,
+    config: Option<TerminalStartupConfig>,
+    validation: Option<TerminalStartupConfigValidation>,
+}
+
+struct TerminalConfigBundleKeymapSnapshot {
+    path: PathBuf,
+    exists: bool,
+    content: Option<String>,
+    byte_count: Option<u64>,
+    json: Option<serde_json::Value>,
+    stats: Option<TerminalKeymapJsonStats>,
+    binding_count: Option<usize>,
+}
+
+impl TerminalConfigBundleStartupSnapshot {
+    fn summary(&self) -> TerminalStartupConfigBackupFileSummary {
+        TerminalStartupConfigBackupFileSummary {
+            label: TerminalConfigBundleFileKind::StartupConfig.label(),
+            path: self.path.clone(),
+            exists: self.exists,
+            byte_count: self.byte_count,
+            layout_count: self
+                .validation
+                .as_ref()
+                .map(|validation| validation.layout_count),
+            tab_count: self
+                .validation
+                .as_ref()
+                .map(|validation| validation.tab_count),
+            profile_count: self.config.as_ref().map(|config| config.profiles.len()),
+        }
+    }
+
+    fn to_bundle_file(&self) -> TerminalConfigBundleFile {
+        let kind = TerminalConfigBundleFileKind::StartupConfig;
+        TerminalConfigBundleFile {
+            label: kind.label().into(),
+            file_name: kind.file_name().into(),
+            exists: self.exists,
+            content: self.content.clone(),
+        }
+    }
+}
+
+impl TerminalConfigBundleKeymapSnapshot {
+    fn summary(&self) -> TerminalKeymapBackupFileSummary {
+        TerminalKeymapBackupFileSummary {
+            label: TerminalConfigBundleFileKind::Keymap.label(),
+            path: self.path.clone(),
+            exists: self.exists,
+            byte_count: self.byte_count,
+            section_count: self.stats.as_ref().map(|stats| stats.section_count),
+            binding_count: self.binding_count,
+            unbind_count: self.stats.as_ref().map(|stats| stats.unbind_count),
+        }
+    }
+
+    fn to_bundle_file(&self) -> TerminalConfigBundleFile {
+        let kind = TerminalConfigBundleFileKind::Keymap;
+        TerminalConfigBundleFile {
+            label: kind.label().into(),
+            file_name: kind.file_name().into(),
+            exists: self.exists,
+            content: self.content.clone(),
+        }
+    }
+}
+
+fn config_bundle_settings_to_file(snapshot: &TerminalSettingsSnapshot) -> TerminalConfigBundleFile {
+    TerminalConfigBundleFile {
+        label: match snapshot.kind {
+            TerminalSettingsFileKind::User => TerminalConfigBundleFileKind::Settings.label(),
+            TerminalSettingsFileKind::Global => {
+                TerminalConfigBundleFileKind::GlobalSettings.label()
+            }
+        }
+        .into(),
+        file_name: snapshot.kind.file_name().into(),
+        exists: snapshot.exists,
+        content: snapshot.content.clone(),
+    }
+}
+
+fn read_config_bundle_snapshots(
+    file_paths: &TerminalConfigFilePaths,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleSnapshots> {
+    Ok(TerminalConfigBundleSnapshots {
+        startup_config_file: read_config_bundle_startup_snapshot(
+            &file_paths.startup_config_file,
+            cx,
+        )?,
+        keymap_file: read_config_bundle_keymap_snapshot(&file_paths.keymap_file, cx)?,
+        settings_file: read_settings_snapshot(
+            TerminalSettingsFileKind::User,
+            &file_paths.settings_file,
+            cx,
+        )?,
+        global_settings_file: read_settings_snapshot(
+            TerminalSettingsFileKind::Global,
+            &file_paths.global_settings_file,
+            cx,
+        )?,
+    })
+}
+
+fn read_config_bundle_startup_snapshot(
+    path: &Path,
+    _cx: &mut App,
+) -> Result<TerminalConfigBundleStartupSnapshot> {
+    let metadata = match std_fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalConfigBundleStartupSnapshot {
+                path: path.to_path_buf(),
+                exists: false,
+                content: None,
+                byte_count: None,
+                config: None,
+                validation: None,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal startup config {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    if !metadata.is_file() {
+        bail!("terminal startup config {} is not a file", path.display());
+    }
+
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let (config, validation) = validate_startup_config_content(&text).with_context(|| {
+        format!(
+            "refusing to use invalid terminal startup config {}",
+            path.display()
+        )
+    })?;
+    Ok(TerminalConfigBundleStartupSnapshot {
+        path: path.to_path_buf(),
+        exists: true,
+        content: Some(text),
+        byte_count: Some(metadata.len()),
+        config: Some(config),
+        validation: Some(validation),
+    })
+}
+
+fn read_config_bundle_keymap_snapshot(
+    path: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleKeymapSnapshot> {
+    let metadata = match std_fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalConfigBundleKeymapSnapshot {
+                path: path.to_path_buf(),
+                exists: false,
+                content: None,
+                byte_count: None,
+                json: None,
+                stats: None,
+                binding_count: None,
+            });
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect terminal keymap {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        bail!("terminal keymap {} is not a file", path.display());
+    }
+
+    let keymap = read_valid_keymap_text(path, "terminal keymap", cx)?;
+    Ok(TerminalConfigBundleKeymapSnapshot {
+        path: path.to_path_buf(),
+        exists: true,
+        content: Some(keymap.text),
+        byte_count: Some(metadata.len()),
+        json: Some(keymap.json),
+        stats: Some(keymap.stats),
+        binding_count: Some(keymap.binding_count),
+    })
+}
+
+fn validate_startup_config_content(
+    content: &str,
+) -> Result<(TerminalStartupConfig, TerminalStartupConfigValidation)> {
+    let config = settings::parse_json_with_comments::<TerminalStartupConfig>(content)
+        .context("failed to parse terminal startup config")?;
+    let validation = config
+        .validate()
+        .context("failed to validate terminal startup config")?;
+    Ok((config, validation))
+}
+
+fn read_config_bundle_package(
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleBackupSnapshots> {
+    let metadata = std_fs::metadata(bundle_file).with_context(|| {
+        format!(
+            "failed to inspect terminal config bundle {}",
+            bundle_file.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "terminal config bundle {} is not a file",
+            bundle_file.display()
+        );
+    }
+
+    let content = std_fs::read_to_string(bundle_file).with_context(|| {
+        format!(
+            "failed to read terminal config bundle {}",
+            bundle_file.display()
+        )
+    })?;
+    let package: TerminalConfigBundlePackage =
+        serde_json::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse terminal config bundle {}",
+                bundle_file.display()
+            )
+        })?;
+    validate_config_bundle_package(package, bundle_file, cx)
+}
+
+fn validate_config_bundle_package(
+    package: TerminalConfigBundlePackage,
+    bundle_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleBackupSnapshots> {
+    if package.format != TERMINAL_CONFIG_BUNDLE_FORMAT {
+        bail!(
+            "unsupported terminal config bundle format {:?}; expected {:?}",
+            package.format,
+            TERMINAL_CONFIG_BUNDLE_FORMAT
+        );
+    }
+    if package.version != TERMINAL_CONFIG_BUNDLE_VERSION {
+        bail!(
+            "unsupported terminal config bundle version {}; expected {}",
+            package.version,
+            TERMINAL_CONFIG_BUNDLE_VERSION
+        );
+    }
+    if package.files.len() != 4 {
+        bail!(
+            "terminal config bundle must contain exactly 4 files; found {}",
+            package.files.len()
+        );
+    }
+
+    let mut files = BTreeMap::new();
+    for file in package.files {
+        let label = file.label.clone();
+        if files.insert(label.clone(), file).is_some() {
+            bail!("terminal config bundle contains duplicate file label {label:?}");
+        }
+    }
+
+    Ok(TerminalConfigBundleBackupSnapshots {
+        startup_config_file: bundle_startup_snapshot_from_file(
+            bundle_file,
+            files.remove(TerminalConfigBundleFileKind::StartupConfig.label()),
+        )?,
+        keymap_file: bundle_keymap_snapshot_from_file(
+            bundle_file,
+            files.remove(TerminalConfigBundleFileKind::Keymap.label()),
+            cx,
+        )?,
+        settings_file: bundle_settings_snapshot_from_file(
+            bundle_file,
+            TerminalSettingsFileKind::User,
+            files.remove(TerminalConfigBundleFileKind::Settings.label()),
+            cx,
+        )?,
+        global_settings_file: bundle_settings_snapshot_from_file(
+            bundle_file,
+            TerminalSettingsFileKind::Global,
+            files.remove(TerminalConfigBundleFileKind::GlobalSettings.label()),
+            cx,
+        )?,
+    })
+}
+
+fn bundle_startup_snapshot_from_file(
+    bundle_file: &Path,
+    file: Option<TerminalConfigBundleFile>,
+) -> Result<TerminalConfigBundleStartupSnapshot> {
+    let kind = TerminalConfigBundleFileKind::StartupConfig;
+    let file = require_config_bundle_file(kind, file)?;
+    match (file.exists, file.content) {
+        (true, Some(content)) => {
+            let (config, validation) =
+                validate_startup_config_content(&content).with_context(|| {
+                    format!(
+                        "refusing to use invalid {} from terminal config bundle {}",
+                        kind.label(),
+                        bundle_file.display()
+                    )
+                })?;
+            Ok(TerminalConfigBundleStartupSnapshot {
+                path: PathBuf::from(kind.file_name()),
+                exists: true,
+                byte_count: Some(content.len() as u64),
+                content: Some(content),
+                config: Some(config),
+                validation: Some(validation),
+            })
+        }
+        (true, None) => {
+            bail!(
+                "terminal config bundle file {:?} is marked present but has no content",
+                kind.label()
+            );
+        }
+        (false, Some(_)) => {
+            bail!(
+                "terminal config bundle file {:?} is marked missing but contains content",
+                kind.label()
+            );
+        }
+        (false, None) => Ok(TerminalConfigBundleStartupSnapshot {
+            path: PathBuf::from(kind.file_name()),
+            exists: false,
+            content: None,
+            byte_count: None,
+            config: None,
+            validation: None,
+        }),
+    }
+}
+
+fn bundle_keymap_snapshot_from_file(
+    bundle_file: &Path,
+    file: Option<TerminalConfigBundleFile>,
+    cx: &mut App,
+) -> Result<TerminalConfigBundleKeymapSnapshot> {
+    let kind = TerminalConfigBundleFileKind::Keymap;
+    let file = require_config_bundle_file(kind, file)?;
+    match (file.exists, file.content) {
+        (true, Some(content)) => {
+            let binding_count = load_keymap_content_for_validation(kind.label(), &content, cx)
+                .with_context(|| {
+                    format!(
+                        "refusing to use invalid {} from terminal config bundle {}",
+                        kind.label(),
+                        bundle_file.display()
+                    )
+                })?;
+            let json = parse_keymap_json_value_for_diff(&content).with_context(|| {
+                format!(
+                    "failed to parse {} from terminal config bundle {}",
+                    kind.label(),
+                    bundle_file.display()
+                )
+            })?;
+            let stats = keymap_json_stats(&json).with_context(|| {
+                format!(
+                    "failed to inspect {} from terminal config bundle {}",
+                    kind.label(),
+                    bundle_file.display()
+                )
+            })?;
+            Ok(TerminalConfigBundleKeymapSnapshot {
+                path: PathBuf::from(kind.file_name()),
+                exists: true,
+                byte_count: Some(content.len() as u64),
+                content: Some(content),
+                json: Some(json),
+                stats: Some(stats),
+                binding_count: Some(binding_count),
+            })
+        }
+        (true, None) => {
+            bail!(
+                "terminal config bundle file {:?} is marked present but has no content",
+                kind.label()
+            );
+        }
+        (false, Some(_)) => {
+            bail!(
+                "terminal config bundle file {:?} is marked missing but contains content",
+                kind.label()
+            );
+        }
+        (false, None) => Ok(TerminalConfigBundleKeymapSnapshot {
+            path: PathBuf::from(kind.file_name()),
+            exists: false,
+            content: None,
+            byte_count: None,
+            json: None,
+            stats: None,
+            binding_count: None,
+        }),
+    }
+}
+
+fn bundle_settings_snapshot_from_file(
+    bundle_file: &Path,
+    kind: TerminalSettingsFileKind,
+    file: Option<TerminalConfigBundleFile>,
+    cx: &mut App,
+) -> Result<TerminalSettingsSnapshot> {
+    let bundle_kind = match kind {
+        TerminalSettingsFileKind::User => TerminalConfigBundleFileKind::Settings,
+        TerminalSettingsFileKind::Global => TerminalConfigBundleFileKind::GlobalSettings,
+    };
+    let file = require_config_bundle_file(bundle_kind, file)?;
+    match (file.exists, file.content) {
+        (true, Some(content)) => {
+            let json = validate_settings_content(kind, &content, cx).with_context(|| {
+                format!(
+                    "refusing to use invalid {} from terminal config bundle {}",
+                    bundle_kind.label(),
+                    bundle_file.display()
+                )
+            })?;
+            Ok(TerminalSettingsSnapshot {
+                kind,
+                path: PathBuf::from(kind.file_name()),
+                exists: true,
+                byte_count: Some(content.len() as u64),
+                content: Some(content),
+                json: Some(json),
+            })
+        }
+        (true, None) => {
+            bail!(
+                "terminal config bundle file {:?} is marked present but has no content",
+                bundle_kind.label()
+            );
+        }
+        (false, Some(_)) => {
+            bail!(
+                "terminal config bundle file {:?} is marked missing but contains content",
+                bundle_kind.label()
+            );
+        }
+        (false, None) => Ok(TerminalSettingsSnapshot {
+            kind,
+            path: PathBuf::from(kind.file_name()),
+            exists: false,
+            content: None,
+            byte_count: None,
+            json: None,
+        }),
+    }
+}
+
+fn require_config_bundle_file(
+    kind: TerminalConfigBundleFileKind,
+    file: Option<TerminalConfigBundleFile>,
+) -> Result<TerminalConfigBundleFile> {
+    let Some(file) = file else {
+        bail!("terminal config bundle is missing {}", kind.label());
+    };
+    if file.label != kind.label() {
+        bail!(
+            "terminal config bundle file label {:?} does not match expected {:?}",
+            file.label,
+            kind.label()
+        );
+    }
+    if file.file_name != kind.file_name() {
+        bail!(
+            "terminal config bundle file {:?} has unexpected file_name {:?}; expected {:?}",
+            kind.label(),
+            file.file_name,
+            kind.file_name()
+        );
+    }
+    Ok(file)
+}
+
+fn compare_config_bundle_startup_snapshot(
+    active: &TerminalConfigBundleStartupSnapshot,
+    backup: &TerminalConfigBundleStartupSnapshot,
+) -> TerminalStartupConfigBackupFileComparison {
+    TerminalStartupConfigBackupFileComparison {
+        label: TerminalConfigBundleFileKind::StartupConfig.label(),
+        path: active.path.clone(),
+        exists: active.exists,
+        backup_exists: backup.exists,
+        text_matches: active.exists == backup.exists && active.content == backup.content,
+        config_matches: active.exists == backup.exists && active.config == backup.config,
+        byte_count: active.byte_count,
+        backup_byte_count: backup.byte_count,
+        layout_count: active
+            .validation
+            .as_ref()
+            .map(|validation| validation.layout_count),
+        backup_layout_count: backup
+            .validation
+            .as_ref()
+            .map(|validation| validation.layout_count),
+        tab_count: active
+            .validation
+            .as_ref()
+            .map(|validation| validation.tab_count),
+        backup_tab_count: backup
+            .validation
+            .as_ref()
+            .map(|validation| validation.tab_count),
+        profile_count: active.config.as_ref().map(|config| config.profiles.len()),
+        backup_profile_count: backup.config.as_ref().map(|config| config.profiles.len()),
+    }
+}
+
+fn compare_config_bundle_keymap_snapshot(
+    active: &TerminalConfigBundleKeymapSnapshot,
+    backup: &TerminalConfigBundleKeymapSnapshot,
+) -> TerminalKeymapBackupFileComparison {
+    TerminalKeymapBackupFileComparison {
+        label: TerminalConfigBundleFileKind::Keymap.label(),
+        path: active.path.clone(),
+        exists: active.exists,
+        backup_exists: backup.exists,
+        text_matches: active.exists == backup.exists && active.content == backup.content,
+        keymap_matches: active.exists == backup.exists && active.json == backup.json,
+        byte_count: active.byte_count,
+        backup_byte_count: backup.byte_count,
+        section_count: active.stats.as_ref().map(|stats| stats.section_count),
+        backup_section_count: backup.stats.as_ref().map(|stats| stats.section_count),
+        binding_count: active.binding_count,
+        backup_binding_count: backup.binding_count,
+        unbind_count: active.stats.as_ref().map(|stats| stats.unbind_count),
+        backup_unbind_count: backup.stats.as_ref().map(|stats| stats.unbind_count),
+    }
+}
+
+fn restore_config_bundle_file(
+    target_path: &Path,
+    backup: &TerminalConfigBundleStartupSnapshot,
+) -> Result<TerminalConfigBundleRestoreFileSummary> {
+    restore_config_bundle_text_file(
+        backup.summary().label,
+        target_path,
+        backup.exists,
+        backup.content.as_deref(),
+    )
+}
+
+fn restore_config_bundle_keymap_file(
+    target_path: &Path,
+    backup: &TerminalConfigBundleKeymapSnapshot,
+) -> Result<TerminalConfigBundleRestoreFileSummary> {
+    restore_config_bundle_text_file(
+        backup.summary().label,
+        target_path,
+        backup.exists,
+        backup.content.as_deref(),
+    )
+}
+
+fn restore_config_bundle_text_file(
+    label: &'static str,
+    target_path: &Path,
+    exists: bool,
+    content: Option<&str>,
+) -> Result<TerminalConfigBundleRestoreFileSummary> {
+    if exists {
+        let content = content.context("config bundle entry is missing content")?;
+        if let Some(parent) = target_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create terminal config directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std_fs::write(target_path, content).with_context(|| {
+            format!("failed to write terminal config {}", target_path.display())
+        })?;
+        Ok(TerminalConfigBundleRestoreFileSummary {
+            label,
+            path: target_path.to_path_buf(),
+            restored_exists: true,
+            byte_count: Some(content.len() as u64),
+        })
+    } else {
+        match std_fs::metadata(target_path) {
+            Ok(metadata) if metadata.is_file() => {
+                std_fs::remove_file(target_path).with_context(|| {
+                    format!("failed to remove terminal config {}", target_path.display())
+                })?;
+            }
+            Ok(_) => bail!(
+                "refusing to remove non-file terminal config path {}",
+                target_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect terminal config {}",
+                        target_path.display()
+                    )
+                });
+            }
+        }
+        Ok(TerminalConfigBundleRestoreFileSummary {
+            label,
+            path: target_path.to_path_buf(),
+            restored_exists: false,
+            byte_count: None,
+        })
+    }
+}
+
 struct TerminalSettingsSnapshots {
     settings_file: TerminalSettingsSnapshot,
     global_settings_file: TerminalSettingsSnapshot,
@@ -15848,6 +17418,409 @@ fn format_startup_config_restore_json(restore: &TerminalStartupConfigRestore) ->
         .context("failed to serialize terminal startup config restore as json")?;
     output.push('\n');
     Ok(output)
+}
+
+fn format_config_bundle_backup(backup: &TerminalConfigBundleBackup) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "bundle_file: {}", backup.bundle_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "bundle_bytes: {}", backup.bundle_byte_count)
+        .expect("writing to string should not fail");
+    format_config_bundle_startup_summary(&mut output, &backup.startup_config_file);
+    format_config_bundle_keymap_summary(&mut output, &backup.keymap_file);
+    format_settings_backup_file_summary(&mut output, &backup.settings_file);
+    format_settings_backup_file_summary(&mut output, &backup.global_settings_file);
+    output
+}
+
+fn format_config_bundle_backup_json(backup: &TerminalConfigBundleBackup) -> Result<String> {
+    let value = serde_json::json!({
+        "bundle_file": backup.bundle_file.display().to_string(),
+        "status": "ok",
+        "bundle_byte_count": backup.bundle_byte_count,
+        "files": [
+            config_bundle_startup_summary_json(&backup.startup_config_file),
+            config_bundle_keymap_summary_json(&backup.keymap_file),
+            settings_backup_file_summary_json(&backup.settings_file),
+            settings_backup_file_summary_json(&backup.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal config bundle backup as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_config_bundle_check(check: &TerminalConfigBundleCheck) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "bundle_file: {}", check.bundle_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", check.matches).expect("writing to string should not fail");
+    format_config_bundle_startup_comparison(&mut output, &check.startup_config_file);
+    format_config_bundle_keymap_comparison(&mut output, &check.keymap_file);
+    format_settings_backup_file_comparison(&mut output, &check.settings_file);
+    format_settings_backup_file_comparison(&mut output, &check.global_settings_file);
+    output
+}
+
+fn format_config_bundle_check_json(check: &TerminalConfigBundleCheck) -> Result<String> {
+    let value = serde_json::json!({
+        "bundle_file": check.bundle_file.display().to_string(),
+        "status": "ok",
+        "matches": check.matches,
+        "files": [
+            config_bundle_startup_comparison_json(&check.startup_config_file),
+            config_bundle_keymap_comparison_json(&check.keymap_file),
+            settings_backup_file_comparison_json(&check.settings_file),
+            settings_backup_file_comparison_json(&check.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal config bundle check as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_config_bundle_diff(diff: &TerminalConfigBundleDiff) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "bundle_file: {}", diff.bundle_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", diff.matches).expect("writing to string should not fail");
+    format_config_bundle_startup_diff(&mut output, &diff.startup_config_file);
+    format_config_bundle_keymap_diff(&mut output, &diff.keymap_file);
+    format_settings_backup_file_diff(&mut output, &diff.settings_file);
+    format_settings_backup_file_diff(&mut output, &diff.global_settings_file);
+    output
+}
+
+fn format_config_bundle_diff_json(diff: &TerminalConfigBundleDiff) -> Result<String> {
+    let value = serde_json::json!({
+        "bundle_file": diff.bundle_file.display().to_string(),
+        "status": "ok",
+        "matches": diff.matches,
+        "files": [
+            config_bundle_startup_diff_json(&diff.startup_config_file),
+            config_bundle_keymap_diff_json(&diff.keymap_file),
+            settings_backup_file_diff_json(&diff.settings_file),
+            settings_backup_file_diff_json(&diff.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal config bundle diff as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_config_bundle_restore(restore: &TerminalConfigBundleRestore) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "bundle_file: {}",
+        restore.bundle_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    format_config_bundle_restore_summary(&mut output, &restore.startup_config_file);
+    format_config_bundle_restore_summary(&mut output, &restore.keymap_file);
+    format_config_bundle_restore_summary(&mut output, &restore.settings_file);
+    format_config_bundle_restore_summary(&mut output, &restore.global_settings_file);
+    output
+}
+
+fn format_config_bundle_restore_json(restore: &TerminalConfigBundleRestore) -> Result<String> {
+    let value = serde_json::json!({
+        "bundle_file": restore.bundle_file.display().to_string(),
+        "status": "ok",
+        "files": [
+            config_bundle_restore_summary_json(&restore.startup_config_file),
+            config_bundle_restore_summary_json(&restore.keymap_file),
+            config_bundle_restore_summary_json(&restore.settings_file),
+            config_bundle_restore_summary_json(&restore.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal config bundle restore as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_config_bundle_startup_summary(
+    output: &mut String,
+    summary: &TerminalStartupConfigBackupFileSummary,
+) {
+    writeln!(output, "{}: {}", summary.label, summary.path.display())
+        .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", summary.exists).expect("writing to string should not fail");
+    if let Some(byte_count) = summary.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+    if let Some(layout_count) = summary.layout_count {
+        writeln!(output, "  layouts: {layout_count}").expect("writing to string should not fail");
+    }
+    if let Some(tab_count) = summary.tab_count {
+        writeln!(output, "  tabs: {tab_count}").expect("writing to string should not fail");
+    }
+    if let Some(profile_count) = summary.profile_count {
+        writeln!(output, "  profiles: {profile_count}").expect("writing to string should not fail");
+    }
+}
+
+fn config_bundle_startup_summary_json(
+    summary: &TerminalStartupConfigBackupFileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": summary.label,
+        "path": summary.path.display().to_string(),
+        "exists": summary.exists,
+        "byte_count": summary.byte_count,
+        "layout_count": summary.layout_count,
+        "tab_count": summary.tab_count,
+        "profile_count": summary.profile_count,
+    })
+}
+
+fn format_config_bundle_keymap_summary(
+    output: &mut String,
+    summary: &TerminalKeymapBackupFileSummary,
+) {
+    writeln!(output, "{}: {}", summary.label, summary.path.display())
+        .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", summary.exists).expect("writing to string should not fail");
+    if let Some(byte_count) = summary.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+    if let Some(section_count) = summary.section_count {
+        writeln!(output, "  sections: {section_count}").expect("writing to string should not fail");
+    }
+    if let Some(binding_count) = summary.binding_count {
+        writeln!(output, "  bindings: {binding_count}").expect("writing to string should not fail");
+    }
+    if let Some(unbind_count) = summary.unbind_count {
+        writeln!(output, "  unbinds: {unbind_count}").expect("writing to string should not fail");
+    }
+}
+
+fn config_bundle_keymap_summary_json(
+    summary: &TerminalKeymapBackupFileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": summary.label,
+        "path": summary.path.display().to_string(),
+        "exists": summary.exists,
+        "byte_count": summary.byte_count,
+        "section_count": summary.section_count,
+        "binding_count": summary.binding_count,
+        "unbind_count": summary.unbind_count,
+    })
+}
+
+fn format_config_bundle_startup_comparison(
+    output: &mut String,
+    comparison: &TerminalStartupConfigBackupFileComparison,
+) {
+    writeln!(
+        output,
+        "{}: {}",
+        comparison.label,
+        comparison.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", comparison.exists).expect("writing to string should not fail");
+    writeln!(output, "  backup_exists: {}", comparison.backup_exists)
+        .expect("writing to string should not fail");
+    write_optional_comparison_value(output, "bytes", comparison.byte_count);
+    write_optional_comparison_value(output, "backup_bytes", comparison.backup_byte_count);
+    write_optional_comparison_value(output, "layouts", comparison.layout_count);
+    write_optional_comparison_value(output, "backup_layouts", comparison.backup_layout_count);
+    write_optional_comparison_value(output, "tabs", comparison.tab_count);
+    write_optional_comparison_value(output, "backup_tabs", comparison.backup_tab_count);
+    write_optional_comparison_value(output, "profiles", comparison.profile_count);
+    write_optional_comparison_value(output, "backup_profiles", comparison.backup_profile_count);
+    writeln!(output, "  text_matches: {}", comparison.text_matches)
+        .expect("writing to string should not fail");
+    writeln!(output, "  config_matches: {}", comparison.config_matches)
+        .expect("writing to string should not fail");
+}
+
+fn config_bundle_startup_comparison_json(
+    comparison: &TerminalStartupConfigBackupFileComparison,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": comparison.label,
+        "path": comparison.path.display().to_string(),
+        "exists": comparison.exists,
+        "backup_exists": comparison.backup_exists,
+        "byte_count": comparison.byte_count,
+        "backup_byte_count": comparison.backup_byte_count,
+        "layout_count": comparison.layout_count,
+        "backup_layout_count": comparison.backup_layout_count,
+        "tab_count": comparison.tab_count,
+        "backup_tab_count": comparison.backup_tab_count,
+        "profile_count": comparison.profile_count,
+        "backup_profile_count": comparison.backup_profile_count,
+        "text_matches": comparison.text_matches,
+        "config_matches": comparison.config_matches,
+    })
+}
+
+fn format_config_bundle_keymap_comparison(
+    output: &mut String,
+    comparison: &TerminalKeymapBackupFileComparison,
+) {
+    writeln!(
+        output,
+        "{}: {}",
+        comparison.label,
+        comparison.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", comparison.exists).expect("writing to string should not fail");
+    writeln!(output, "  backup_exists: {}", comparison.backup_exists)
+        .expect("writing to string should not fail");
+    write_optional_comparison_value(output, "bytes", comparison.byte_count);
+    write_optional_comparison_value(output, "backup_bytes", comparison.backup_byte_count);
+    write_optional_comparison_value(output, "sections", comparison.section_count);
+    write_optional_comparison_value(output, "backup_sections", comparison.backup_section_count);
+    write_optional_comparison_value(output, "bindings", comparison.binding_count);
+    write_optional_comparison_value(output, "backup_bindings", comparison.backup_binding_count);
+    write_optional_comparison_value(output, "unbinds", comparison.unbind_count);
+    write_optional_comparison_value(output, "backup_unbinds", comparison.backup_unbind_count);
+    writeln!(output, "  text_matches: {}", comparison.text_matches)
+        .expect("writing to string should not fail");
+    writeln!(output, "  keymap_matches: {}", comparison.keymap_matches)
+        .expect("writing to string should not fail");
+}
+
+fn config_bundle_keymap_comparison_json(
+    comparison: &TerminalKeymapBackupFileComparison,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": comparison.label,
+        "path": comparison.path.display().to_string(),
+        "exists": comparison.exists,
+        "backup_exists": comparison.backup_exists,
+        "byte_count": comparison.byte_count,
+        "backup_byte_count": comparison.backup_byte_count,
+        "section_count": comparison.section_count,
+        "backup_section_count": comparison.backup_section_count,
+        "binding_count": comparison.binding_count,
+        "backup_binding_count": comparison.backup_binding_count,
+        "unbind_count": comparison.unbind_count,
+        "backup_unbind_count": comparison.backup_unbind_count,
+        "text_matches": comparison.text_matches,
+        "keymap_matches": comparison.keymap_matches,
+    })
+}
+
+fn format_config_bundle_startup_diff(
+    output: &mut String,
+    comparison: &TerminalStartupConfigBackupFileComparison,
+) {
+    format_config_bundle_startup_comparison(output, comparison);
+    writeln!(
+        output,
+        "  categories: {}",
+        format_config_bundle_category_list(
+            comparison
+                .categories()
+                .into_iter()
+                .map(TerminalStartupConfigBackupFileDiffCategory::as_str)
+        )
+    )
+    .expect("writing to string should not fail");
+}
+
+fn config_bundle_startup_diff_json(
+    comparison: &TerminalStartupConfigBackupFileComparison,
+) -> serde_json::Value {
+    let mut value = config_bundle_startup_comparison_json(comparison);
+    value["categories"] = serde_json::Value::Array(
+        comparison
+            .categories()
+            .into_iter()
+            .map(TerminalStartupConfigBackupFileDiffCategory::as_str)
+            .map(serde_json::Value::from)
+            .collect(),
+    );
+    value
+}
+
+fn format_config_bundle_keymap_diff(
+    output: &mut String,
+    comparison: &TerminalKeymapBackupFileComparison,
+) {
+    format_config_bundle_keymap_comparison(output, comparison);
+    writeln!(
+        output,
+        "  categories: {}",
+        format_config_bundle_category_list(
+            comparison
+                .categories()
+                .into_iter()
+                .map(TerminalKeymapBackupFileDiffCategory::as_str)
+        )
+    )
+    .expect("writing to string should not fail");
+}
+
+fn config_bundle_keymap_diff_json(
+    comparison: &TerminalKeymapBackupFileComparison,
+) -> serde_json::Value {
+    let mut value = config_bundle_keymap_comparison_json(comparison);
+    value["categories"] = serde_json::Value::Array(
+        comparison
+            .categories()
+            .into_iter()
+            .map(TerminalKeymapBackupFileDiffCategory::as_str)
+            .map(serde_json::Value::from)
+            .collect(),
+    );
+    value
+}
+
+fn write_optional_comparison_value<T>(output: &mut String, label: &str, value: Option<T>)
+where
+    T: std::fmt::Display,
+{
+    if let Some(value) = value {
+        writeln!(output, "  {label}: {value}").expect("writing to string should not fail");
+    }
+}
+
+fn format_config_bundle_category_list<'a>(categories: impl IntoIterator<Item = &'a str>) -> String {
+    let categories = categories.into_iter().collect::<Vec<_>>();
+    if categories.is_empty() {
+        "none".into()
+    } else {
+        categories.join(", ")
+    }
+}
+
+fn format_config_bundle_restore_summary(
+    output: &mut String,
+    summary: &TerminalConfigBundleRestoreFileSummary,
+) {
+    writeln!(output, "{}: {}", summary.label, summary.path.display())
+        .expect("writing to string should not fail");
+    writeln!(output, "  restored_exists: {}", summary.restored_exists)
+        .expect("writing to string should not fail");
+    if let Some(byte_count) = summary.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+}
+
+fn config_bundle_restore_summary_json(
+    summary: &TerminalConfigBundleRestoreFileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": summary.label,
+        "path": summary.path.display().to_string(),
+        "restored_exists": summary.restored_exists,
+        "byte_count": summary.byte_count,
+    })
 }
 
 fn format_settings_backup(backup: &TerminalSettingsBackup) -> String {
@@ -26358,6 +28331,277 @@ mod tests {
         let error = check_settings_backup(&settings_file, &global_settings_file, &backup_file, cx)
             .expect_err("invalid backup package should not check");
         assert!(format!("{error:#}").contains("must contain exactly 2 files"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    fn test_config_bundle_file_paths(root_dir: &Path) -> TerminalConfigFilePaths {
+        let config_dir = root_dir.join("config");
+        TerminalConfigFilePaths {
+            settings_file: config_dir.join("settings.json"),
+            global_settings_file: config_dir.join("global_settings.json"),
+            keymap_file: config_dir.join("keymap.json"),
+            keymap_schema_file: terminal_keymap_schema_file(&config_dir),
+            default_keymap_reference_file: terminal_default_keymap_reference_file(&config_dir),
+            startup_config_file: terminal_startup_config_file(&config_dir),
+            startup_config_schema_file: terminal_startup_config_schema_file(&config_dir),
+        }
+    }
+
+    #[gpui::test]
+    fn config_bundle_preserves_jsonc_and_missing_file_state(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let file_paths = test_config_bundle_file_paths(&root_dir);
+        let bundle_file = root_dir
+            .join("backups")
+            .join("zed-terminal-config.bundle.json");
+        let startup_config = r#"// startup secret: do-not-print
+{
+  "title": "Private Project",
+  "tabs": [
+    { "title": "Logs" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work Private",
+      "shell": "pwsh"
+    }
+  }
+}
+"#;
+        let keymap = r#"// keymap secret: do-not-print
+[]
+"#;
+        let settings = r#"// settings secret: do-not-print
+{
+  "theme": "One Dark"
+}
+"#;
+        std_fs::create_dir_all(file_paths.startup_config_file.parent().unwrap())
+            .expect("failed to create config dir");
+        std_fs::write(&file_paths.startup_config_file, startup_config)
+            .expect("failed to write startup config");
+        std_fs::write(&file_paths.keymap_file, keymap).expect("failed to write keymap");
+        std_fs::write(&file_paths.settings_file, settings).expect("failed to write settings");
+
+        let backup = backup_config_bundle(&file_paths, &bundle_file, cx)
+            .expect("config bundle should back up");
+
+        assert_eq!(backup.bundle_file, bundle_file);
+        assert!(backup.bundle_byte_count > 0);
+        assert!(backup.startup_config_file.exists);
+        assert_eq!(
+            backup.startup_config_file.byte_count,
+            Some(startup_config.len() as u64)
+        );
+        assert!(backup.keymap_file.exists);
+        assert_eq!(backup.keymap_file.byte_count, Some(keymap.len() as u64));
+        assert!(backup.settings_file.exists);
+        assert!(!backup.global_settings_file.exists);
+
+        let package_text =
+            std_fs::read_to_string(&backup.bundle_file).expect("failed to read bundle");
+        let package: serde_json::Value =
+            serde_json::from_str(&package_text).expect("bundle should parse");
+        assert_eq!(package["format"], TERMINAL_CONFIG_BUNDLE_FORMAT);
+        assert_eq!(package["version"], TERMINAL_CONFIG_BUNDLE_VERSION);
+        assert_eq!(package["files"].as_array().unwrap().len(), 4);
+        assert_eq!(package["files"][0]["label"], "startup_config_file");
+        assert_eq!(package["files"][0]["content"], startup_config);
+        assert_eq!(package["files"][1]["label"], "keymap_file");
+        assert_eq!(package["files"][1]["content"], keymap);
+        assert_eq!(package["files"][2]["label"], "settings_file");
+        assert_eq!(package["files"][2]["content"], settings);
+        assert_eq!(package["files"][3]["label"], "global_settings_file");
+        assert_eq!(package["files"][3]["exists"], false);
+        assert_eq!(package["files"][3]["content"], serde_json::Value::Null);
+
+        let output = format_config_bundle_backup(&backup);
+        let output_json =
+            format_config_bundle_backup_json(&backup).expect("bundle backup json should format");
+        for output in [&output, &output_json] {
+            assert!(output.contains("status"));
+            assert!(!output.contains("do-not-print"));
+            assert!(!output.contains("Private Project"));
+            assert!(!output.contains("One Dark"));
+            assert!(!output.contains("Work Private"));
+        }
+
+        let check =
+            check_config_bundle(&file_paths, &bundle_file, cx).expect("config bundle should check");
+        assert!(check.matches);
+        assert!(check.startup_config_file.is_exact_match());
+        assert!(check.keymap_file.is_exact_match());
+        assert!(check.settings_file.is_exact_match());
+        assert!(check.global_settings_file.is_exact_match());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn config_bundle_diffs_and_restores_verified_files(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let file_paths = test_config_bundle_file_paths(&root_dir);
+        let bundle_file = root_dir.join("zed-terminal-config.bundle.json");
+        let startup_config = r#"// keep startup comment
+{
+  "title": "Original",
+  "tabs": [
+    { "title": "Shell" }
+  ]
+}
+"#;
+        let keymap = r#"// keep keymap comment
+[]
+"#;
+        let settings = r#"// keep settings comment
+{
+  "theme": "One Dark"
+}
+"#;
+        std_fs::create_dir_all(file_paths.startup_config_file.parent().unwrap())
+            .expect("failed to create config dir");
+        std_fs::write(&file_paths.startup_config_file, startup_config)
+            .expect("failed to write startup config");
+        std_fs::write(&file_paths.keymap_file, keymap).expect("failed to write keymap");
+        std_fs::write(&file_paths.settings_file, settings).expect("failed to write settings");
+        backup_config_bundle(&file_paths, &bundle_file, cx).expect("config bundle should back up");
+
+        std_fs::write(
+            &file_paths.startup_config_file,
+            r#"// text drift only
+{
+  "title": "Original",
+  "tabs": [
+    { "title": "Shell" }
+  ]
+}
+"#,
+        )
+        .expect("failed to write startup text drift");
+        std_fs::write(&file_paths.keymap_file, "{ broken keymap")
+            .expect("failed to write broken keymap");
+        std_fs::write(
+            &file_paths.settings_file,
+            r#"{
+  "theme": "Ayu Dark"
+}
+"#,
+        )
+        .expect("failed to write settings drift");
+
+        let diff = diff_config_bundle(&file_paths, &bundle_file, cx)
+            .expect_err("invalid active keymap should reject config bundle diff");
+        assert!(format!("{diff:#}").contains("refusing to use invalid terminal keymap"));
+
+        std_fs::write(&file_paths.keymap_file, "[]\n").expect("failed to repair keymap drift");
+        let diff =
+            diff_config_bundle(&file_paths, &bundle_file, cx).expect("config bundle should diff");
+        assert!(!diff.matches);
+        assert!(diff.startup_config_file.config_matches);
+        assert_eq!(
+            diff.startup_config_file.categories(),
+            vec![
+                TerminalStartupConfigBackupFileDiffCategory::Text,
+                TerminalStartupConfigBackupFileDiffCategory::ByteCount,
+            ]
+        );
+        assert_eq!(
+            diff.keymap_file.categories(),
+            vec![
+                TerminalKeymapBackupFileDiffCategory::Text,
+                TerminalKeymapBackupFileDiffCategory::ByteCount,
+            ]
+        );
+        assert!(
+            diff.settings_file
+                .categories()
+                .contains(&TerminalSettingsBackupDiffCategory::Settings)
+        );
+
+        let output = format_config_bundle_diff(&diff);
+        let output_json =
+            format_config_bundle_diff_json(&diff).expect("bundle diff json should format");
+        for output in [&output, &output_json] {
+            assert!(output.contains("categories"));
+            assert!(!output.contains("One Dark"));
+            assert!(!output.contains("Ayu Dark"));
+            assert!(!output.contains("Original"));
+        }
+
+        std_fs::write(&file_paths.startup_config_file, "{ broken startup")
+            .expect("failed to write broken startup");
+        std_fs::write(&file_paths.keymap_file, "{ broken keymap")
+            .expect("failed to write broken keymap");
+        std_fs::write(&file_paths.settings_file, "{ broken settings")
+            .expect("failed to write broken settings");
+        std_fs::write(&file_paths.global_settings_file, "{}\n")
+            .expect("failed to write drifted global settings");
+
+        let restore = restore_config_bundle(&file_paths, &bundle_file, cx)
+            .expect("config bundle should restore");
+        assert!(restore.startup_config_file.restored_exists);
+        assert!(restore.keymap_file.restored_exists);
+        assert!(restore.settings_file.restored_exists);
+        assert!(!restore.global_settings_file.restored_exists);
+        assert_eq!(
+            std_fs::read_to_string(&file_paths.startup_config_file)
+                .expect("failed to read restored startup config"),
+            startup_config
+        );
+        assert_eq!(
+            std_fs::read_to_string(&file_paths.keymap_file)
+                .expect("failed to read restored keymap"),
+            keymap
+        );
+        assert_eq!(
+            std_fs::read_to_string(&file_paths.settings_file)
+                .expect("failed to read restored settings"),
+            settings
+        );
+        assert!(
+            !file_paths.global_settings_file.exists(),
+            "global_settings.json should restore to missing state"
+        );
+
+        let post_restore = check_config_bundle(&file_paths, &bundle_file, cx)
+            .expect("restored config bundle should check");
+        assert!(post_restore.matches);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn config_bundle_rejects_invalid_sources_targets_and_packages(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let file_paths = test_config_bundle_file_paths(&root_dir);
+        let bundle_file = root_dir.join("zed-terminal-config.bundle.json");
+        std_fs::create_dir_all(file_paths.startup_config_file.parent().unwrap())
+            .expect("failed to create config dir");
+        std_fs::write(&file_paths.startup_config_file, "{ broken startup")
+            .expect("failed to write invalid startup config");
+        std_fs::write(&file_paths.keymap_file, "[]\n").expect("failed to write keymap");
+        std_fs::write(&file_paths.settings_file, "{}\n").expect("failed to write settings");
+
+        let error = backup_config_bundle(&file_paths, &bundle_file, cx)
+            .expect_err("invalid startup config should reject bundle backup");
+        assert!(format!("{error:#}").contains("refusing to use invalid terminal startup config"));
+        assert!(!bundle_file.exists());
+
+        std_fs::write(&file_paths.startup_config_file, "{}\n")
+            .expect("failed to repair startup config");
+        let error = backup_config_bundle(&file_paths, &file_paths.settings_file, cx)
+            .expect_err("same config source and bundle target should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal config file"));
+
+        std_fs::write(
+            &bundle_file,
+            r#"{ "format": "zed-terminal-config-bundle", "version": 1, "files": [] }"#,
+        )
+        .expect("failed to write invalid bundle package");
+        let error = check_config_bundle(&file_paths, &bundle_file, cx)
+            .expect_err("invalid bundle package should not check");
+        assert!(format!("{error:#}").contains("must contain exactly 4 files"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -39057,6 +41301,144 @@ mod tests {
             command.format,
             TerminalStartupConfigBackupDiffOutputFormat::Json
         );
+    }
+
+    #[test]
+    fn config_bundle_format_json_is_carried_through_cli_resolution() {
+        let bundle_file = PathBuf::from("zed-terminal-config.bundle.json");
+        let config_dir = PathBuf::from("config");
+
+        let command = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--backup-config-bundle",
+            "--backup-config-bundle-file",
+            bundle_file.to_str().unwrap(),
+            "--backup-config-bundle-format",
+            "json",
+        ])
+        .expect("backup config bundle json mode should parse")
+        .expect("backup config bundle json mode should resolve");
+        let TerminalConfigBundleCommand::Backup(command) = command else {
+            panic!("expected backup config bundle mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.bundle_file, bundle_file);
+        assert_eq!(command.format, TerminalConfigBundleOutputFormat::Json);
+
+        let command = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--check-config-bundle",
+            "--check-config-bundle-file",
+            "zed-terminal-config.bundle.json",
+            "--check-config-bundle-format",
+            "json",
+        ])
+        .expect("check config bundle json mode should parse")
+        .expect("check config bundle json mode should resolve");
+        let TerminalConfigBundleCommand::Check(command) = command else {
+            panic!("expected check config bundle mode");
+        };
+        assert_eq!(command.format, TerminalConfigBundleOutputFormat::Json);
+
+        let command = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--diff-config-bundle",
+            "--diff-config-bundle-file",
+            "zed-terminal-config.bundle.json",
+            "--diff-config-bundle-format",
+            "json",
+        ])
+        .expect("diff config bundle json mode should parse")
+        .expect("diff config bundle json mode should resolve");
+        let TerminalConfigBundleCommand::Diff(command) = command else {
+            panic!("expected diff config bundle mode");
+        };
+        assert_eq!(command.format, TerminalConfigBundleOutputFormat::Json);
+
+        let command = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--restore-config-bundle",
+            "--restore-config-bundle-file",
+            "zed-terminal-config.bundle.json",
+            "--restore-config-bundle-format",
+            "json",
+        ])
+        .expect("restore config bundle json mode should parse")
+        .expect("restore config bundle json mode should resolve");
+        let TerminalConfigBundleCommand::Restore(command) = command else {
+            panic!("expected restore config bundle mode");
+        };
+        assert_eq!(command.format, TerminalConfigBundleOutputFormat::Json);
+    }
+
+    #[test]
+    fn config_bundle_rejects_startup_only_and_other_bundle_arguments() {
+        let bundle_file = "zed-terminal-config.bundle.json";
+        let error = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--backup-config-bundle",
+            "--backup-config-bundle-file",
+            bundle_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with config bundle backup");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--backup-config-bundle",
+            "--backup-config-bundle-file",
+            bundle_file,
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with config bundle backup");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--backup-config-bundle",
+            "--backup-config-bundle-file",
+            bundle_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup command should conflict with config bundle backup");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--backup-config-bundle",
+            "--backup-config-bundle-file",
+            bundle_file,
+            "--restore-config-bundle",
+            "--restore-config-bundle-file",
+            "other.json",
+        ])
+        .expect_err("backup and restore config bundle modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-config-bundle"));
+
+        let error = TerminalConfigBundleCommand::from_args([
+            "zed-terminal",
+            "--backup-config-bundle-format",
+            "json",
+        ])
+        .expect_err("backup config bundle format should require backup mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--backup-config-bundle-format requires --backup-config-bundle")
+        );
+
+        let error =
+            TerminalConfigBundleCommand::from_args(["zed-terminal", "--check-config-bundle"])
+                .expect_err("check config bundle should require bundle file");
+        assert!(format!("{error:#}").contains("--check-config-bundle-file"));
+
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]

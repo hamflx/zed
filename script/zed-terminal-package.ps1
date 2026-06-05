@@ -365,6 +365,14 @@ Back up and restore settings without opening a terminal window:
 .\{{BINARY}} --restore-settings --restore-settings-file settings.backup.json
 ```
 
+Back up and restore the complete user config set without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --backup-config-bundle --backup-config-bundle-file zed-terminal-config.bundle.json
+.\{{BINARY}} --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json
+.\{{BINARY}} --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json
+```
+
 Generate support information without opening a terminal window:
 
 ```powershell
@@ -379,7 +387,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -417,6 +425,9 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
+        ".\$BinaryFileName --backup-config-bundle --backup-config-bundle-file zed-terminal-config.bundle.json",
+        ".\$BinaryFileName --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json",
+        ".\$BinaryFileName --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --support-info",
         "$PackageName.zip.sha256",
         "config-template/",
@@ -560,6 +571,33 @@ function Assert-SettingsRestoreJson {
     }
 }
 
+function Assert-ConfigBundleJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$BundleFile,
+        [Parameter(Mandatory = $true)][bool]$HasMatches,
+        [Parameter()][bool]$ExpectedMatches = $true
+    )
+
+    $files = @($Report.files)
+    $labels = @($files | ForEach-Object { $_.label })
+    if (
+        $Report.status -ne "ok" -or
+        $Report.bundle_file -ne $BundleFile -or
+        $files.Count -ne 4 -or
+        $labels -notcontains "startup_config_file" -or
+        $labels -notcontains "keymap_file" -or
+        $labels -notcontains "settings_file" -or
+        $labels -notcontains "global_settings_file"
+    ) {
+        throw "zed-terminal config bundle command did not report expected status"
+    }
+
+    if ($HasMatches -and $Report.matches -ne $ExpectedMatches) {
+        throw "zed-terminal config bundle command reported unexpected matches value"
+    }
+}
+
 function Invoke-SettingsBackupSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
@@ -634,6 +672,81 @@ function Invoke-SettingsBackupSmoke {
     Assert-SettingsBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $BackupFile $true
 }
 
+function Invoke-ConfigBundleSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$BundleFile,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $backup = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--backup-config-bundle",
+        "--backup-config-bundle-file", $BundleFile,
+        "--backup-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $backupJson = $backup.Stdout | ConvertFrom-Json
+    Assert-ConfigBundleJson $backupJson $BundleFile $false
+    if (-not (Test-Path -LiteralPath $BundleFile -PathType Leaf)) {
+        throw "zed-terminal --backup-config-bundle did not write the requested bundle file"
+    }
+    if ($backupJson.bundle_byte_count -le 0) {
+        throw "zed-terminal --backup-config-bundle reported an invalid bundle size"
+    }
+
+    $check = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-config-bundle",
+        "--check-config-bundle-file", $BundleFile,
+        "--check-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-ConfigBundleJson ($check.Stdout | ConvertFrom-Json) $BundleFile $true $true
+
+    Add-Content -LiteralPath (Join-Path $ConfigDir "terminal.json") -Value "`n// package startup drift"
+    Add-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "`n// package settings drift"
+    $drift = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-config-bundle",
+        "--diff-config-bundle-file", $BundleFile,
+        "--diff-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $driftJson = $drift.Stdout | ConvertFrom-Json
+    Assert-ConfigBundleJson $driftJson $BundleFile $true $false
+    $startupDiff = @($driftJson.files) | Where-Object { $_.label -eq "startup_config_file" } | Select-Object -First 1
+    $settingsDiff = @($driftJson.files) | Where-Object { $_.label -eq "settings_file" } | Select-Object -First 1
+    if (-not $startupDiff -or $startupDiff.text_matches -or -not $startupDiff.config_matches -or @($startupDiff.categories) -notcontains "text") {
+        throw "zed-terminal --diff-config-bundle did not distinguish text-only startup config drift"
+    }
+    if (-not $settingsDiff -or $settingsDiff.text_matches -or -not $settingsDiff.settings_matches -or @($settingsDiff.categories) -notcontains "text") {
+        throw "zed-terminal --diff-config-bundle did not distinguish text-only settings drift"
+    }
+
+    Set-Content -LiteralPath (Join-Path $ConfigDir "terminal.json") -Value "{ broken startup" -NoNewline
+    Set-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "{ broken settings" -NoNewline
+    $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-config-bundle",
+        "--restore-config-bundle-file", $BundleFile,
+        "--restore-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-ConfigBundleJson ($restore.Stdout | ConvertFrom-Json) $BundleFile $false
+
+    $postRestore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-config-bundle",
+        "--check-config-bundle-file", $BundleFile,
+        "--check-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-ConfigBundleJson ($postRestore.Stdout | ConvertFrom-Json) $BundleFile $true $true
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -685,6 +798,7 @@ function Assert-PackageManifest {
         "default_keymap",
         "settings_validation",
         "settings_backup",
+        "config_bundle",
         "doctor",
         "support_info",
         "readme",
@@ -883,6 +997,13 @@ function Assert-PackageZipArchive {
         -BackupFile (Join-Path $ValidationRoot "zip-settings.backup.json") `
         -WorkingDirectory $extractedPackageDir
 
+    Invoke-ConfigBundleSmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -BundleFile (Join-Path $ValidationRoot "zip-config.bundle.json") `
+        -WorkingDirectory $extractedPackageDir
+
     $supportInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
         "--config-dir", $extractedConfigDir,
@@ -1073,6 +1194,13 @@ Invoke-SettingsBackupSmoke `
     -BackupFile (Join-Path $runDir "settings.backup.json") `
     -WorkingDirectory $packageDir
 
+Invoke-ConfigBundleSmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -BundleFile (Join-Path $runDir "zed-terminal-config.bundle.json") `
+    -WorkingDirectory $packageDir
+
 $supportInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -1127,6 +1255,7 @@ $manifest = [pscustomobject]@{
         default_keymap = "ok"
         settings_validation = "ok"
         settings_backup = "ok"
+        config_bundle = "ok"
         doctor = "ok"
         support_info = "ok"
         readme = "ok"
