@@ -12233,6 +12233,28 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Split Left", NewTerminalSplitLeft),
         MenuItem::action("Split Up", NewTerminalSplitUp),
         MenuItem::separator(),
+        MenuItem::action(
+            "Close Active Tab",
+            workspace::CloseActiveItem {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
+        MenuItem::action(
+            "Close Other Tabs in Pane",
+            workspace::CloseOtherItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
+        MenuItem::action(
+            "Close All Tabs in Pane",
+            workspace::CloseAllItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+        ),
+        MenuItem::separator(),
         MenuItem::action("Focus Left", workspace::ActivatePaneLeft),
         MenuItem::action("Focus Right", workspace::ActivatePaneRight),
         MenuItem::action("Focus Up", workspace::ActivatePaneUp),
@@ -14472,6 +14494,15 @@ mod tests {
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
         assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
         assert_menu_action(&items, "Split Up", "zed_terminal::NewTerminalSplitUp");
+    }
+
+    #[test]
+    fn pane_menu_exposes_current_pane_tab_close_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Close Active Tab", "pane::CloseActiveItem");
+        assert_menu_action(&items, "Close Other Tabs in Pane", "pane::CloseOtherItems");
+        assert_menu_action(&items, "Close All Tabs in Pane", "pane::CloseAllItems");
     }
 
     #[test]
