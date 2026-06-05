@@ -206,6 +206,171 @@ function Copy-RequiredFile {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Normalize-PackageRelativePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return $Path.Replace('/', [System.IO.Path]::DirectorySeparatorChar).Replace('\', [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Test-PackageRelativePath {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path) -or $Path -match '^[A-Za-z]:[\\/]') {
+        return $false
+    }
+
+    foreach ($segment in ($Path -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($segment) -or $segment -eq "." -or $segment -eq "..") {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Resolve-PackageContentPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    if (-not (Test-PackageRelativePath $RelativePath)) {
+        throw "package manifest contains an invalid relative path: $RelativePath"
+    }
+
+    $rootPath = [System.IO.Path]::GetFullPath($Root)
+    if (-not $rootPath.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $rootPath += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    $contentPath = [System.IO.Path]::GetFullPath((Join-Path $rootPath $RelativePath))
+    if (-not $contentPath.StartsWith($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "package manifest path escapes package directory: $RelativePath"
+    }
+
+    return $contentPath
+}
+
+function Assert-PackageManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackageDir,
+        [Parameter(Mandatory = $true)][string]$ManifestFile,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$BuildProfile,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$Architecture,
+        [Parameter(Mandatory = $true)][string]$BinaryFileName,
+        [Parameter(Mandatory = $true)][string]$BinaryHash
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestFile -PathType Leaf)) {
+        throw "package manifest was not written: $ManifestFile"
+    }
+
+    $manifest = Get-Content -LiteralPath $ManifestFile -Raw | ConvertFrom-Json
+    if (
+        $manifest.status -ne "ok" -or
+        $manifest.app_name -ne "Zed Terminal" -or
+        $manifest.package_name -ne $PackageName -or
+        $manifest.version -ne $Version -or
+        $manifest.build_profile -ne $BuildProfile -or
+        $manifest.platform -ne $Platform -or
+        $manifest.architecture -ne $Architecture -or
+        $manifest.binary -ne $BinaryFileName -or
+        $manifest.binary_sha256 -ne $BinaryHash -or
+        $manifest.config_template_dir -ne "config-template"
+    ) {
+        throw "package manifest metadata did not match the package that was just built"
+    }
+
+    foreach ($validationName in @(
+        "help",
+        "paths",
+        "init_config",
+        "startup_schema",
+        "keymap_schema",
+        "default_keymap",
+        "doctor",
+        "support_info",
+        "manifest"
+    )) {
+        if ($manifest.validation.$validationName -ne "ok") {
+            throw "package manifest validation entry was not ok: $validationName"
+        }
+    }
+
+    $requiredContent = @(
+        $BinaryFileName,
+        "README.md",
+        "LICENSE-GPL",
+        "LICENSE-APACHE",
+        "default-keymap.json",
+        "config-template\settings.json",
+        "config-template\global_settings.json",
+        "config-template\keymap.json",
+        "config-template\default-keymap.json",
+        "config-template\terminal.json",
+        "config-template\terminal.schema.json",
+        "config-template\keymap.schema.json"
+    )
+
+    $contentEntries = @($manifest.contents)
+    if ($contentEntries.Count -eq 0) {
+        throw "package manifest did not list any package contents"
+    }
+
+    $manifestContentByPath = @{}
+    foreach ($entry in $contentEntries) {
+        $relativePath = [string]$entry.path
+        if ((Normalize-PackageRelativePath $relativePath) -eq "zed-terminal-package.json") {
+            throw "package manifest contents must not include the manifest itself"
+        }
+
+        $contentPath = Resolve-PackageContentPath -Root $PackageDir -RelativePath $relativePath
+        if (-not (Test-Path -LiteralPath $contentPath -PathType Leaf)) {
+            throw "package manifest listed a missing file: $relativePath"
+        }
+
+        $normalizedPath = Normalize-PackageRelativePath $relativePath
+        if ($manifestContentByPath.ContainsKey($normalizedPath)) {
+            throw "package manifest listed duplicate content path: $relativePath"
+        }
+        $manifestContentByPath[$normalizedPath] = $entry
+
+        $file = Get-Item -LiteralPath $contentPath
+        $hash = (Get-FileHash -LiteralPath $contentPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ([int64]$entry.bytes -ne $file.Length -or $entry.sha256 -ne $hash) {
+            throw "package manifest content hash or size mismatch: $relativePath"
+        }
+    }
+
+    foreach ($relativePath in $requiredContent) {
+        $normalizedPath = Normalize-PackageRelativePath $relativePath
+        if (-not $manifestContentByPath.ContainsKey($normalizedPath)) {
+            throw "package manifest is missing required content path: $relativePath"
+        }
+    }
+
+    $actualFiles = @(Get-ChildItem -LiteralPath $PackageDir -Recurse -File |
+        Where-Object { $_.FullName -ne $ManifestFile }
+    )
+    foreach ($file in $actualFiles) {
+        $relativePath = Normalize-PackageRelativePath (Get-RelativePath -Root $PackageDir -Path $file.FullName)
+        if (-not $manifestContentByPath.ContainsKey($relativePath)) {
+            throw "package manifest did not list package file: $relativePath"
+        }
+    }
+
+    if ($actualFiles.Count -ne $contentEntries.Count) {
+        throw "package manifest content count did not match package file count"
+    }
+}
+
 $version = Get-ZedTerminalVersion
 $platform = Get-PlatformName
 $architecture = Get-ArchitectureName
@@ -299,6 +464,37 @@ foreach ($templateFile in @("settings.json", "keymap.json", "default-keymap.json
     }
 }
 
+$doctor = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--doctor",
+    "--doctor-format", "json"
+) -WorkingDirectory $packageDir
+$doctorJson = $doctor.Stdout | ConvertFrom-Json
+if (
+    $doctorJson.status -ne "ok" -or
+    -not $doctorJson.directories -or
+    -not $doctorJson.config_files -or
+    $doctorJson.startup_config.status -ne "ok" -or
+    $doctorJson.keymap.status -ne "ok"
+) {
+    throw "packaged zed-terminal --doctor did not pass against the generated config template"
+}
+
+$supportInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--support-info"
+) -WorkingDirectory $packageDir
+if (
+    $supportInfo.Stdout -notmatch "^Zed Terminal Support Info" -or
+    $supportInfo.Stdout -notmatch "app_name: Zed Terminal" -or
+    $supportInfo.Stdout -notmatch "status: ok" -or
+    $supportInfo.Stdout -notmatch "diagnostics:"
+) {
+    throw "packaged zed-terminal --support-info did not expose expected package diagnostics"
+}
+
 $binaryHash = (Get-FileHash -LiteralPath $packagedBinary -Algorithm SHA256).Hash.ToLowerInvariant()
 $readme = @"
 # Zed Terminal
@@ -368,10 +564,24 @@ $manifest = [pscustomobject]@{
         startup_schema = "ok"
         keymap_schema = "ok"
         default_keymap = "ok"
+        doctor = "ok"
+        support_info = "ok"
+        manifest = "ok"
     }
     contents = $contents
 }
 $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestFile -Encoding utf8
+
+Assert-PackageManifest `
+    -PackageDir $packageDir `
+    -ManifestFile $manifestFile `
+    -PackageName $packageName `
+    -Version $version `
+    -BuildProfile $BuildProfile `
+    -Platform $platform `
+    -Architecture $architecture `
+    -BinaryFileName $binaryFileName `
+    -BinaryHash $binaryHash
 
 $zipFile = $null
 if ($Zip) {
