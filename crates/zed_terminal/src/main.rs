@@ -185,6 +185,10 @@ Startup config backup and restore options:
           Back up terminal.json to another file without opening a terminal window
       --backup-startup-config-format <text|json>
           Set the output format for --backup-startup-config
+      --check-startup-config-backup --check-startup-config-backup-file <FILE>
+          Validate and compare terminal.json with a backup file without opening a terminal window
+      --check-startup-config-backup-format <text|json>
+          Set the output format for --check-startup-config-backup
       --restore-startup-config --restore-startup-config-file <FILE>
           Restore terminal.json from a verified backup file without opening a terminal window
       --restore-startup-config-format <text|json>
@@ -2814,6 +2818,13 @@ struct TerminalStartupConfigBackupCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupCheckCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalStartupConfigBackupCheckOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigRestoreCommand {
     path_options: TerminalPathOptions,
     restore_file: PathBuf,
@@ -3437,6 +3448,21 @@ struct TerminalStartupConfigBackup {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupCheck {
+    path: PathBuf,
+    backup_file: PathBuf,
+    matches: bool,
+    startup_byte_count: u64,
+    backup_byte_count: u64,
+    startup_layout_count: usize,
+    backup_layout_count: usize,
+    startup_tab_count: usize,
+    backup_tab_count: usize,
+    startup_profile_count: usize,
+    backup_profile_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigRestore {
     path: PathBuf,
     restore_file: PathBuf,
@@ -3747,6 +3773,13 @@ enum TerminalStartupProfileVisibilityOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigBackupOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupConfigBackupCheckOutputFormat {
     #[default]
     Text,
     Json,
@@ -4393,6 +4426,7 @@ impl TerminalProfileTransferCommand {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum TerminalStartupConfigFileCommand {
     Backup(TerminalStartupConfigBackupCommand),
+    CheckBackup(TerminalStartupConfigBackupCheckCommand),
     Restore(TerminalStartupConfigRestoreCommand),
 }
 
@@ -4445,6 +4479,22 @@ impl TerminalStartupConfigFileCommand {
                     parser.backup_format = Some(cli_string_value(&mut args, flag, inline_value)?);
                     parser.seen_startup_config_file_option = true;
                 }
+                "--check-startup-config-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--check-startup-config-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--check-startup-config-backup")?);
+                }
+                "--check-startup-config-backup-file" => {
+                    parser.check_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_startup_config_file_option = true;
+                }
+                "--check-startup-config-backup-format" => {
+                    parser.check_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_startup_config_file_option = true;
+                }
                 "--restore-startup-config" => {
                     if inline_value.is_some() {
                         bail!("--restore-startup-config does not accept a value");
@@ -4472,6 +4522,7 @@ impl TerminalStartupConfigFileCommand {
     fn path_options(&self) -> &TerminalPathOptions {
         match self {
             Self::Backup(command) => &command.path_options,
+            Self::CheckBackup(command) => &command.path_options,
             Self::Restore(command) => &command.path_options,
         }
     }
@@ -4486,6 +4537,8 @@ struct TerminalStartupConfigFileParser {
     pre_startup_config_file_arg: Option<String>,
     backup_file: Option<PathBuf>,
     backup_format: Option<String>,
+    check_backup_file: Option<PathBuf>,
+    check_backup_format: Option<String>,
     restore_file: Option<PathBuf>,
     restore_format: Option<String>,
 }
@@ -4528,9 +4581,13 @@ impl TerminalStartupConfigFileParser {
 
         match self.mode {
             Some("--backup-startup-config") => {
-                if self.restore_file.is_some() || self.restore_format.is_some() {
+                if self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
                     bail!(
-                        "--backup-startup-config cannot be used with restore startup config options"
+                        "--backup-startup-config cannot be used with other startup config file options"
                     );
                 }
                 let backup_file = self
@@ -4546,10 +4603,37 @@ impl TerminalStartupConfigFileParser {
                     },
                 )))
             }
-            Some("--restore-startup-config") => {
-                if self.backup_file.is_some() || self.backup_format.is_some() {
+            Some("--check-startup-config-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
                     bail!(
-                        "--restore-startup-config cannot be used with backup startup config options"
+                        "--check-startup-config-backup cannot be used with other startup config file options"
+                    );
+                }
+                let backup_file = self.check_backup_file.context(
+                    "--check-startup-config-backup requires --check-startup-config-backup-file",
+                )?;
+                Ok(Some(TerminalStartupConfigFileCommand::CheckBackup(
+                    TerminalStartupConfigBackupCheckCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_startup_config_backup_check_output_format(
+                            self.check_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--restore-startup-config") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                {
+                    bail!(
+                        "--restore-startup-config cannot be used with other startup config file options"
                     );
                 }
                 let restore_file = self
@@ -4572,6 +4656,16 @@ impl TerminalStartupConfigFileParser {
                 }
                 if self.backup_format.is_some() {
                     bail!("--backup-startup-config-format requires --backup-startup-config");
+                }
+                if self.check_backup_file.is_some() {
+                    bail!(
+                        "--check-startup-config-backup-file requires --check-startup-config-backup"
+                    );
+                }
+                if self.check_backup_format.is_some() {
+                    bail!(
+                        "--check-startup-config-backup-format requires --check-startup-config-backup"
+                    );
                 }
                 if self.restore_file.is_some() {
                     bail!("--restore-startup-config-file requires --restore-startup-config");
@@ -5828,6 +5922,14 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
                 process::exit(2);
             }
         }
+        TerminalStartupConfigFileCommand::CheckBackup(command) => {
+            if let Err(error) =
+                print_startup_config_backup_check(&command.backup_file, command.format)
+            {
+                eprintln!("failed to check terminal startup config backup: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalStartupConfigFileCommand::Restore(command) => {
             if let Err(error) = print_startup_config_restore(&command.restore_file, command.format)
             {
@@ -6596,6 +6698,22 @@ fn print_startup_config_backup(
     Ok(())
 }
 
+fn print_startup_config_backup_check(
+    backup_file: &Path,
+    format: TerminalStartupConfigBackupCheckOutputFormat,
+) -> Result<()> {
+    let check = check_startup_config_backup(&active_terminal_startup_config_file(), backup_file)?;
+    match format {
+        TerminalStartupConfigBackupCheckOutputFormat::Text => {
+            print!("{}", format_startup_config_backup_check(&check))
+        }
+        TerminalStartupConfigBackupCheckOutputFormat::Json => {
+            print!("{}", format_startup_config_backup_check_json(&check)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_config_restore(
     restore_file: &Path,
     format: TerminalStartupConfigRestoreOutputFormat,
@@ -6958,6 +7076,18 @@ fn parse_startup_config_backup_output_format(
         format => {
             bail!("unsupported --backup-startup-config-format {format:?}; expected text or json")
         }
+    }
+}
+
+fn parse_startup_config_backup_check_output_format(
+    format: Option<&str>,
+) -> Result<TerminalStartupConfigBackupCheckOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalStartupConfigBackupCheckOutputFormat::Text),
+        "json" => Ok(TerminalStartupConfigBackupCheckOutputFormat::Json),
+        format => bail!(
+            "unsupported --check-startup-config-backup-format {format:?}; expected text or json"
+        ),
     }
 }
 
@@ -10012,6 +10142,66 @@ fn restore_startup_config(
     })
 }
 
+fn check_startup_config_backup(
+    path: &Path,
+    backup_file: &Path,
+) -> Result<TerminalStartupConfigBackupCheck> {
+    if paths_refer_to_same_file(path, backup_file)? {
+        bail!(
+            "backup file {} must be different from terminal startup config {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let startup = read_valid_startup_config_text(path, "terminal startup config")?;
+    let backup = read_valid_startup_config_text(backup_file, "terminal startup config backup")?;
+
+    Ok(TerminalStartupConfigBackupCheck {
+        path: path.to_path_buf(),
+        backup_file: backup_file.to_path_buf(),
+        matches: startup.text == backup.text,
+        startup_byte_count: startup.metadata.len(),
+        backup_byte_count: backup.metadata.len(),
+        startup_layout_count: startup.validation.layout_count,
+        backup_layout_count: backup.validation.layout_count,
+        startup_tab_count: startup.validation.tab_count,
+        backup_tab_count: backup.validation.tab_count,
+        startup_profile_count: startup.config.profiles.len(),
+        backup_profile_count: backup.config.profiles.len(),
+    })
+}
+
+struct TerminalStartupConfigText {
+    text: String,
+    metadata: std_fs::Metadata,
+    config: TerminalStartupConfig,
+    validation: TerminalStartupConfigValidation,
+}
+
+fn read_valid_startup_config_text(path: &Path, label: &str) -> Result<TerminalStartupConfigText> {
+    let metadata = std_fs::metadata(path)
+        .with_context(|| format!("failed to inspect {label} {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("{label} {} is not a file", path.display());
+    }
+
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read {label} {}", path.display()))?;
+    let config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse {label} {}", path.display()))?;
+    let validation = config
+        .validate()
+        .with_context(|| format!("refusing to check invalid {label} {}", path.display()))?;
+
+    Ok(TerminalStartupConfigText {
+        text,
+        metadata,
+        config,
+        validation,
+    })
+}
+
 fn paths_refer_to_same_file(left: &Path, right: &Path) -> Result<bool> {
     if !left.exists() || !right.exists() {
         return Ok(false);
@@ -11221,6 +11411,68 @@ fn format_startup_config_backup_json(backup: &TerminalStartupConfigBackup) -> Re
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup config backup as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_config_backup_check(check: &TerminalStartupConfigBackupCheck) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "startup_config_file: {}", check.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_file: {}", check.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", check.matches).expect("writing to string should not fail");
+    writeln!(&mut output, "startup_bytes: {}", check.startup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_bytes: {}", check.backup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_layouts: {}",
+        check.startup_layout_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_layouts: {}", check.backup_layout_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "startup_tabs: {}", check.startup_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_tabs: {}", check.backup_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_profiles: {}",
+        check.startup_profile_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_profiles: {}",
+        check.backup_profile_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_config_backup_check_json(
+    check: &TerminalStartupConfigBackupCheck,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": check.path.display().to_string(),
+        "backup_file": check.backup_file.display().to_string(),
+        "status": "ok",
+        "matches": check.matches,
+        "startup_byte_count": check.startup_byte_count,
+        "backup_byte_count": check.backup_byte_count,
+        "startup_layout_count": check.startup_layout_count,
+        "backup_layout_count": check.backup_layout_count,
+        "startup_tab_count": check.startup_tab_count,
+        "backup_tab_count": check.backup_tab_count,
+        "startup_profile_count": check.startup_profile_count,
+        "backup_profile_count": check.backup_profile_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup config backup check as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -19123,6 +19375,66 @@ mod tests {
         assert_eq!(json["layout_count"], 2);
         assert_eq!(json["tab_count"], 4);
         assert_eq!(json["profile_count"], 1);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_startup_config_backup_check() {
+        let report = TerminalStartupConfigBackupCheck {
+            path: PathBuf::from("terminal.json"),
+            backup_file: PathBuf::from("terminal.backup.json"),
+            matches: true,
+            startup_byte_count: 123,
+            backup_byte_count: 123,
+            startup_layout_count: 2,
+            backup_layout_count: 2,
+            startup_tab_count: 4,
+            backup_tab_count: 4,
+            startup_profile_count: 1,
+            backup_profile_count: 1,
+        };
+
+        let output = format_startup_config_backup_check(&report);
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nbackup_file: terminal.backup.json\nstatus: ok\nmatches: true\nstartup_bytes: 123\nbackup_bytes: 123\nstartup_layouts: 2\nbackup_layouts: 2\nstartup_tabs: 4\nbackup_tabs: 4\nstartup_profiles: 1\nbackup_profiles: 1\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_config_backup_check_json() {
+        let report = TerminalStartupConfigBackupCheck {
+            path: PathBuf::from("terminal.json"),
+            backup_file: PathBuf::from("terminal.backup.json"),
+            matches: false,
+            startup_byte_count: 123,
+            backup_byte_count: 456,
+            startup_layout_count: 2,
+            backup_layout_count: 3,
+            startup_tab_count: 4,
+            backup_tab_count: 5,
+            startup_profile_count: 1,
+            backup_profile_count: 2,
+        };
+
+        let output =
+            format_startup_config_backup_check_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup config backup check json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["backup_file"], "terminal.backup.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["matches"], false);
+        assert_eq!(json["startup_byte_count"], 123);
+        assert_eq!(json["backup_byte_count"], 456);
+        assert_eq!(json["startup_layout_count"], 2);
+        assert_eq!(json["backup_layout_count"], 3);
+        assert_eq!(json["startup_tab_count"], 4);
+        assert_eq!(json["backup_tab_count"], 5);
+        assert_eq!(json["startup_profile_count"], 1);
+        assert_eq!(json["backup_profile_count"], 2);
         assert!(output.ends_with('\n'));
     }
 
@@ -27863,6 +28175,96 @@ mod tests {
     }
 
     #[test]
+    fn check_startup_config_backup_reports_match_and_mismatch_without_values() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_file = root_dir.join("terminal.backup.json");
+        let original = r##"// keep leading comment
+{
+  "default_profile": "work",
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "env": {
+        "TOKEN": "do-not-log"
+      },
+      "tabs": [
+        { "title": "Logs", "command": "pwsh -NoLogo" }
+      ]
+    }
+  }
+}
+"##;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+        std_fs::write(&backup_file, original).expect("failed to write matching backup config");
+
+        let check = check_startup_config_backup(&startup_config_file, &backup_file)
+            .expect("matching startup config backup should check");
+        assert!(check.matches);
+        assert_eq!(check.startup_byte_count, original.len() as u64);
+        assert_eq!(check.backup_byte_count, original.len() as u64);
+        assert_eq!(check.startup_layout_count, 2);
+        assert_eq!(check.backup_layout_count, 2);
+        assert_eq!(check.startup_tab_count, 3);
+        assert_eq!(check.backup_tab_count, 3);
+        assert_eq!(check.startup_profile_count, 1);
+        assert_eq!(check.backup_profile_count, 1);
+
+        let summary = format_startup_config_backup_check(&check);
+        assert!(summary.contains("matches: true"));
+        assert!(!summary.contains("do-not-log"));
+        let summary_json =
+            format_startup_config_backup_check_json(&check).expect("check json should serialize");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&summary_json)
+                .expect("check json should parse")["matches"],
+            true
+        );
+        assert!(!summary_json.contains("do-not-log"));
+
+        let changed = original.replace("Work", "Work Changed");
+        std_fs::write(&backup_file, &changed).expect("failed to write changed backup config");
+        let check = check_startup_config_backup(&startup_config_file, &backup_file)
+            .expect("changed but valid startup config backup should check");
+        assert!(!check.matches);
+        assert_eq!(check.startup_profile_count, 1);
+        assert_eq!(check.backup_profile_count, 1);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn check_startup_config_backup_rejects_missing_invalid_and_same_file_sources() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_file = root_dir.join("terminal.backup.json");
+
+        let error = check_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("missing startup config should not check backup");
+        assert!(format!("{error:#}").contains("failed to inspect terminal startup config"));
+
+        std_fs::write(&startup_config_file, "{}\n").expect("failed to write startup config");
+        let error = check_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("missing backup should not check");
+        assert!(format!("{error:#}").contains("failed to inspect terminal startup config backup"));
+
+        std_fs::write(&backup_file, r#"{ "default_profile": "missing" }"#)
+            .expect("failed to write invalid backup config");
+        let error = check_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("invalid backup should not check");
+        assert!(
+            format!("{error:#}")
+                .contains("refusing to check invalid terminal startup config backup")
+        );
+
+        let error = check_startup_config_backup(&startup_config_file, &startup_config_file)
+            .expect_err("same startup config and backup file should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal startup config"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn restore_startup_config_preserves_original_jsonc_and_repairs_target() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("config").join("terminal.json");
@@ -29804,6 +30206,12 @@ mod tests {
         assert!(help.contains("Startup config backup and restore options:"));
         assert!(help.contains("--backup-startup-config --backup-startup-config-file <FILE>"));
         assert!(help.contains("--backup-startup-config-format <text|json>"));
+        assert!(
+            help.contains(
+                "--check-startup-config-backup --check-startup-config-backup-file <FILE>"
+            )
+        );
+        assert!(help.contains("--check-startup-config-backup-format <text|json>"));
         assert!(help.contains("--restore-startup-config --restore-startup-config-file <FILE>"));
         assert!(help.contains("--restore-startup-config-format <text|json>"));
         assert!(help.contains("Profile transfer and startup config file options may be combined"));
@@ -29979,6 +30387,34 @@ mod tests {
     }
 
     #[test]
+    fn check_startup_config_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("terminal.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--check-startup-config-backup",
+            "--check-startup-config-backup-file",
+            backup_file.to_str().unwrap(),
+            "--check-startup-config-backup-format",
+            "json",
+        ])
+        .expect("check startup config backup json mode should parse")
+        .expect("check startup config backup json mode should resolve");
+
+        let TerminalStartupConfigFileCommand::CheckBackup(command) = command else {
+            panic!("expected check startup config backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(
+            command.format,
+            TerminalStartupConfigBackupCheckOutputFormat::Json
+        );
+    }
+
+    #[test]
     fn backup_startup_config_rejects_startup_only_arguments() {
         let backup_file = "terminal.backup.json";
         let error = TerminalStartupConfigFileCommand::from_args([
@@ -30086,6 +30522,54 @@ mod tests {
             format!("{error:#}")
                 .contains("--restore-startup-config-format requires --restore-startup-config")
         );
+    }
+
+    #[test]
+    fn check_startup_config_backup_rejects_startup_only_arguments() {
+        let backup_file = "terminal.backup.json";
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--check-startup-config-backup",
+            "--check-startup-config-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with startup config backup check");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--check-startup-config-backup",
+            "--check-startup-config-backup-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with startup config backup check");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--check-startup-config-backup",
+            "--check-startup-config-backup-file",
+            backup_file,
+            "--restore-startup-config",
+            "--restore-startup-config-file",
+            "other.json",
+        ])
+        .expect_err("check and restore startup config modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-startup-config"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--check-startup-config-backup-format",
+            "json",
+        ])
+        .expect_err("check startup config backup format should require check mode");
+        assert!(format!("{error:#}").contains(
+            "--check-startup-config-backup-format requires --check-startup-config-backup"
+        ));
     }
 
     #[test]

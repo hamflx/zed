@@ -428,6 +428,8 @@ try {
                 "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
+                "--check-startup-config-backup --check-startup-config-backup-file <FILE>",
+                "--check-startup-config-backup-format <text\|json>",
                 "--restore-startup-config --restore-startup-config-file <FILE>",
                 "--restore-startup-config-format <text\|json>",
                 "Profile transfer and startup config file options may be combined with --user-data-dir and",
@@ -643,6 +645,31 @@ try {
             }
             if ($startupBackupFileText -notmatch "release-check-value") {
                 throw "Startup config backup file did not preserve the full startup config payload."
+            }
+            $startupBackupCheck = Invoke-NativeJsonCommandResult "mutation-check-startup-config-backup-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-startup-config-backup",
+                "--check-startup-config-backup-file", $mutationStartupBackupFile,
+                "--check-startup-config-backup-format", "json"
+            )
+            if (-not $startupBackupCheck.matches -or $startupBackupCheck.startup_config_file -ne $mutationStartupConfigFile -or $startupBackupCheck.backup_file -ne $mutationStartupBackupFile -or $startupBackupCheck.startup_byte_count -ne $startupBackup.byte_count -or $startupBackupCheck.backup_byte_count -ne $startupBackup.byte_count -or $startupBackupCheck.startup_layout_count -ne 2 -or $startupBackupCheck.backup_layout_count -ne 2 -or $startupBackupCheck.startup_tab_count -ne 3 -or $startupBackupCheck.backup_tab_count -ne 3 -or $startupBackupCheck.startup_profile_count -ne 1 -or $startupBackupCheck.backup_profile_count -ne 1) {
+                throw "Startup config backup check did not report the expected matching startup config summary."
+            }
+            $startupBackupCheckText = $startupBackupCheck | ConvertTo-Json -Depth 10
+            if ($startupBackupCheckText -match "release-check-value") {
+                throw "Startup config backup check output leaked an environment variable value."
+            }
+            Add-Content -LiteralPath $mutationStartupConfigFile -Value "`n// release-check drift"
+            $startupBackupDriftCheck = Invoke-NativeJsonCommandResult "mutation-check-startup-config-backup-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-startup-config-backup",
+                "--check-startup-config-backup-file", $mutationStartupBackupFile,
+                "--check-startup-config-backup-format", "json"
+            )
+            if ($startupBackupDriftCheck.matches -or $startupBackupDriftCheck.startup_byte_count -le $startupBackupDriftCheck.backup_byte_count -or $startupBackupDriftCheck.startup_layout_count -ne 2 -or $startupBackupDriftCheck.backup_layout_count -ne 2) {
+                throw "Startup config backup check did not report the expected drifted startup config summary."
             }
             Set-Content -LiteralPath $mutationStartupConfigFile -Value "{ broken terminal config" -NoNewline
             $startupRestore = Invoke-NativeJsonCommandResult "mutation-restore-startup-config" @(
