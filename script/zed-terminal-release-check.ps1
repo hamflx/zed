@@ -3,6 +3,7 @@ Param(
     [Parameter()][string]$Binary,
     [Parameter()][string]$OutputDir,
     [Parameter()][string]$VisualBaselineImage,
+    [Parameter()][string]$SplitVisualBaselineImage,
     [Parameter()][int]$StartupTimeoutSeconds = 20,
     [Parameter()][int]$CaptureDelaySeconds = 4,
     [Parameter()][double]$MaxBaselineDifferentPixelRatio = 0.02,
@@ -28,14 +29,23 @@ if (-not $OutputDir) {
 if ($SkipVisualBaseline -and $VisualBaselineImage) {
     throw "-SkipVisualBaseline cannot be used with -VisualBaselineImage."
 }
+if ($SkipVisualBaseline -and $SplitVisualBaselineImage) {
+    throw "-SkipVisualBaseline cannot be used with -SplitVisualBaselineImage."
+}
 if (-not $VisualBaselineImage -and -not $SkipVisualSmoke -and -not $SkipVisualBaseline) {
     $VisualBaselineImage = Join-Path $repoRoot "crates\zed_terminal\test_fixtures\visual\zed-terminal-default-windows.png"
+}
+if (-not $SplitVisualBaselineImage -and -not $SkipVisualSmoke -and -not $SkipSplitVisualSmoke -and -not $SkipVisualBaseline) {
+    $SplitVisualBaselineImage = Join-Path $repoRoot "crates\zed_terminal\test_fixtures\visual\zed-terminal-split-windows.png"
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 if ($VisualBaselineImage) {
     $VisualBaselineImage = [System.IO.Path]::GetFullPath($VisualBaselineImage)
+}
+if ($SplitVisualBaselineImage) {
+    $SplitVisualBaselineImage = [System.IO.Path]::GetFullPath($SplitVisualBaselineImage)
 }
 
 if ($StartupTimeoutSeconds -lt 1) {
@@ -55,6 +65,9 @@ if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
 }
 if ($VisualBaselineImage -and -not (Test-Path -LiteralPath $VisualBaselineImage -PathType Leaf)) {
     throw "Visual baseline image not found: $VisualBaselineImage"
+}
+if ($SplitVisualBaselineImage -and -not (Test-Path -LiteralPath $SplitVisualBaselineImage -PathType Leaf)) {
+    throw "Split visual baseline image not found: $SplitVisualBaselineImage"
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -280,6 +293,7 @@ function Write-ReleaseSummary {
         binary = $Binary
         log_file = $releaseLog
         visual_baseline_image = $VisualBaselineImage
+        split_visual_baseline_image = $SplitVisualBaselineImage
         visual_baseline_skipped = [bool]$SkipVisualBaseline
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
@@ -298,6 +312,11 @@ try {
         Write-Host "visual_baseline_image: $VisualBaselineImage"
     } elseif ($SkipVisualBaseline) {
         Write-Host "visual_baseline_image: skipped"
+    }
+    if ($SplitVisualBaselineImage) {
+        Write-Host "split_visual_baseline_image: $SplitVisualBaselineImage"
+    } elseif ($SkipVisualBaseline) {
+        Write-Host "split_visual_baseline_image: skipped"
     }
 
     Invoke-Step "PowerShell syntax: visual smoke" {
@@ -409,6 +428,14 @@ try {
                 "-CaptureDelaySeconds", "$CaptureDelaySeconds",
                 "-VerifySplitPane"
             )
+            if ($SplitVisualBaselineImage) {
+                $splitVisualSmokeArgs += @(
+                    "-BaselineImage", $SplitVisualBaselineImage,
+                    "-MaxBaselineDifferentPixelRatio", "$MaxBaselineDifferentPixelRatio",
+                    "-MaxBaselineAverageChannelDelta", "$MaxBaselineAverageChannelDelta",
+                    "-BaselinePixelTolerance", "$BaselinePixelTolerance"
+                )
+            }
             Invoke-Step "visual smoke split pane" {
                 Invoke-NativeCommand -FilePath "powershell" -Arguments $splitVisualSmokeArgs
             }
