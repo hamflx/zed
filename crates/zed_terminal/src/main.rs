@@ -11852,6 +11852,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
         TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
         TypeId::of::<workspace::pane::CloseOtherItems>(),
+        TypeId::of::<workspace::pane::ReopenClosedItem>(),
         TypeId::of::<workspace::pane::SwapItemLeft>(),
         TypeId::of::<workspace::pane::SwapItemRight>(),
         TypeId::of::<zed_actions::buffer_search::Deploy>(),
@@ -12156,6 +12157,7 @@ fn shell_menu_items_with_visibility(
     let mut shell_items = vec![
         MenuItem::action("New Tab", NewTerminalTab),
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
+        MenuItem::action("Reopen Closed Tab", workspace::pane::ReopenClosedItem),
         MenuItem::separator(),
         MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
         MenuItem::action("Duplicate Split Right", DuplicateTerminalSplitRight),
@@ -14110,6 +14112,7 @@ mod tests {
         );
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
         assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
+        assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
         assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
     }
 
@@ -14829,6 +14832,13 @@ mod tests {
             "Duplicate Tab",
             "zed_terminal::DuplicateTerminalTab",
         );
+    }
+
+    #[test]
+    fn shell_menu_exposes_reopen_closed_tab_action() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Reopen Closed Tab", "pane::ReopenClosedItem");
     }
 
     #[test]
