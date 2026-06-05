@@ -87,6 +87,7 @@ $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
+$reportFile = Join-Path $runDir "zed-terminal-release-check.md"
 
 New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $brokenCliDataDir, $brokenCliConfigDir, $mutationCliDataDir, $mutationCliConfigDir | Out-Null
 Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
@@ -95,6 +96,7 @@ $script:StepResults = New-Object System.Collections.Generic.List[object]
 $script:PackageSmoke = $null
 $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
+$script:ReleaseSummaryPayload = $null
 
 function Write-ReleaseLog {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -771,6 +773,111 @@ function Get-SkippedReleaseChecks {
     return @($skipped)
 }
 
+function Format-MarkdownValue {
+    param([Parameter()][object]$Value)
+
+    if ($null -eq $Value) {
+        return ""
+    }
+
+    return ([string]$Value).Replace([string]"|", [string]"\|").Replace([string]"`r", [string]" ").Replace([string]"`n", [string]" ")
+}
+
+function New-ReleaseReportMarkdown {
+    $Summary = $script:ReleaseSummaryPayload
+
+    $lines = @()
+    $lines += "# Zed Terminal Release Check"
+    $lines += ""
+    $lines += "| Field | Value |"
+    $lines += "| --- | --- |"
+    $lines += "| Status | $(Format-MarkdownValue $Summary.status) |"
+    $lines += "| Release ready | $(Format-MarkdownValue $Summary.release_ready) |"
+    $lines += "| Release mode | $(Format-MarkdownValue $Summary.release_mode) |"
+    $lines += "| Run directory | $(Format-MarkdownValue $Summary.run_dir) |"
+    $lines += "| Binary | $(Format-MarkdownValue $Summary.binary) |"
+    $lines += "| Log file | $(Format-MarkdownValue $Summary.log_file) |"
+    $lines += "| Summary file | $(Format-MarkdownValue $Summary.summary_file) |"
+    $lines += "| Report file | $(Format-MarkdownValue $Summary.report_file) |"
+    $lines += ""
+
+    $lines += "## Skipped Release Checks"
+    if ($null -eq $Summary.skipped_release_checks -or $Summary.skipped_release_checks.Count -eq 0) {
+        $lines += ""
+        $lines += "None."
+    } else {
+        foreach ($check in $Summary.skipped_release_checks) {
+            $lines += "- $(Format-MarkdownValue $check)"
+        }
+    }
+    $lines += ""
+
+    $lines += "## Package"
+    if ($Summary.package_smoke) {
+        $package = $Summary.package_smoke
+        $lines += "| Field | Value |"
+        $lines += "| --- | --- |"
+        $lines += "| Status | $(Format-MarkdownValue $package.status) |"
+        $lines += "| Package | $(Format-MarkdownValue $package.package_name) |"
+        $lines += "| Version | $(Format-MarkdownValue $package.version) |"
+        $lines += "| Build profile | $(Format-MarkdownValue $package.build_profile) |"
+        $lines += "| Manifest | $(Format-MarkdownValue $package.manifest_file) |"
+        $lines += "| Package summary | $(Format-MarkdownValue $package.summary_file) |"
+        $lines += "| Zip | $(Format-MarkdownValue $package.zip_file) |"
+        $lines += "| Zip SHA256 | $(Format-MarkdownValue $package.zip_sha256) |"
+        $lines += "| Zip checksum | $(Format-MarkdownValue $package.zip_checksum_file) |"
+        $lines += "| Content count | $(Format-MarkdownValue $package.content_count) |"
+    } else {
+        $lines += ""
+        $lines += "Package smoke was not run."
+    }
+    $lines += ""
+
+    $lines += "## Visual Smoke"
+    foreach ($visual in @($Summary.visual_smoke, $Summary.split_visual_smoke)) {
+        if (-not $visual) {
+            continue
+        }
+
+        $lines += "### $(Format-MarkdownValue $visual.mode)"
+        $lines += ""
+        $lines += "| Field | Value |"
+        $lines += "| --- | --- |"
+        $lines += "| Status | $(Format-MarkdownValue $visual.status) |"
+        $lines += "| Window title | $(Format-MarkdownValue $visual.window_title) |"
+        $lines += "| Screenshot | $(Format-MarkdownValue $visual.screenshot_file) |"
+        $lines += "| Comparison screenshot | $(Format-MarkdownValue $visual.comparison_screenshot_file) |"
+        $lines += "| Sampled colors | $(Format-MarkdownValue $visual.sampled_unique_colors) |"
+        if ($visual.split_pane_verified -ne $null) {
+            $lines += "| Split verified | $(Format-MarkdownValue $visual.split_pane_verified) |"
+            $lines += "| Split direction | $(Format-MarkdownValue $visual.split_direction) |"
+        }
+        if ($visual.baseline) {
+            $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
+            $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
+            $lines += "| Different pixel ratio | $(Format-MarkdownValue $visual.baseline.different_pixel_ratio) |"
+            $lines += "| Average channel delta | $(Format-MarkdownValue $visual.baseline.average_channel_delta) |"
+        }
+        $lines += ""
+    }
+    if (-not $Summary.visual_smoke -and -not $Summary.split_visual_smoke) {
+        $lines += "Visual smoke was not run."
+        $lines += ""
+    }
+
+    $lines += "## Steps"
+    $lines += ""
+    $lines += "| Step | Status | Seconds |"
+    $lines += "| --- | --- | ---: |"
+    if ($Summary.steps) {
+        foreach ($step in $Summary.steps) {
+            $lines += "| $(Format-MarkdownValue $step.name) | $(Format-MarkdownValue $step.status) | $(Format-MarkdownValue $step.seconds) |"
+        }
+    }
+
+    return ($lines -join [Environment]::NewLine) + [Environment]::NewLine
+}
+
 function Write-ReleaseSummary {
     param([Parameter(Mandatory = $true)][string]$Status)
 
@@ -793,6 +900,8 @@ function Write-ReleaseSummary {
         run_dir = $runDir
         binary = $Binary
         log_file = $releaseLog
+        summary_file = $summaryFile
+        report_file = $reportFile
         visual_baseline_image = $VisualBaselineImage
         split_visual_baseline_image = $SplitVisualBaselineImage
         package_smoke_skipped = [bool]$SkipPackage
@@ -806,6 +915,8 @@ function Write-ReleaseSummary {
         steps = $script:StepResults
     }
     $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryFile -Encoding utf8
+    $script:ReleaseSummaryPayload = $payload
+    New-ReleaseReportMarkdown | Set-Content -LiteralPath $reportFile -Encoding utf8
 }
 
 try {
@@ -1833,11 +1944,13 @@ try {
     Write-Host "run_dir: $runDir"
     Write-Host "log_file: $releaseLog"
     Write-Host "summary_file: $summaryFile"
+    Write-Host "report_file: $reportFile"
 } catch {
     Write-ReleaseSummary "failed"
     Write-Host "status: failed"
     Write-Host "run_dir: $runDir"
     Write-Host "log_file: $releaseLog"
     Write-Host "summary_file: $summaryFile"
+    Write-Host "report_file: $reportFile"
     throw
 }
