@@ -430,6 +430,8 @@ try {
                 "--backup-startup-config-format <text\|json>",
                 "--check-startup-config-backup --check-startup-config-backup-file <FILE>",
                 "--check-startup-config-backup-format <text\|json>",
+                "--diff-startup-config-backup --diff-startup-config-backup-file <FILE>",
+                "--diff-startup-config-backup-format <text\|json>",
                 "--restore-startup-config --restore-startup-config-file <FILE>",
                 "--restore-startup-config-format <text\|json>",
                 "Profile transfer and startup config file options may be combined with --user-data-dir and",
@@ -660,6 +662,21 @@ try {
             if ($startupBackupCheckText -match "release-check-value") {
                 throw "Startup config backup check output leaked an environment variable value."
             }
+            $startupBackupDiffMatch = Invoke-NativeJsonCommandResult "mutation-diff-startup-config-backup-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-startup-config-backup",
+                "--diff-startup-config-backup-file", $mutationStartupBackupFile,
+                "--diff-startup-config-backup-format", "json"
+            )
+            $startupBackupDiffMatchCategories = @($startupBackupDiffMatch.categories)
+            if (-not $startupBackupDiffMatch.text_matches -or -not $startupBackupDiffMatch.config_matches -or $startupBackupDiffMatchCategories.Count -ne 0 -or $startupBackupDiffMatch.startup_layout_count -ne 2 -or $startupBackupDiffMatch.backup_layout_count -ne 2 -or $startupBackupDiffMatch.startup_tab_count -ne 3 -or $startupBackupDiffMatch.backup_tab_count -ne 3) {
+                throw "Startup config backup diff did not report the expected matching startup config summary."
+            }
+            $startupBackupDiffMatchText = $startupBackupDiffMatch | ConvertTo-Json -Depth 10
+            if ($startupBackupDiffMatchText -match "release-check-value") {
+                throw "Startup config backup diff match output leaked an environment variable value."
+            }
             Add-Content -LiteralPath $mutationStartupConfigFile -Value "`n// release-check drift"
             $startupBackupDriftCheck = Invoke-NativeJsonCommandResult "mutation-check-startup-config-backup-drift" @(
                 "--user-data-dir", $mutationCliDataDir,
@@ -670,6 +687,30 @@ try {
             )
             if ($startupBackupDriftCheck.matches -or $startupBackupDriftCheck.startup_byte_count -le $startupBackupDriftCheck.backup_byte_count -or $startupBackupDriftCheck.startup_layout_count -ne 2 -or $startupBackupDriftCheck.backup_layout_count -ne 2) {
                 throw "Startup config backup check did not report the expected drifted startup config summary."
+            }
+            Set-Content -LiteralPath $mutationStartupConfigFile -Value $startupBackupFileText -NoNewline
+            Invoke-NativeJsonCommand "mutation-update-profile-env-for-backup-diff" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--update-profile-env", "work",
+                "--profile-env", "ZED_TERMINAL_MUTATION_TOKEN=release-check-updated",
+                "--update-profile-env-format", "json"
+            )
+            $startupBackupDiffDrift = Invoke-NativeJsonCommandResult "mutation-diff-startup-config-backup-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-startup-config-backup",
+                "--diff-startup-config-backup-file", $mutationStartupBackupFile,
+                "--diff-startup-config-backup-format", "json"
+            )
+            $startupBackupDiffDriftCategories = @($startupBackupDiffDrift.categories)
+            $startupBackupDiffDriftProfiles = @($startupBackupDiffDrift.changed_profiles)
+            if ($startupBackupDiffDrift.text_matches -or $startupBackupDiffDrift.config_matches -or $startupBackupDiffDriftCategories -notcontains "text" -or $startupBackupDiffDriftCategories -notcontains "profile_env" -or $startupBackupDiffDriftProfiles.Count -ne 1 -or $startupBackupDiffDriftProfiles[0].profile -ne "work" -or -not $startupBackupDiffDriftProfiles[0].env_changed -or $startupBackupDiffDriftProfiles[0].env_keys_changed) {
+                throw "Startup config backup diff did not report the expected profile environment drift."
+            }
+            $startupBackupDiffDriftText = $startupBackupDiffDrift | ConvertTo-Json -Depth 10
+            if ($startupBackupDiffDriftText -match "release-check-value" -or $startupBackupDiffDriftText -match "release-check-updated") {
+                throw "Startup config backup diff drift output leaked an environment variable value."
             }
             Set-Content -LiteralPath $mutationStartupConfigFile -Value "{ broken terminal config" -NoNewline
             $startupRestore = Invoke-NativeJsonCommandResult "mutation-restore-startup-config" @(

@@ -189,6 +189,10 @@ Startup config backup and restore options:
           Validate and compare terminal.json with a backup file without opening a terminal window
       --check-startup-config-backup-format <text|json>
           Set the output format for --check-startup-config-backup
+      --diff-startup-config-backup --diff-startup-config-backup-file <FILE>
+          Summarize semantic differences between terminal.json and a backup file without opening a terminal window
+      --diff-startup-config-backup-format <text|json>
+          Set the output format for --diff-startup-config-backup
       --restore-startup-config --restore-startup-config-file <FILE>
           Restore terminal.json from a verified backup file without opening a terminal window
       --restore-startup-config-format <text|json>
@@ -2825,6 +2829,13 @@ struct TerminalStartupConfigBackupCheckCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupDiffCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalStartupConfigBackupDiffOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigRestoreCommand {
     path_options: TerminalPathOptions,
     restore_file: PathBuf,
@@ -3463,6 +3474,127 @@ struct TerminalStartupConfigBackupCheck {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigBackupDiff {
+    path: PathBuf,
+    backup_file: PathBuf,
+    text_matches: bool,
+    config_matches: bool,
+    startup_byte_count: u64,
+    backup_byte_count: u64,
+    startup_layout_count: usize,
+    backup_layout_count: usize,
+    startup_tab_count: usize,
+    backup_tab_count: usize,
+    startup_profile_count: usize,
+    backup_profile_count: usize,
+    root_changed: bool,
+    default_profile_changed: bool,
+    root_tabs_changed: bool,
+    profiles_changed: bool,
+    added_profiles: Vec<String>,
+    removed_profiles: Vec<String>,
+    changed_profiles: Vec<TerminalStartupConfigProfileDiff>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupConfigProfileDiff {
+    profile: String,
+    metadata_changed: bool,
+    startup_changed: bool,
+    env_changed: bool,
+    env_keys_changed: bool,
+    tabs_changed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalStartupConfigBackupDiffCategory {
+    Text,
+    Root,
+    DefaultProfile,
+    RootTabs,
+    Profiles,
+    ProfileMetadata,
+    ProfileStartup,
+    ProfileEnv,
+    ProfileEnvKeys,
+    ProfileTabs,
+}
+
+impl TerminalStartupConfigBackupDiffCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Root => "root",
+            Self::DefaultProfile => "default_profile",
+            Self::RootTabs => "root_tabs",
+            Self::Profiles => "profiles",
+            Self::ProfileMetadata => "profile_metadata",
+            Self::ProfileStartup => "profile_startup",
+            Self::ProfileEnv => "profile_env",
+            Self::ProfileEnvKeys => "profile_env_keys",
+            Self::ProfileTabs => "profile_tabs",
+        }
+    }
+}
+
+impl TerminalStartupConfigBackupDiff {
+    fn categories(&self) -> Vec<TerminalStartupConfigBackupDiffCategory> {
+        let mut categories = Vec::new();
+        if !self.text_matches {
+            categories.push(TerminalStartupConfigBackupDiffCategory::Text);
+        }
+        if self.root_changed {
+            categories.push(TerminalStartupConfigBackupDiffCategory::Root);
+        }
+        if self.default_profile_changed {
+            categories.push(TerminalStartupConfigBackupDiffCategory::DefaultProfile);
+        }
+        if self.root_tabs_changed {
+            categories.push(TerminalStartupConfigBackupDiffCategory::RootTabs);
+        }
+        if self.profiles_changed {
+            categories.push(TerminalStartupConfigBackupDiffCategory::Profiles);
+        }
+        if self
+            .changed_profiles
+            .iter()
+            .any(|profile| profile.metadata_changed)
+        {
+            categories.push(TerminalStartupConfigBackupDiffCategory::ProfileMetadata);
+        }
+        if self
+            .changed_profiles
+            .iter()
+            .any(|profile| profile.startup_changed)
+        {
+            categories.push(TerminalStartupConfigBackupDiffCategory::ProfileStartup);
+        }
+        if self
+            .changed_profiles
+            .iter()
+            .any(|profile| profile.env_changed)
+        {
+            categories.push(TerminalStartupConfigBackupDiffCategory::ProfileEnv);
+        }
+        if self
+            .changed_profiles
+            .iter()
+            .any(|profile| profile.env_keys_changed)
+        {
+            categories.push(TerminalStartupConfigBackupDiffCategory::ProfileEnvKeys);
+        }
+        if self
+            .changed_profiles
+            .iter()
+            .any(|profile| profile.tabs_changed)
+        {
+            categories.push(TerminalStartupConfigBackupDiffCategory::ProfileTabs);
+        }
+        categories
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupConfigRestore {
     path: PathBuf,
     restore_file: PathBuf,
@@ -3780,6 +3912,13 @@ enum TerminalStartupConfigBackupOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigBackupCheckOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupConfigBackupDiffOutputFormat {
     #[default]
     Text,
     Json,
@@ -4427,6 +4566,7 @@ impl TerminalProfileTransferCommand {
 enum TerminalStartupConfigFileCommand {
     Backup(TerminalStartupConfigBackupCommand),
     CheckBackup(TerminalStartupConfigBackupCheckCommand),
+    DiffBackup(TerminalStartupConfigBackupDiffCommand),
     Restore(TerminalStartupConfigRestoreCommand),
 }
 
@@ -4495,6 +4635,22 @@ impl TerminalStartupConfigFileCommand {
                         Some(cli_string_value(&mut args, flag, inline_value)?);
                     parser.seen_startup_config_file_option = true;
                 }
+                "--diff-startup-config-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--diff-startup-config-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--diff-startup-config-backup")?);
+                }
+                "--diff-startup-config-backup-file" => {
+                    parser.diff_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_startup_config_file_option = true;
+                }
+                "--diff-startup-config-backup-format" => {
+                    parser.diff_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_startup_config_file_option = true;
+                }
                 "--restore-startup-config" => {
                     if inline_value.is_some() {
                         bail!("--restore-startup-config does not accept a value");
@@ -4523,6 +4679,7 @@ impl TerminalStartupConfigFileCommand {
         match self {
             Self::Backup(command) => &command.path_options,
             Self::CheckBackup(command) => &command.path_options,
+            Self::DiffBackup(command) => &command.path_options,
             Self::Restore(command) => &command.path_options,
         }
     }
@@ -4539,6 +4696,8 @@ struct TerminalStartupConfigFileParser {
     backup_format: Option<String>,
     check_backup_file: Option<PathBuf>,
     check_backup_format: Option<String>,
+    diff_backup_file: Option<PathBuf>,
+    diff_backup_format: Option<String>,
     restore_file: Option<PathBuf>,
     restore_format: Option<String>,
 }
@@ -4583,6 +4742,8 @@ impl TerminalStartupConfigFileParser {
             Some("--backup-startup-config") => {
                 if self.check_backup_file.is_some()
                     || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
                     || self.restore_file.is_some()
                     || self.restore_format.is_some()
                 {
@@ -4606,6 +4767,8 @@ impl TerminalStartupConfigFileParser {
             Some("--check-startup-config-backup") => {
                 if self.backup_file.is_some()
                     || self.backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
                     || self.restore_file.is_some()
                     || self.restore_format.is_some()
                 {
@@ -4626,11 +4789,38 @@ impl TerminalStartupConfigFileParser {
                     },
                 )))
             }
+            Some("--diff-startup-config-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!(
+                        "--diff-startup-config-backup cannot be used with other startup config file options"
+                    );
+                }
+                let backup_file = self.diff_backup_file.context(
+                    "--diff-startup-config-backup requires --diff-startup-config-backup-file",
+                )?;
+                Ok(Some(TerminalStartupConfigFileCommand::DiffBackup(
+                    TerminalStartupConfigBackupDiffCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_startup_config_backup_diff_output_format(
+                            self.diff_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
             Some("--restore-startup-config") => {
                 if self.backup_file.is_some()
                     || self.backup_format.is_some()
                     || self.check_backup_file.is_some()
                     || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
                 {
                     bail!(
                         "--restore-startup-config cannot be used with other startup config file options"
@@ -4665,6 +4855,16 @@ impl TerminalStartupConfigFileParser {
                 if self.check_backup_format.is_some() {
                     bail!(
                         "--check-startup-config-backup-format requires --check-startup-config-backup"
+                    );
+                }
+                if self.diff_backup_file.is_some() {
+                    bail!(
+                        "--diff-startup-config-backup-file requires --diff-startup-config-backup"
+                    );
+                }
+                if self.diff_backup_format.is_some() {
+                    bail!(
+                        "--diff-startup-config-backup-format requires --diff-startup-config-backup"
                     );
                 }
                 if self.restore_file.is_some() {
@@ -5930,6 +6130,14 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
                 process::exit(2);
             }
         }
+        TerminalStartupConfigFileCommand::DiffBackup(command) => {
+            if let Err(error) =
+                print_startup_config_backup_diff(&command.backup_file, command.format)
+            {
+                eprintln!("failed to diff terminal startup config backup: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalStartupConfigFileCommand::Restore(command) => {
             if let Err(error) = print_startup_config_restore(&command.restore_file, command.format)
             {
@@ -6714,6 +6922,22 @@ fn print_startup_config_backup_check(
     Ok(())
 }
 
+fn print_startup_config_backup_diff(
+    backup_file: &Path,
+    format: TerminalStartupConfigBackupDiffOutputFormat,
+) -> Result<()> {
+    let diff = diff_startup_config_backup(&active_terminal_startup_config_file(), backup_file)?;
+    match format {
+        TerminalStartupConfigBackupDiffOutputFormat::Text => {
+            print!("{}", format_startup_config_backup_diff(&diff))
+        }
+        TerminalStartupConfigBackupDiffOutputFormat::Json => {
+            print!("{}", format_startup_config_backup_diff_json(&diff)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_config_restore(
     restore_file: &Path,
     format: TerminalStartupConfigRestoreOutputFormat,
@@ -7087,6 +7311,18 @@ fn parse_startup_config_backup_check_output_format(
         "json" => Ok(TerminalStartupConfigBackupCheckOutputFormat::Json),
         format => bail!(
             "unsupported --check-startup-config-backup-format {format:?}; expected text or json"
+        ),
+    }
+}
+
+fn parse_startup_config_backup_diff_output_format(
+    format: Option<&str>,
+) -> Result<TerminalStartupConfigBackupDiffOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalStartupConfigBackupDiffOutputFormat::Text),
+        "json" => Ok(TerminalStartupConfigBackupDiffOutputFormat::Json),
+        format => bail!(
+            "unsupported --diff-startup-config-backup-format {format:?}; expected text or json"
         ),
     }
 }
@@ -10172,6 +10408,118 @@ fn check_startup_config_backup(
     })
 }
 
+fn diff_startup_config_backup(
+    path: &Path,
+    backup_file: &Path,
+) -> Result<TerminalStartupConfigBackupDiff> {
+    if paths_refer_to_same_file(path, backup_file)? {
+        bail!(
+            "backup file {} must be different from terminal startup config {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let startup = read_valid_startup_config_text(path, "terminal startup config")?;
+    let backup = read_valid_startup_config_text(backup_file, "terminal startup config backup")?;
+
+    let startup_profile_names = startup
+        .config
+        .profiles
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let backup_profile_names = backup
+        .config
+        .profiles
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let added_profiles = startup_profile_names
+        .difference(&backup_profile_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_profiles = backup_profile_names
+        .difference(&startup_profile_names)
+        .cloned()
+        .collect::<Vec<_>>();
+    let changed_profiles = startup_profile_names
+        .intersection(&backup_profile_names)
+        .filter_map(|profile| {
+            let startup_profile = &startup.config.profiles[profile];
+            let backup_profile = &backup.config.profiles[profile];
+            startup_profile_diff(profile, startup_profile, backup_profile)
+        })
+        .collect::<Vec<_>>();
+
+    Ok(TerminalStartupConfigBackupDiff {
+        path: path.to_path_buf(),
+        backup_file: backup_file.to_path_buf(),
+        text_matches: startup.text == backup.text,
+        config_matches: startup.config == backup.config,
+        startup_byte_count: startup.metadata.len(),
+        backup_byte_count: backup.metadata.len(),
+        startup_layout_count: startup.validation.layout_count,
+        backup_layout_count: backup.validation.layout_count,
+        startup_tab_count: startup.validation.tab_count,
+        backup_tab_count: backup.validation.tab_count,
+        startup_profile_count: startup.config.profiles.len(),
+        backup_profile_count: backup.config.profiles.len(),
+        root_changed: startup_config_root_changed(&startup.config, &backup.config),
+        default_profile_changed: startup.config.default_profile != backup.config.default_profile,
+        root_tabs_changed: startup.config.tabs != backup.config.tabs,
+        profiles_changed: startup_profile_names != backup_profile_names,
+        added_profiles,
+        removed_profiles,
+        changed_profiles,
+    })
+}
+
+fn startup_config_root_changed(
+    startup_config: &TerminalStartupConfig,
+    backup_config: &TerminalStartupConfig,
+) -> bool {
+    startup_config.working_directory != backup_config.working_directory
+        || startup_config.command != backup_config.command
+        || startup_config.title != backup_config.title
+        || startup_config.shell != backup_config.shell
+        || startup_config.env != backup_config.env
+}
+
+fn startup_profile_diff(
+    profile: &str,
+    startup_profile: &TerminalStartupProfileConfig,
+    backup_profile: &TerminalStartupProfileConfig,
+) -> Option<TerminalStartupConfigProfileDiff> {
+    let metadata_changed = startup_profile.display_name != backup_profile.display_name
+        || startup_profile.description != backup_profile.description
+        || startup_profile.icon != backup_profile.icon
+        || startup_profile.color != backup_profile.color
+        || startup_profile.hidden != backup_profile.hidden;
+    let startup_changed = startup_profile.working_directory != backup_profile.working_directory
+        || startup_profile.command != backup_profile.command
+        || startup_profile.title != backup_profile.title
+        || startup_profile.shell != backup_profile.shell;
+    let env_changed = startup_profile.env != backup_profile.env;
+    let startup_env_keys = startup_profile.env.keys().cloned().collect::<BTreeSet<_>>();
+    let backup_env_keys = backup_profile.env.keys().cloned().collect::<BTreeSet<_>>();
+    let env_keys_changed = startup_env_keys != backup_env_keys;
+    let tabs_changed = startup_profile.tabs != backup_profile.tabs;
+
+    if metadata_changed || startup_changed || env_changed || tabs_changed {
+        Some(TerminalStartupConfigProfileDiff {
+            profile: profile.into(),
+            metadata_changed,
+            startup_changed,
+            env_changed,
+            env_keys_changed,
+            tabs_changed,
+        })
+    } else {
+        None
+    }
+}
+
 struct TerminalStartupConfigText {
     text: String,
     metadata: std_fs::Metadata,
@@ -11473,6 +11821,154 @@ fn format_startup_config_backup_check_json(
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup config backup check as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_config_backup_diff(diff: &TerminalStartupConfigBackupDiff) -> String {
+    let categories = diff
+        .categories()
+        .into_iter()
+        .map(TerminalStartupConfigBackupDiffCategory::as_str)
+        .collect::<Vec<_>>();
+    let mut output = String::new();
+    writeln!(&mut output, "startup_config_file: {}", diff.path.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_file: {}", diff.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "text_matches: {}", diff.text_matches)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "config_matches: {}", diff.config_matches)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "categories: {}",
+        if categories.is_empty() {
+            "none".into()
+        } else {
+            categories.join(", ")
+        }
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "startup_bytes: {}", diff.startup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_bytes: {}", diff.backup_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_layouts: {}",
+        diff.startup_layout_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_layouts: {}", diff.backup_layout_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "startup_tabs: {}", diff.startup_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "backup_tabs: {}", diff.backup_tab_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "startup_profiles: {}",
+        diff.startup_profile_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "backup_profiles: {}",
+        diff.backup_profile_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "root_changed: {}", diff.root_changed)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "default_profile_changed: {}",
+        diff.default_profile_changed
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "root_tabs_changed: {}", diff.root_tabs_changed)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "profiles_changed: {}", diff.profiles_changed)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "added_profiles: {}",
+        format_startup_config_diff_name_list(&diff.added_profiles)
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_profiles: {}",
+        format_startup_config_diff_name_list(&diff.removed_profiles)
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "changed_profiles: {}",
+        format_startup_config_diff_name_list(
+            &diff
+                .changed_profiles
+                .iter()
+                .map(|profile| profile.profile.clone())
+                .collect::<Vec<_>>()
+        )
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_config_diff_name_list(names: &[String]) -> String {
+    if names.is_empty() {
+        "none".into()
+    } else {
+        names.join(", ")
+    }
+}
+
+fn format_startup_config_backup_diff_json(
+    diff: &TerminalStartupConfigBackupDiff,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": diff.path.display().to_string(),
+        "backup_file": diff.backup_file.display().to_string(),
+        "status": "ok",
+        "text_matches": diff.text_matches,
+        "config_matches": diff.config_matches,
+        "categories": diff
+            .categories()
+            .into_iter()
+            .map(TerminalStartupConfigBackupDiffCategory::as_str)
+            .collect::<Vec<_>>(),
+        "startup_byte_count": diff.startup_byte_count,
+        "backup_byte_count": diff.backup_byte_count,
+        "startup_layout_count": diff.startup_layout_count,
+        "backup_layout_count": diff.backup_layout_count,
+        "startup_tab_count": diff.startup_tab_count,
+        "backup_tab_count": diff.backup_tab_count,
+        "startup_profile_count": diff.startup_profile_count,
+        "backup_profile_count": diff.backup_profile_count,
+        "root_changed": diff.root_changed,
+        "default_profile_changed": diff.default_profile_changed,
+        "root_tabs_changed": diff.root_tabs_changed,
+        "profiles_changed": diff.profiles_changed,
+        "added_profiles": &diff.added_profiles,
+        "removed_profiles": &diff.removed_profiles,
+        "changed_profiles": diff
+            .changed_profiles
+            .iter()
+            .map(|profile| serde_json::json!({
+                "profile": profile.profile.as_str(),
+                "metadata_changed": profile.metadata_changed,
+                "startup_changed": profile.startup_changed,
+                "env_changed": profile.env_changed,
+                "env_keys_changed": profile.env_keys_changed,
+                "tabs_changed": profile.tabs_changed,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup config backup diff as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -19435,6 +19931,113 @@ mod tests {
         assert_eq!(json["backup_tab_count"], 5);
         assert_eq!(json["startup_profile_count"], 1);
         assert_eq!(json["backup_profile_count"], 2);
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_startup_config_backup_diff() {
+        let report = TerminalStartupConfigBackupDiff {
+            path: PathBuf::from("terminal.json"),
+            backup_file: PathBuf::from("terminal.backup.json"),
+            text_matches: false,
+            config_matches: false,
+            startup_byte_count: 123,
+            backup_byte_count: 456,
+            startup_layout_count: 2,
+            backup_layout_count: 3,
+            startup_tab_count: 4,
+            backup_tab_count: 5,
+            startup_profile_count: 2,
+            backup_profile_count: 2,
+            root_changed: true,
+            default_profile_changed: false,
+            root_tabs_changed: true,
+            profiles_changed: true,
+            added_profiles: vec!["admin".into()],
+            removed_profiles: vec!["legacy".into()],
+            changed_profiles: vec![TerminalStartupConfigProfileDiff {
+                profile: "work".into(),
+                metadata_changed: true,
+                startup_changed: false,
+                env_changed: true,
+                env_keys_changed: false,
+                tabs_changed: true,
+            }],
+        };
+
+        let output = format_startup_config_backup_diff(&report);
+
+        assert_eq!(
+            output,
+            "startup_config_file: terminal.json\nbackup_file: terminal.backup.json\nstatus: ok\ntext_matches: false\nconfig_matches: false\ncategories: text, root, root_tabs, profiles, profile_metadata, profile_env, profile_tabs\nstartup_bytes: 123\nbackup_bytes: 456\nstartup_layouts: 2\nbackup_layouts: 3\nstartup_tabs: 4\nbackup_tabs: 5\nstartup_profiles: 2\nbackup_profiles: 2\nroot_changed: true\ndefault_profile_changed: false\nroot_tabs_changed: true\nprofiles_changed: true\nadded_profiles: admin\nremoved_profiles: legacy\nchanged_profiles: work\n"
+        );
+    }
+
+    #[test]
+    fn formats_startup_config_backup_diff_json() {
+        let report = TerminalStartupConfigBackupDiff {
+            path: PathBuf::from("terminal.json"),
+            backup_file: PathBuf::from("terminal.backup.json"),
+            text_matches: false,
+            config_matches: false,
+            startup_byte_count: 123,
+            backup_byte_count: 456,
+            startup_layout_count: 2,
+            backup_layout_count: 3,
+            startup_tab_count: 4,
+            backup_tab_count: 5,
+            startup_profile_count: 2,
+            backup_profile_count: 2,
+            root_changed: false,
+            default_profile_changed: true,
+            root_tabs_changed: false,
+            profiles_changed: false,
+            added_profiles: Vec::new(),
+            removed_profiles: Vec::new(),
+            changed_profiles: vec![TerminalStartupConfigProfileDiff {
+                profile: "work".into(),
+                metadata_changed: false,
+                startup_changed: true,
+                env_changed: true,
+                env_keys_changed: true,
+                tabs_changed: false,
+            }],
+        };
+
+        let output =
+            format_startup_config_backup_diff_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("startup config backup diff json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["backup_file"], "terminal.backup.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["text_matches"], false);
+        assert_eq!(json["config_matches"], false);
+        assert_eq!(
+            json["categories"],
+            serde_json::json!([
+                "text",
+                "default_profile",
+                "profile_startup",
+                "profile_env",
+                "profile_env_keys"
+            ])
+        );
+        assert_eq!(json["startup_byte_count"], 123);
+        assert_eq!(json["backup_byte_count"], 456);
+        assert_eq!(json["startup_layout_count"], 2);
+        assert_eq!(json["backup_layout_count"], 3);
+        assert_eq!(json["startup_tab_count"], 4);
+        assert_eq!(json["backup_tab_count"], 5);
+        assert_eq!(json["startup_profile_count"], 2);
+        assert_eq!(json["backup_profile_count"], 2);
+        assert_eq!(json["added_profiles"].as_array().unwrap().len(), 0);
+        assert_eq!(json["removed_profiles"].as_array().unwrap().len(), 0);
+        assert_eq!(json["changed_profiles"][0]["profile"], "work");
+        assert_eq!(json["changed_profiles"][0]["startup_changed"], true);
+        assert_eq!(json["changed_profiles"][0]["env_changed"], true);
+        assert_eq!(json["changed_profiles"][0]["env_keys_changed"], true);
         assert!(output.ends_with('\n'));
     }
 
@@ -28265,6 +28868,175 @@ mod tests {
     }
 
     #[test]
+    fn diff_startup_config_backup_summarizes_semantic_drift_without_values() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_file = root_dir.join("terminal.backup.json");
+        let work_dir = root_dir.join("work");
+        std_fs::create_dir_all(&work_dir).expect("failed to create startup working directory");
+        let backup = r##"// backup comment
+{
+  "default_profile": "work",
+  "tabs": [
+    { "profile": "work", "title": "Work Tab" }
+  ],
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "command": "pwsh -NoLogo",
+      "env": {
+        "TOKEN": "backup-secret"
+      },
+      "tabs": [
+        { "title": "Logs", "command": "pwsh -NoLogo" }
+      ]
+    },
+    "legacy": {
+      "command": "cmd.exe"
+    }
+  }
+}
+"##;
+        let startup = format!(
+            r##"// active comment
+{{
+  "working_directory": "{}",
+  "default_profile": "work",
+  "tabs": [
+    {{ "profile": "work", "title": "Work Tab" }},
+    {{ "title": "Build", "command": "cargo test" }}
+  ],
+  "profiles": {{
+    "work": {{
+      "display_name": "Work Shell",
+      "command": "pwsh -NoLogo",
+      "env": {{
+        "TOKEN": "active-secret",
+        "EXTRA": "do-not-log"
+      }},
+      "tabs": [
+        {{ "title": "Logs", "command": "pwsh -NoLogo" }},
+        {{ "title": "Tests", "command": "cargo test" }}
+      ]
+    }},
+    "admin": {{
+      "command": "pwsh -NoLogo"
+    }}
+  }}
+}}
+"##,
+            work_dir.display().to_string().replace('\\', "\\\\")
+        );
+        std_fs::write(&backup_file, backup).expect("failed to write backup config");
+        std_fs::write(&startup_config_file, startup).expect("failed to write startup config");
+
+        let diff = diff_startup_config_backup(&startup_config_file, &backup_file)
+            .expect("changed valid startup config backup should diff");
+
+        assert!(!diff.text_matches);
+        assert!(!diff.config_matches);
+        assert_eq!(diff.startup_layout_count, 3);
+        assert_eq!(diff.backup_layout_count, 3);
+        assert_eq!(diff.startup_tab_count, 7);
+        assert_eq!(diff.backup_tab_count, 5);
+        assert_eq!(diff.startup_profile_count, 2);
+        assert_eq!(diff.backup_profile_count, 2);
+        assert!(diff.root_changed);
+        assert!(!diff.default_profile_changed);
+        assert!(diff.root_tabs_changed);
+        assert!(diff.profiles_changed);
+        assert_eq!(diff.added_profiles, vec!["admin"]);
+        assert_eq!(diff.removed_profiles, vec!["legacy"]);
+        assert_eq!(diff.changed_profiles.len(), 1);
+        assert_eq!(diff.changed_profiles[0].profile, "work");
+        assert!(diff.changed_profiles[0].metadata_changed);
+        assert!(!diff.changed_profiles[0].startup_changed);
+        assert!(diff.changed_profiles[0].env_changed);
+        assert!(diff.changed_profiles[0].env_keys_changed);
+        assert!(diff.changed_profiles[0].tabs_changed);
+
+        let summary = format_startup_config_backup_diff(&diff);
+        assert!(summary.contains("categories: text, root, root_tabs, profiles"));
+        assert!(summary.contains("added_profiles: admin"));
+        assert!(summary.contains("removed_profiles: legacy"));
+        assert!(summary.contains("changed_profiles: work"));
+        assert!(!summary.contains("active-secret"));
+        assert!(!summary.contains("backup-secret"));
+        assert!(!summary.contains("do-not-log"));
+        let summary_json =
+            format_startup_config_backup_diff_json(&diff).expect("diff json should serialize");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&summary_json)
+                .expect("diff json should parse")["changed_profiles"][0]["env_keys_changed"],
+            true
+        );
+        assert!(!summary_json.contains("active-secret"));
+        assert!(!summary_json.contains("backup-secret"));
+        assert!(!summary_json.contains("do-not-log"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn diff_startup_config_backup_distinguishes_text_from_config_drift() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_file = root_dir.join("terminal.backup.json");
+
+        std_fs::write(&startup_config_file, "{}\n// active comment\n")
+            .expect("failed to write startup config");
+        std_fs::write(&backup_file, "{}\n").expect("failed to write backup config");
+
+        let diff = diff_startup_config_backup(&startup_config_file, &backup_file)
+            .expect("comment-only drift should diff");
+
+        assert!(!diff.text_matches);
+        assert!(diff.config_matches);
+        assert_eq!(
+            diff.categories(),
+            vec![TerminalStartupConfigBackupDiffCategory::Text]
+        );
+        assert!(!diff.root_changed);
+        assert!(!diff.default_profile_changed);
+        assert!(!diff.root_tabs_changed);
+        assert!(!diff.profiles_changed);
+        assert!(diff.changed_profiles.is_empty());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn diff_startup_config_backup_rejects_missing_invalid_and_same_file_sources() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_file = root_dir.join("terminal.backup.json");
+
+        let error = diff_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("missing startup config should not diff backup");
+        assert!(format!("{error:#}").contains("failed to inspect terminal startup config"));
+
+        std_fs::write(&startup_config_file, "{}\n").expect("failed to write startup config");
+        let error = diff_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("missing backup should not diff");
+        assert!(format!("{error:#}").contains("failed to inspect terminal startup config backup"));
+
+        std_fs::write(&backup_file, r#"{ "default_profile": "missing" }"#)
+            .expect("failed to write invalid backup config");
+        let error = diff_startup_config_backup(&startup_config_file, &backup_file)
+            .expect_err("invalid backup should not diff");
+        assert!(
+            format!("{error:#}")
+                .contains("refusing to check invalid terminal startup config backup")
+        );
+
+        let error = diff_startup_config_backup(&startup_config_file, &startup_config_file)
+            .expect_err("same startup config and backup file should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal startup config"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn restore_startup_config_preserves_original_jsonc_and_repairs_target() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("config").join("terminal.json");
@@ -30212,6 +30984,10 @@ mod tests {
             )
         );
         assert!(help.contains("--check-startup-config-backup-format <text|json>"));
+        assert!(
+            help.contains("--diff-startup-config-backup --diff-startup-config-backup-file <FILE>")
+        );
+        assert!(help.contains("--diff-startup-config-backup-format <text|json>"));
         assert!(help.contains("--restore-startup-config --restore-startup-config-file <FILE>"));
         assert!(help.contains("--restore-startup-config-format <text|json>"));
         assert!(help.contains("Profile transfer and startup config file options may be combined"));
@@ -30415,6 +31191,34 @@ mod tests {
     }
 
     #[test]
+    fn diff_startup_config_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("terminal.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--diff-startup-config-backup",
+            "--diff-startup-config-backup-file",
+            backup_file.to_str().unwrap(),
+            "--diff-startup-config-backup-format",
+            "json",
+        ])
+        .expect("diff startup config backup json mode should parse")
+        .expect("diff startup config backup json mode should resolve");
+
+        let TerminalStartupConfigFileCommand::DiffBackup(command) = command else {
+            panic!("expected diff startup config backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(
+            command.format,
+            TerminalStartupConfigBackupDiffOutputFormat::Json
+        );
+    }
+
+    #[test]
     fn backup_startup_config_rejects_startup_only_arguments() {
         let backup_file = "terminal.backup.json";
         let error = TerminalStartupConfigFileCommand::from_args([
@@ -30570,6 +31374,56 @@ mod tests {
         assert!(format!("{error:#}").contains(
             "--check-startup-config-backup-format requires --check-startup-config-backup"
         ));
+    }
+
+    #[test]
+    fn diff_startup_config_backup_rejects_startup_only_arguments() {
+        let backup_file = "terminal.backup.json";
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--diff-startup-config-backup",
+            "--diff-startup-config-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with startup config backup diff");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--diff-startup-config-backup",
+            "--diff-startup-config-backup-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with startup config backup diff");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--diff-startup-config-backup",
+            "--diff-startup-config-backup-file",
+            backup_file,
+            "--restore-startup-config",
+            "--restore-startup-config-file",
+            "other.json",
+        ])
+        .expect_err("diff and restore startup config modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-startup-config"));
+
+        let error = TerminalStartupConfigFileCommand::from_args([
+            "zed-terminal",
+            "--diff-startup-config-backup-format",
+            "json",
+        ])
+        .expect_err("diff startup config backup format should require diff mode");
+        assert!(
+            format!("{error:#}").contains(
+                "--diff-startup-config-backup-format requires --diff-startup-config-backup"
+            )
+        );
     }
 
     #[test]
