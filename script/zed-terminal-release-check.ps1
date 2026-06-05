@@ -559,7 +559,15 @@ try {
                 throw "Keymap schema did not report the KeymapFile array contract."
             }
             $keymapSchemaText = $keymapSchema | ConvertTo-Json -Depth 100
-            foreach ($actionName in @("zed_terminal::NewTerminalTab", "zed_terminal::NewTerminalTabWithProfile", "zed_terminal::OpenActiveKeymapBindingsReport", "terminal::Paste", "pane::CloseActiveItem")) {
+            foreach ($actionName in @(
+                "zed_terminal::NewTerminalTab",
+                "zed_terminal::NewTerminalTabWithProfile",
+                "zed_terminal::OpenStartupProfileConfig",
+                "zed_terminal::OpenStartupProfilePicker",
+                "zed_terminal::OpenActiveKeymapBindingsReport",
+                "terminal::Paste",
+                "pane::CloseActiveItem"
+            )) {
                 if ($keymapSchemaText -notmatch [regex]::Escape($actionName)) {
                     throw "Keymap schema is missing expected action '$actionName'."
                 }
@@ -583,6 +591,14 @@ try {
             $profileTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfile" } | Select-Object -First 1
             if (-not $profileTabAction -or $profileTabAction.input -ne "object") {
                 throw "Keymap action list did not mark NewTerminalTabWithProfile as an object-input action."
+            }
+            $profileConfigAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileConfig" } | Select-Object -First 1
+            if (-not $profileConfigAction -or $profileConfigAction.namespace -ne "zed_terminal" -or $profileConfigAction.input -ne "object") {
+                throw "Keymap action list did not report the expected OpenStartupProfileConfig object-input metadata."
+            }
+            $profilePickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfilePicker" } | Select-Object -First 1
+            if (-not $profilePickerAction -or $profilePickerAction.namespace -ne "zed_terminal" -or $profilePickerAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfilePicker no-input metadata."
             }
             $activeBindingsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenActiveKeymapBindingsReport" } | Select-Object -First 1
             if (-not $activeBindingsReportAction -or $activeBindingsReportAction.namespace -ne "zed_terminal" -or $activeBindingsReportAction.input -ne "none") {
@@ -617,6 +633,24 @@ try {
             if ($profileTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfile" -or $profileTabActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile-tab input contract."
             }
+            $profileConfigActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-config" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileConfig",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileConfigActionDescription.action.name -ne "zed_terminal::OpenStartupProfileConfig" -or $profileConfigActionDescription.action.namespace -ne "zed_terminal" -or $profileConfigActionDescription.action.input -ne "object") {
+                throw "Keymap action description did not report the expected profile config action contract."
+            }
+            $profilePickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-picker" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfilePicker",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profilePickerActionDescription.action.name -ne "zed_terminal::OpenStartupProfilePicker" -or $profilePickerActionDescription.action.namespace -ne "zed_terminal" -or $profilePickerActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected profile picker action contract."
+            }
             $activeBindingsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-active-bindings-report" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -638,6 +672,8 @@ try {
             $keymapActionDescriptionText = @(
                 $newTabActionDescription,
                 $profileTabActionDescription,
+                $profileConfigActionDescription,
+                $profilePickerActionDescription,
                 $activeBindingsReportActionDescription,
                 $pasteActionDescription
             ) | ConvertTo-Json -Depth 20
