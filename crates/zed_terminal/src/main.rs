@@ -52,6 +52,7 @@ actions!(
         OpenConfigDirectory,
         OpenDataDirectory,
         OpenDiagnosticsReport,
+        OpenStartupDescriptionReport,
         OpenLogFile,
         OpenLogsDirectory,
         OpenThemesDirectory,
@@ -104,6 +105,13 @@ struct SetDefaultStartupProfile {
     profile: String,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct OpenProfileDescriptionReport {
+    profile: String,
+}
+
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const APP_TITLE: &str = TERMINAL_APP_NAME;
@@ -114,6 +122,10 @@ const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
+const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
+const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
+const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
+const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -9738,6 +9750,50 @@ fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> 
         .with_context(|| format!("failed to write diagnostics report {}", path.display()))
 }
 
+fn write_startup_description_report_file(
+    path: &Path,
+    report: &TerminalStartupDescription,
+) -> Result<()> {
+    let report = format_startup_description_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup description report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup description report {}",
+            path.display()
+        )
+    })
+}
+
+fn write_startup_profile_description_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileDescription,
+) -> Result<()> {
+    let report = format_startup_profile_description_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile description report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile description report {}",
+            path.display()
+        )
+    })
+}
+
 fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
     let mut output = String::new();
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
@@ -11260,6 +11316,84 @@ fn active_terminal_diagnostics_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
 }
 
+fn active_terminal_startup_description_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
+}
+
+fn active_terminal_profile_description_report_file(profile: &str) -> Result<PathBuf> {
+    Ok(paths::logs_dir().join(format!(
+        "{}{}{}",
+        TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX,
+        startup_profile_description_report_file_stem(profile)?,
+        TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION
+    )))
+}
+
+fn startup_profile_description_report_file_stem(profile: &str) -> Result<String> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let mut stem = String::new();
+    let mut last_was_replacement = false;
+    let mut changed = false;
+    let mut truncated = false;
+
+    let mut characters = profile.chars().peekable();
+    while let Some(character) = characters.next() {
+        let is_replacement =
+            !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'));
+        let character = if is_replacement {
+            changed = true;
+            '_'
+        } else {
+            character
+        };
+
+        if is_replacement {
+            if !last_was_replacement {
+                stem.push(character);
+            } else {
+                changed = true;
+            }
+            last_was_replacement = true;
+        } else {
+            stem.push(character);
+            last_was_replacement = false;
+        }
+
+        if stem.len() >= TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN {
+            truncated = characters.peek().is_some();
+            break;
+        }
+    }
+
+    let trimmed_stem = stem.trim_matches(|character| character == '.' || character == '_');
+    changed |= trimmed_stem.len() != stem.len();
+
+    let stem = if trimmed_stem.is_empty() {
+        changed = true;
+        "profile".into()
+    } else {
+        trimmed_stem.to_string()
+    };
+
+    if changed || truncated {
+        Ok(format!(
+            "{stem}-{:08x}",
+            startup_profile_description_report_file_hash(&profile)
+        ))
+    } else {
+        Ok(stem)
+    }
+}
+
+fn startup_profile_description_report_file_hash(profile: &str) -> u32 {
+    let mut hash = 0x811c9dc5_u32;
+    for byte in profile.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -11274,6 +11408,8 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
     cx.on_action(open_diagnostics_report);
+    cx.on_action(open_startup_description_report);
+    cx.on_action(open_profile_description_report);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
     cx.on_action(open_themes_directory);
@@ -11487,8 +11623,10 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenDiagnosticsReport>(),
         TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
+        TypeId::of::<OpenProfileDescriptionReport>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
+        TypeId::of::<OpenStartupDescriptionReport>(),
         TypeId::of::<OpenThemesDirectory>(),
         TypeId::of::<ResetPaneSizes>(),
         TypeId::of::<ResizePaneDown>(),
@@ -11619,6 +11757,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Open Config For Profile: {label}"),
             OpenStartupConfigFile.boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Open Description Report For Profile: {label}"),
+            OpenProfileDescriptionReport {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
         ));
     }
 
@@ -11982,6 +12128,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action(
             "Open Startup Config Schema File",
             OpenStartupConfigSchemaFile,
+        ),
+        MenuItem::action(
+            "Open Startup Description Report",
+            OpenStartupDescriptionReport,
         ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
         MenuItem::action(
@@ -12727,6 +12877,80 @@ fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
     cx.open_with_system(&diagnostics_report_file);
 }
 
+fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_description_report_file = active_terminal_startup_description_report_file();
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!("failed to load startup config for startup description report: {error:#}");
+            return;
+        }
+    };
+    let report = match startup_description_report(&startup_config, &startup_config_file) {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!("failed to build startup description report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) =
+        write_startup_description_report_file(&startup_description_report_file, &report)
+    {
+        log::warn!("failed to write startup description report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_description_report_file);
+}
+
+fn open_profile_description_report(action: &OpenProfileDescriptionReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let profile_description_report_file =
+        match active_terminal_profile_description_report_file(&action.profile) {
+            Ok(path) => path,
+            Err(error) => {
+                log::warn!(
+                    "failed to resolve startup profile description report file for {:?}: {error:#}",
+                    action.profile
+                );
+                return;
+            }
+        };
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!(
+                "failed to load startup config for startup profile description report {:?}: {error:#}",
+                action.profile
+            );
+            return;
+        }
+    };
+    let report = match startup_profile_description_report(
+        &startup_config,
+        &startup_config_file,
+        &action.profile,
+    ) {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!(
+                "failed to build startup profile description report for {:?}: {error:#}",
+                action.profile
+            );
+            return;
+        }
+    };
+    if let Err(error) =
+        write_startup_profile_description_report_file(&profile_description_report_file, &report)
+    {
+        log::warn!("failed to write startup profile description report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&profile_description_report_file);
+}
+
 fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
     open_directory(paths::config_dir(), "config", cx);
 }
@@ -13331,6 +13555,13 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
+        assert_command_palette_action_visible(
+            &filter,
+            &OpenProfileDescriptionReport {
+                profile: "work".into(),
+            },
+        );
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
         assert_command_palette_action_visible(&filter, &OpenThemesDirectory);
@@ -13421,6 +13652,7 @@ mod tests {
                 "Split Up With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
 
@@ -13448,6 +13680,7 @@ mod tests {
         );
         assert_set_default_profile_action(&result.results[6], "work");
         assert_open_profile_config_action(&result.results[7]);
+        assert_open_profile_description_report_action(&result.results[8], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -13479,7 +13712,7 @@ mod tests {
             config.profile_summaries(false),
         );
 
-        assert_eq!(result.results.len(), 8);
+        assert_eq!(result.results.len(), 9);
         assert!(
             result
                 .results
@@ -13521,7 +13754,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 8);
+        assert_eq!(result.results.len(), 9);
         assert!(
             result
                 .results
@@ -13545,7 +13778,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 8);
+        assert_eq!(description_result.results.len(), 9);
         assert!(
             description_result
                 .results
@@ -13555,7 +13788,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 8);
+        assert_eq!(icon_result.results.len(), 9);
         assert!(
             icon_result
                 .results
@@ -13565,7 +13798,7 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 8);
+        assert_eq!(color_result.results.len(), 9);
         assert!(
             color_result
                 .results
@@ -13599,6 +13832,35 @@ mod tests {
             vec!["Open Config For Profile: Work Shell (work) - Project shell - icon terminal"]
         );
         assert_open_profile_config_action(&result.results[0]);
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_searches_profile_description_report_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "description report",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Open Description Report For Profile: Work Shell (work) - Project shell - icon terminal"
+            ]
+        );
+        assert_open_profile_description_report_action(&result.results[0], "work");
     }
 
     #[test]
@@ -13711,6 +13973,18 @@ mod tests {
             .as_any()
             .downcast_ref::<OpenStartupConfigFile>()
             .expect("expected open startup config action");
+    }
+
+    fn assert_open_profile_description_report_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<OpenProfileDescriptionReport>()
+            .expect("expected open profile description report action");
+        assert_eq!(action.profile, expected_profile);
     }
 
     fn terminal_command_palette_filter_for_test() -> command_palette_hooks::CommandPaletteFilter {
@@ -14100,6 +14374,11 @@ mod tests {
             &items,
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
+        );
+        assert_menu_action(
+            &items,
+            "Open Startup Description Report",
+            "zed_terminal::OpenStartupDescriptionReport",
         );
         assert_menu_action(
             &items,
@@ -14539,6 +14818,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_open_profile_description_report_action_input() {
+        let action = <OpenProfileDescriptionReport as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("open profile description report action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<OpenProfileDescriptionReport>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &OpenProfileDescriptionReport {
+                profile: "work".into()
+            }
+        );
+
+        let error = <OpenProfileDescriptionReport as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown profile description report action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
     fn parses_new_terminal_split_action_inputs() {
         for action in [
             <NewTerminalSplitRight as Action>::build(gpui::private::serde_json::json!({}))
@@ -14673,6 +14978,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupConfigSchemaFile>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_description_report_action_input() {
+        let action =
+            <OpenStartupDescriptionReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup description report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupDescriptionReport>()
                 .is_some()
         );
     }
@@ -14944,6 +15263,48 @@ mod tests {
         assert_eq!(json["tabs"][0]["env_keys"][0], "LOG_TOKEN");
         assert_eq!(json["tabs"][0]["split"], "down");
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn startup_profile_description_report_file_stems_are_readable_and_stable() {
+        assert_eq!(
+            startup_profile_description_report_file_stem("work")
+                .expect("profile file stem should resolve"),
+            "work"
+        );
+        assert_eq!(
+            startup_profile_description_report_file_stem(" prod/env ")
+                .expect("profile file stem should resolve"),
+            format!(
+                "prod_env-{:08x}",
+                startup_profile_description_report_file_hash("prod/env")
+            )
+        );
+        assert_ne!(
+            startup_profile_description_report_file_stem("prod/env")
+                .expect("profile file stem should resolve"),
+            startup_profile_description_report_file_stem("prod:env")
+                .expect("profile file stem should resolve")
+        );
+        assert_eq!(
+            startup_profile_description_report_file_stem("...")
+                .expect("profile file stem should resolve"),
+            format!(
+                "profile-{:08x}",
+                startup_profile_description_report_file_hash("...")
+            )
+        );
+
+        let long_profile = "a".repeat(TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN + 10);
+        let stem = startup_profile_description_report_file_stem(&long_profile)
+            .expect("long profile file stem should resolve");
+        assert!(
+            stem.starts_with(&"a".repeat(TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN))
+        );
+        assert!(stem.ends_with(&format!(
+            "-{:08x}",
+            startup_profile_description_report_file_hash(&long_profile)
+        )));
     }
 
     #[test]
@@ -15897,6 +16258,109 @@ mod tests {
         assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_description_report_file_as_describe_startup_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE);
+        let report = TerminalStartupDescription {
+            startup_config_file: PathBuf::from("terminal.json"),
+            source: TerminalDoctorConfigSource::File,
+            working_directory: Some(PathBuf::from(".")),
+            command: Some("cmd /C echo root".into()),
+            title: Some("Root".into()),
+            shell: None,
+            env_keys: vec!["API_KEY".into()],
+            tabs: vec![TerminalStartupProfileTabDescription {
+                profile: None,
+                working_directory: Some(PathBuf::from("logs")),
+                command: Some("pwsh -NoLogo".into()),
+                title: Some("Logs".into()),
+                shell: None,
+                env_keys: vec!["LOG_TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Right),
+            }],
+            default_profile: Some("work".into()),
+            profile_count: 2,
+            visible_profile_count: 1,
+            hidden_profile_count: 1,
+        };
+
+        write_startup_description_report_file(&report_file, &report)
+            .expect("startup description report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read startup report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("startup report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source"], "file");
+        assert_eq!(json["env_keys"][0], "API_KEY");
+        assert_eq!(json["tabs"][0]["env_keys"][0], "LOG_TOKEN");
+        assert_eq!(json["tabs"][0]["split"], "right");
+        assert_eq!(json["default_profile"], "work");
+        assert_eq!(json["hidden_profile_count"], 1);
+        assert!(!report_text.contains("SECRET_VALUE"));
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profile_description_report_file_as_describe_profile_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir.join("logs").join(format!(
+            "{}{}{}",
+            TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX,
+            startup_profile_description_report_file_stem("work")
+                .expect("profile file stem should resolve"),
+            TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION
+        ));
+        let report = TerminalStartupProfileDescription {
+            startup_config_file: PathBuf::from("terminal.json"),
+            profile: "work".into(),
+            display_name: Some("Work Shell".into()),
+            description: Some("Project startup shell".into()),
+            icon: Some("terminal".into()),
+            color: Some("#0f766e".into()),
+            hidden: false,
+            is_default: true,
+            working_directory: Some(PathBuf::from(".")),
+            command: Some("cmd /C echo work".into()),
+            title: Some("Work".into()),
+            shell: None,
+            env_keys: vec!["API_KEY".into()],
+            tabs: vec![TerminalStartupProfileTabDescription {
+                profile: None,
+                working_directory: Some(PathBuf::from("logs")),
+                command: Some("pwsh -NoLogo".into()),
+                title: Some("Logs".into()),
+                shell: None,
+                env_keys: vec!["LOG_TOKEN".into()],
+                split: Some(TerminalStartupSplitDirection::Down),
+            }],
+        };
+
+        write_startup_profile_description_report_file(&report_file, &report)
+            .expect("profile description report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read profile report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("profile report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile"], "work");
+        assert_eq!(json["display_name"], "Work Shell");
+        assert_eq!(json["env_keys"][0], "API_KEY");
+        assert_eq!(json["tabs"][0]["env_keys"][0], "LOG_TOKEN");
+        assert_eq!(json["tabs"][0]["split"], "down");
+        assert!(!report_text.contains("SECRET_VALUE"));
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
