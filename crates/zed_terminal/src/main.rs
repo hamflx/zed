@@ -12248,6 +12248,18 @@ fn pane_menu_items() -> Vec<MenuItem> {
             },
         ),
         MenuItem::action(
+            "Close Tabs to the Right in Pane",
+            workspace::CloseItemsToTheRight {
+                close_pinned: false,
+            },
+        ),
+        MenuItem::action(
+            "Close Tabs to the Left in Pane",
+            workspace::CloseItemsToTheLeft {
+                close_pinned: false,
+            },
+        ),
+        MenuItem::action(
             "Close All Tabs in Pane",
             workspace::CloseAllItems {
                 close_pinned: false,
@@ -14502,6 +14514,16 @@ mod tests {
 
         assert_menu_action(&items, "Close Active Tab", "pane::CloseActiveItem");
         assert_menu_action(&items, "Close Other Tabs in Pane", "pane::CloseOtherItems");
+        assert_menu_action(
+            &items,
+            "Close Tabs to the Right in Pane",
+            "pane::CloseItemsToTheRight",
+        );
+        assert_menu_action(
+            &items,
+            "Close Tabs to the Left in Pane",
+            "pane::CloseItemsToTheLeft",
+        );
         assert_menu_action(&items, "Close All Tabs in Pane", "pane::CloseAllItems");
     }
 
