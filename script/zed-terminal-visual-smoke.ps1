@@ -135,6 +135,12 @@ public static class ZedTerminalVisualSmokeNative {
         public int Bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Point {
+        public int X;
+        public int Y;
+    }
+
     public sealed class WindowInfo {
         public IntPtr Handle;
         public string Title;
@@ -144,11 +150,26 @@ public static class ZedTerminalVisualSmokeNative {
         public int Height;
     }
 
+    public sealed class ClientRegion {
+        public int X;
+        public int Y;
+        public int Width;
+        public int Height;
+        public int Left;
+        public int Top;
+    }
+
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr hWnd, out Rect lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref Point lpPoint);
 
     [DllImport("user32.dll")]
     private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
@@ -230,6 +251,27 @@ public static class ZedTerminalVisualSmokeNative {
         SetForegroundWindow(window.Handle);
         window.Left = left;
         window.Top = top;
+    }
+
+    public static ClientRegion GetClientCaptureRegion(WindowInfo window) {
+        Rect clientRect;
+        if (!GetClientRect(window.Handle, out clientRect)) {
+            throw new InvalidOperationException("GetClientRect failed for zed-terminal window.");
+        }
+
+        Point clientTopLeft = new Point { X = clientRect.Left, Y = clientRect.Top };
+        if (!ClientToScreen(window.Handle, ref clientTopLeft)) {
+            throw new InvalidOperationException("ClientToScreen failed for zed-terminal window.");
+        }
+
+        return new ClientRegion {
+            X = clientTopLeft.X - window.Left,
+            Y = clientTopLeft.Y - window.Top,
+            Width = clientRect.Right - clientRect.Left,
+            Height = clientRect.Bottom - clientRect.Top,
+            Left = clientTopLeft.X,
+            Top = clientTopLeft.Y
+        };
     }
 
     public static void BringToFront(IntPtr handle) {
@@ -321,6 +363,44 @@ function Save-WindowScreenshot {
     } finally {
         $graphics.Dispose()
         $bitmap.Dispose()
+    }
+}
+
+function Save-ImageRegion {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$DestinationPath,
+        [Parameter(Mandatory = $true)][int]$X,
+        [Parameter(Mandatory = $true)][int]$Y,
+        [Parameter(Mandatory = $true)][int]$Width,
+        [Parameter(Mandatory = $true)][int]$Height
+    )
+
+    $source = [System.Drawing.Bitmap]::FromFile($SourcePath)
+    $destination = $null
+    $graphics = $null
+    try {
+        if ($X -lt 0 -or $Y -lt 0 -or $Width -le 0 -or $Height -le 0) {
+            throw "Invalid image region $X,$Y,$Width,$Height for $SourcePath."
+        }
+        if (($X + $Width) -gt $source.Width -or ($Y + $Height) -gt $source.Height) {
+            throw "Image region $X,$Y,$Width,$Height exceeds $SourcePath dimensions $($source.Width)x$($source.Height)."
+        }
+
+        $destination = New-Object System.Drawing.Bitmap($Width, $Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($destination)
+        $destinationRectangle = New-Object System.Drawing.Rectangle -ArgumentList 0, 0, $Width, $Height
+        $sourceRectangle = New-Object System.Drawing.Rectangle -ArgumentList $X, $Y, $Width, $Height
+        $graphics.DrawImage($source, $destinationRectangle, $sourceRectangle, [System.Drawing.GraphicsUnit]::Pixel)
+        $destination.Save($DestinationPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        if ($graphics) {
+            $graphics.Dispose()
+        }
+        if ($destination) {
+            $destination.Dispose()
+        }
+        $source.Dispose()
     }
 }
 
@@ -534,22 +614,74 @@ try {
 
     $screenshotPath = Join-Path $runDir "zed-terminal-visual-smoke.png"
     Save-WindowScreenshot -Window $window -Path $screenshotPath
-    $stats = Get-ImageSampleStats -Path $screenshotPath
+    $windowStats = Get-ImageSampleStats -Path $screenshotPath
 
-    if ($stats.FileBytes -lt 10000) {
-        throw "Screenshot is unexpectedly small: $($stats.FileBytes) bytes."
+    $clientRegion = [ZedTerminalVisualSmokeNative]::GetClientCaptureRegion($window)
+    if ($clientRegion.Width -lt 200 -or $clientRegion.Height -lt 120) {
+        throw "Captured zed-terminal client area is unexpectedly small: $($clientRegion.Width)x$($clientRegion.Height)."
     }
-    if ($stats.UniqueColors -lt 8) {
-        throw "Screenshot appears blank or nearly blank: $($stats.UniqueColors) sampled colors."
+
+    $clientScreenshotPath = Join-Path $runDir "zed-terminal-visual-smoke-client.png"
+    Save-ImageRegion `
+        -SourcePath $screenshotPath `
+        -DestinationPath $clientScreenshotPath `
+        -X $clientRegion.X `
+        -Y $clientRegion.Y `
+        -Width $clientRegion.Width `
+        -Height $clientRegion.Height
+
+    $comparisonTopInset = 15
+    $comparisonX = $clientRegion.X
+    $comparisonY = $clientRegion.Y + $comparisonTopInset
+    $comparisonWidth = $clientRegion.Width
+    $comparisonHeight = $clientRegion.Height - $comparisonTopInset
+    if ($comparisonWidth -lt 200 -or $comparisonHeight -lt 120) {
+        throw "Captured zed-terminal stable comparison area is unexpectedly small: $($comparisonWidth)x$($comparisonHeight)."
+    }
+
+    $comparisonScreenshotPath = Join-Path $runDir "zed-terminal-visual-smoke-comparison.png"
+    Save-ImageRegion `
+        -SourcePath $screenshotPath `
+        -DestinationPath $comparisonScreenshotPath `
+        -X $comparisonX `
+        -Y $comparisonY `
+        -Width $comparisonWidth `
+        -Height $comparisonHeight
+    $clientStats = Get-ImageSampleStats -Path $clientScreenshotPath
+    $comparisonStats = Get-ImageSampleStats -Path $comparisonScreenshotPath
+
+    if ($windowStats.FileBytes -lt 10000) {
+        throw "Screenshot is unexpectedly small: $($windowStats.FileBytes) bytes."
+    }
+    if ($clientStats.FileBytes -lt 10000) {
+        throw "Client screenshot is unexpectedly small: $($clientStats.FileBytes) bytes."
+    }
+    if ($comparisonStats.FileBytes -lt 10000) {
+        throw "Stable comparison screenshot is unexpectedly small: $($comparisonStats.FileBytes) bytes."
+    }
+    if ($comparisonStats.UniqueColors -lt 8) {
+        throw "Stable comparison screenshot appears blank or nearly blank: $($comparisonStats.UniqueColors) sampled colors."
     }
 
     $baselineComparison = $null
+    $baselineComparisonOriginalFile = $null
+    $baselineComparisonFile = $null
     $baselineUpdated = $false
     if ($BaselineImage) {
+        $baselineComparisonOriginalFile = $BaselineImage
+        $baselineComparisonFile = Join-Path $runDir "zed-terminal-visual-smoke-baseline-comparison.png"
+        Save-ImageRegion `
+            -SourcePath $BaselineImage `
+            -DestinationPath $baselineComparisonFile `
+            -X $comparisonX `
+            -Y $comparisonY `
+            -Width $comparisonWidth `
+            -Height $comparisonHeight
+
         $diffPath = Join-Path $runDir "zed-terminal-visual-smoke-diff.png"
         $baselineComparison = Compare-ImageToBaseline `
-            -ActualPath $screenshotPath `
-            -BaselinePath $BaselineImage `
+            -ActualPath $comparisonScreenshotPath `
+            -BaselinePath $baselineComparisonFile `
             -DiffPath $diffPath `
             -PixelTolerance $BaselinePixelTolerance
 
@@ -574,6 +706,7 @@ try {
     Write-Output "window_handle: $($window.Handle)"
     Write-Output "window_title: $($window.Title)"
     Write-Output "window_bounds: $($window.Left),$($window.Top),$($window.Width),$($window.Height)"
+    Write-Output "window_client_region: $($clientRegion.X),$($clientRegion.Y),$($clientRegion.Width),$($clientRegion.Height)"
     Write-Output "probe_ready_file: $probeReadyFile"
     if ($startupConfigFile) {
         Write-Output "startup_config_file: $startupConfigFile"
@@ -586,11 +719,19 @@ try {
     }
     Write-Output "capture_method: PrintWindow(PW_RENDERFULLCONTENT)"
     Write-Output "screenshot_file: $screenshotPath"
-    Write-Output "screenshot_bytes: $($stats.FileBytes)"
-    Write-Output "sampled_pixels: $($stats.SampledPixels)"
-    Write-Output "sampled_unique_colors: $($stats.UniqueColors)"
+    Write-Output "screenshot_bytes: $($windowStats.FileBytes)"
+    Write-Output "client_screenshot_file: $clientScreenshotPath"
+    Write-Output "client_screenshot_bytes: $($clientStats.FileBytes)"
+    Write-Output "comparison_region: stable_client_area"
+    Write-Output "comparison_top_inset: $comparisonTopInset"
+    Write-Output "comparison_client_region: $comparisonX,$comparisonY,$comparisonWidth,$comparisonHeight"
+    Write-Output "comparison_screenshot_file: $comparisonScreenshotPath"
+    Write-Output "comparison_screenshot_bytes: $($comparisonStats.FileBytes)"
+    Write-Output "sampled_pixels: $($comparisonStats.SampledPixels)"
+    Write-Output "sampled_unique_colors: $($comparisonStats.UniqueColors)"
     if ($baselineComparison) {
-        Write-Output "baseline_file: $($baselineComparison.BaselineFile)"
+        Write-Output "baseline_file: $baselineComparisonOriginalFile"
+        Write-Output "baseline_comparison_file: $baselineComparisonFile"
         Write-Output "baseline_diff_file: $($baselineComparison.DiffFile)"
         Write-Output "baseline_pixels: $($baselineComparison.TotalPixels)"
         Write-Output "baseline_different_pixels: $($baselineComparison.DifferentPixels)"
