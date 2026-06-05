@@ -53,6 +53,8 @@ actions!(
         OpenDataDirectory,
         OpenDiagnosticsReport,
         OpenStartupDescriptionReport,
+        OpenStartupConfigValidationReport,
+        OpenKeymapValidationReport,
         OpenLogFile,
         OpenLogsDirectory,
         OpenThemesDirectory,
@@ -123,6 +125,8 @@ const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
+const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
+const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
@@ -9698,6 +9702,24 @@ fn format_startup_config_validation_json(
     Ok(output)
 }
 
+fn format_startup_config_validation_check_json(
+    check: &TerminalDoctorStartupConfigCheck,
+) -> Result<String> {
+    let validation = check.validation.as_ref();
+    let value = serde_json::json!({
+        "startup_config_file": check.path.display().to_string(),
+        "status": check.status.as_str(),
+        "source": check.source.map(TerminalDoctorConfigSource::as_str),
+        "layout_count": validation.map(|validation| validation.layout_count),
+        "tab_count": validation.map(|validation| validation.tab_count),
+        "message": check.message.as_deref(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup config validation report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
 fn format_startup_config_schema() -> Result<String> {
     let schema = schemars::schema_for!(TerminalStartupConfig);
     let mut output = serde_json::to_string_pretty(&schema)
@@ -9748,6 +9770,50 @@ fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> 
 
     std_fs::write(path, report)
         .with_context(|| format!("failed to write diagnostics report {}", path.display()))
+}
+
+fn write_startup_config_validation_report_file(
+    path: &Path,
+    report: &TerminalDoctorStartupConfigCheck,
+) -> Result<()> {
+    let report = format_startup_config_validation_check_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup config validation report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup config validation report {}",
+            path.display()
+        )
+    })
+}
+
+fn write_keymap_validation_report_file(
+    path: &Path,
+    report: &TerminalDoctorKeymapCheck,
+) -> Result<()> {
+    let report = format_keymap_validation_check_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create keymap validation report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write keymap validation report {}",
+            path.display()
+        )
+    })
 }
 
 fn write_startup_description_report_file(
@@ -11182,6 +11248,23 @@ fn format_keymap_validation_json(report: &TerminalKeymapValidationReport) -> Res
     Ok(output)
 }
 
+fn format_keymap_validation_check_json(check: &TerminalDoctorKeymapCheck) -> Result<String> {
+    let validation = check.validation.as_ref();
+    let value = serde_json::json!({
+        "keymap_file": check.path.display().to_string(),
+        "status": check.status.as_str(),
+        "source": check.source.map(TerminalUserKeymapSource::as_str),
+        "default_binding_count": validation.map(|validation| validation.default_binding_count),
+        "user_keymap_source": validation.map(|validation| validation.user_keymap_source.as_str()),
+        "user_binding_count": validation.map(|validation| validation.user_binding_count),
+        "message": check.message.as_deref(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal keymap validation report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
 impl TerminalUserKeymapSource {
     fn as_str(self) -> &'static str {
         match self {
@@ -11320,6 +11403,14 @@ fn active_terminal_startup_description_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
 }
 
+fn active_terminal_startup_config_validation_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE)
+}
+
+fn active_terminal_keymap_validation_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_KEYMAP_VALIDATION_REPORT_FILE)
+}
+
 fn active_terminal_profile_description_report_file(profile: &str) -> Result<PathBuf> {
     Ok(paths::logs_dir().join(format!(
         "{}{}{}",
@@ -11409,6 +11500,8 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_data_directory);
     cx.on_action(open_diagnostics_report);
     cx.on_action(open_startup_description_report);
+    cx.on_action(open_startup_config_validation_report);
+    cx.on_action(open_keymap_validation_report);
     cx.on_action(open_profile_description_report);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
@@ -11621,11 +11714,13 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenDataDirectory>(),
         TypeId::of::<OpenDefaultKeymapReferenceFile>(),
         TypeId::of::<OpenDiagnosticsReport>(),
+        TypeId::of::<OpenKeymapValidationReport>(),
         TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenProfileDescriptionReport>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
+        TypeId::of::<OpenStartupConfigValidationReport>(),
         TypeId::of::<OpenStartupDescriptionReport>(),
         TypeId::of::<OpenThemesDirectory>(),
         TypeId::of::<ResetPaneSizes>(),
@@ -12133,11 +12228,16 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Startup Description Report",
             OpenStartupDescriptionReport,
         ),
+        MenuItem::action(
+            "Open Startup Config Validation Report",
+            OpenStartupConfigValidationReport,
+        ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
         MenuItem::action(
             "Open Default Keymap Reference File",
             OpenDefaultKeymapReferenceFile,
         ),
+        MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
@@ -12877,6 +12977,30 @@ fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
     cx.open_with_system(&diagnostics_report_file);
 }
 
+fn open_startup_config_validation_report(_: &OpenStartupConfigValidationReport, cx: &mut App) {
+    let validation_report_file = active_terminal_startup_config_validation_report_file();
+    let report = diagnose_startup_config_file(active_terminal_startup_config_file());
+    if let Err(error) =
+        write_startup_config_validation_report_file(&validation_report_file, &report)
+    {
+        log::warn!("failed to write startup config validation report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&validation_report_file);
+}
+
+fn open_keymap_validation_report(_: &OpenKeymapValidationReport, cx: &mut App) {
+    let validation_report_file = active_terminal_keymap_validation_report_file();
+    let report = diagnose_keymap(paths::keymap_file().clone(), cx);
+    if let Err(error) = write_keymap_validation_report_file(&validation_report_file, &report) {
+        log::warn!("failed to write keymap validation report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&validation_report_file);
+}
+
 fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let startup_description_report_file = active_terminal_startup_description_report_file();
@@ -13555,6 +13679,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
+        assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(
             &filter,
@@ -14382,8 +14508,18 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Config Validation Report",
+            "zed_terminal::OpenStartupConfigValidationReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Default Keymap Reference File",
             "zed_terminal::OpenDefaultKeymapReferenceFile",
+        );
+        assert_menu_action(
+            &items,
+            "Open Keymap Validation Report",
+            "zed_terminal::OpenKeymapValidationReport",
         );
         assert_menu_action(
             &items,
@@ -14992,6 +15128,35 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupDescriptionReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_config_validation_report_action_input() {
+        let action = <OpenStartupConfigValidationReport as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open startup config validation report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupConfigValidationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_keymap_validation_report_action_input() {
+        let action =
+            <OpenKeymapValidationReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open keymap validation report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenKeymapValidationReport>()
                 .is_some()
         );
     }
@@ -16140,6 +16305,60 @@ mod tests {
     }
 
     #[test]
+    fn formats_startup_config_validation_check_json_for_success() {
+        let report = TerminalDoctorStartupConfigCheck {
+            path: PathBuf::from("terminal.json"),
+            status: TerminalDoctorCheckStatus::Ok,
+            source: Some(TerminalDoctorConfigSource::File),
+            validation: Some(TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            }),
+            message: None,
+        };
+
+        let output = format_startup_config_validation_check_json(&report)
+            .expect("json output should format");
+        let json: serde_json::Value = serde_json::from_str(&output)
+            .expect("startup config validation report json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source"], "file");
+        assert_eq!(json["layout_count"], 2);
+        assert_eq!(json["tab_count"], 4);
+        assert!(json["message"].is_null());
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_startup_config_validation_check_json_for_error() {
+        let report = TerminalDoctorStartupConfigCheck {
+            path: PathBuf::from("terminal.json"),
+            status: TerminalDoctorCheckStatus::Error,
+            source: Some(TerminalDoctorConfigSource::File),
+            validation: None,
+            message: Some("default_profile references missing startup profile: missing".into()),
+        };
+
+        let output = format_startup_config_validation_check_json(&report)
+            .expect("json output should format");
+        let json: serde_json::Value = serde_json::from_str(&output)
+            .expect("startup config validation report json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["source"], "file");
+        assert!(json["layout_count"].is_null());
+        assert!(json["tab_count"].is_null());
+        assert_eq!(
+            json["message"],
+            "default_profile references missing startup profile: missing"
+        );
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
     fn formats_startup_config_schema() {
         let schema = format_startup_config_schema().expect("schema should format");
         let schema: gpui::private::serde_json::Value =
@@ -16258,6 +16477,39 @@ mod tests {
         assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_config_validation_report_file_as_focused_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE);
+        let report = TerminalDoctorStartupConfigCheck {
+            path: PathBuf::from("terminal.json"),
+            status: TerminalDoctorCheckStatus::Ok,
+            source: Some(TerminalDoctorConfigSource::File),
+            validation: Some(TerminalStartupConfigValidation {
+                layout_count: 2,
+                tab_count: 4,
+            }),
+            message: None,
+        };
+
+        write_startup_config_validation_report_file(&report_file, &report)
+            .expect("startup config validation report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read validation report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("validation report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source"], "file");
+        assert_eq!(json["layout_count"], 2);
+        assert_eq!(json["tab_count"], 4);
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -24195,6 +24447,95 @@ mod tests {
         assert_eq!(json["user_keymap_source"], "file");
         assert_eq!(json["user_binding_count"], 2);
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_keymap_validation_check_json_for_success() {
+        let report = TerminalDoctorKeymapCheck {
+            path: PathBuf::from("keymap.json"),
+            status: TerminalDoctorCheckStatus::Ok,
+            source: Some(TerminalUserKeymapSource::File),
+            validation: Some(TerminalKeymapValidation {
+                default_binding_count: 72,
+                user_binding_count: 3,
+                user_keymap_source: TerminalUserKeymapSource::File,
+            }),
+            message: None,
+        };
+
+        let output =
+            format_keymap_validation_check_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("keymap validation report json should parse");
+
+        assert_eq!(json["keymap_file"], "keymap.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source"], "file");
+        assert_eq!(json["default_binding_count"], 72);
+        assert_eq!(json["user_keymap_source"], "file");
+        assert_eq!(json["user_binding_count"], 3);
+        assert!(json["message"].is_null());
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_keymap_validation_check_json_for_error() {
+        let report = TerminalDoctorKeymapCheck {
+            path: PathBuf::from("keymap.json"),
+            status: TerminalDoctorCheckStatus::Error,
+            source: Some(TerminalUserKeymapSource::File),
+            validation: None,
+            message: Some("failed to parse terminal keymap file".into()),
+        };
+
+        let output =
+            format_keymap_validation_check_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("keymap validation report json should parse");
+
+        assert_eq!(json["keymap_file"], "keymap.json");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["source"], "file");
+        assert!(json["default_binding_count"].is_null());
+        assert!(json["user_keymap_source"].is_null());
+        assert!(json["user_binding_count"].is_null());
+        assert_eq!(json["message"], "failed to parse terminal keymap file");
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn writes_keymap_validation_report_file_as_focused_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_KEYMAP_VALIDATION_REPORT_FILE);
+        let report = TerminalDoctorKeymapCheck {
+            path: PathBuf::from("keymap.json"),
+            status: TerminalDoctorCheckStatus::Ok,
+            source: Some(TerminalUserKeymapSource::File),
+            validation: Some(TerminalKeymapValidation {
+                default_binding_count: 72,
+                user_binding_count: 3,
+                user_keymap_source: TerminalUserKeymapSource::File,
+            }),
+            message: None,
+        };
+
+        write_keymap_validation_report_file(&report_file, &report)
+            .expect("keymap validation report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read keymap validation report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("keymap validation report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["source"], "file");
+        assert_eq!(json["default_binding_count"], 72);
+        assert_eq!(json["user_keymap_source"], "file");
+        assert_eq!(json["user_binding_count"], 3);
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
     }
 
     #[test]
