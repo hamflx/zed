@@ -11842,6 +11842,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::ActivatePaneRight>(),
         TypeId::of::<workspace::ActivatePaneUp>(),
         TypeId::of::<workspace::ActivatePreviousPane>(),
+        TypeId::of::<workspace::CloseAllItemsAndPanes>(),
         TypeId::of::<workspace::CloseInactiveTabsAndPanes>(),
         TypeId::of::<workspace::FocusCenterPane>(),
         TypeId::of::<workspace::MovePaneDown>(),
@@ -12421,6 +12422,10 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action(
             "Close Inactive Tabs and Panes",
             workspace::CloseInactiveTabsAndPanes { save_intent: None },
+        ),
+        MenuItem::action(
+            "Close All Tabs and Panes",
+            workspace::CloseAllItemsAndPanes { save_intent: None },
         ),
         MenuItem::separator(),
         MenuItem::action("Focus Left", workspace::ActivatePaneLeft),
@@ -14169,6 +14174,10 @@ mod tests {
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
         assert_command_palette_action_visible(
             &filter,
+            &workspace::CloseAllItemsAndPanes::default(),
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &workspace::CloseInactiveTabsAndPanes::default(),
         );
         assert_command_palette_action_visible(&filter, &workspace::MovePaneLeft);
@@ -15072,6 +15081,11 @@ mod tests {
             &items,
             "Close Inactive Tabs and Panes",
             "workspace::CloseInactiveTabsAndPanes",
+        );
+        assert_menu_action(
+            &items,
+            "Close All Tabs and Panes",
+            "workspace::CloseAllItemsAndPanes",
         );
     }
 
