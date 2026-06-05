@@ -606,6 +606,10 @@ try {
             if ($mutationProfileDescription.profile -ne "work" -or -not $mutationProfileDescription.is_default -or $mutationProfileDescription.command -ne "pwsh -NoLogo" -or $mutationProfileDescription.title -ne "Work Home" -or $mutationProfileEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
                 throw "Mutated profile description did not report the expected default profile state."
             }
+            $mutationProfileReferences = @($mutationProfileDescription.references)
+            if ($mutationProfileDescription.reference_count -ne 2 -or $mutationProfileReferences.Count -ne 2 -or $mutationProfileReferences[0].kind -ne "default_profile" -or $mutationProfileReferences[1].kind -ne "root_tab" -or $mutationProfileReferences[1].tab -ne 1) {
+                throw "Mutated profile description did not report the expected default/root tab references."
+            }
             $mutationProfileDescriptionText = $mutationProfileDescription | ConvertTo-Json -Depth 10
             if ($mutationProfileDescriptionText -match "release-check-value") {
                 throw "Mutated profile description leaked an environment variable value."
@@ -667,6 +671,10 @@ try {
             $mutationAdminEnvKeys = @($mutationAdminDescription.env_keys)
             if ($mutationAdminDescription.profile -ne "admin" -or $mutationAdminDescription.is_default -or $mutationAdminDescription.command -ne "pwsh -NoLogo" -or $mutationAdminDescription.title -ne "Work Home" -or $mutationAdminEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
                 throw "Imported admin profile description did not report the expected imported state."
+            }
+            $mutationAdminReferences = @($mutationAdminDescription.references)
+            if ($mutationAdminDescription.reference_count -ne 0 -or $mutationAdminReferences.Count -ne 0) {
+                throw "Imported admin profile description unexpectedly reported inbound references."
             }
             $mutationAdminDescriptionText = $mutationAdminDescription | ConvertTo-Json -Depth 10
             if ($mutationAdminDescriptionText -match "release-check-value") {
@@ -739,6 +747,10 @@ try {
             $profileTabEnvKeys = @($profileDescription.tabs[0].env_keys)
             if ($profileEnvKeys -notcontains "ZED_TERMINAL_RELEASE_SECRET" -or $profileTabEnvKeys -notcontains "LOG_TOKEN") {
                 throw "Profile description did not report expected environment key names."
+            }
+            $profileDescriptionReferences = @($profileDescription.references)
+            if ($profileDescription.reference_count -ne 1 -or $profileDescriptionReferences.Count -ne 1 -or $profileDescriptionReferences[0].kind -ne "default_profile") {
+                throw "Profile description did not report the expected default profile reference."
             }
             $profileDescriptionText = $profileDescription | ConvertTo-Json -Depth 10
             if ($profileDescriptionText -match "do-not-log") {

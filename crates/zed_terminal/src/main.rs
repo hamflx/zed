@@ -3024,6 +3024,7 @@ struct TerminalStartupProfileDescription {
     shell: Option<TerminalStartupShellConfig>,
     env_keys: Vec<String>,
     tabs: Vec<TerminalStartupProfileTabDescription>,
+    references: Vec<TerminalStartupProfileReference>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3051,6 +3052,31 @@ struct TerminalStartupProfileTabDescription {
     shell: Option<TerminalStartupShellConfig>,
     env_keys: Vec<String>,
     split: Option<TerminalStartupSplitDirection>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileReference {
+    kind: TerminalStartupProfileReferenceKind,
+    label: String,
+    profile: Option<String>,
+    tab_number: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalStartupProfileReferenceKind {
+    DefaultProfile,
+    RootTab,
+    ProfileTab,
+}
+
+impl TerminalStartupProfileReferenceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultProfile => "default_profile",
+            Self::RootTab => "root_tab",
+            Self::ProfileTab => "profile_tab",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -9724,7 +9750,71 @@ fn startup_profile_description_report(
             .iter()
             .map(startup_profile_tab_description)
             .collect(),
+        references: startup_profile_references(startup_config, &profile),
     })
+}
+
+fn startup_profile_references(
+    startup_config: &TerminalStartupConfig,
+    profile: &str,
+) -> Vec<TerminalStartupProfileReference> {
+    let mut references = Vec::new();
+
+    if startup_config.default_profile.as_deref() == Some(profile) {
+        references.push(TerminalStartupProfileReference {
+            kind: TerminalStartupProfileReferenceKind::DefaultProfile,
+            label: "default_profile".into(),
+            profile: None,
+            tab_number: None,
+        });
+    }
+
+    references.extend(startup_profile_tab_references(
+        &startup_config.tabs,
+        profile,
+        None,
+    ));
+
+    for (profile_name, startup_profile) in &startup_config.profiles {
+        references.extend(startup_profile_tab_references(
+            &startup_profile.tabs,
+            profile,
+            Some(profile_name.as_str()),
+        ));
+    }
+
+    references
+}
+
+fn startup_profile_tab_references(
+    tabs: &[TerminalStartupTabConfig],
+    profile: &str,
+    parent_profile: Option<&str>,
+) -> Vec<TerminalStartupProfileReference> {
+    tabs.iter()
+        .enumerate()
+        .filter_map(|(index, tab)| {
+            if tab.profile.as_deref() != Some(profile) {
+                return None;
+            }
+
+            let tab_number = index + 1;
+            match parent_profile {
+                Some(parent_profile) => Some(TerminalStartupProfileReference {
+                    kind: TerminalStartupProfileReferenceKind::ProfileTab,
+                    label: format!("profile {parent_profile} tab {tab_number}"),
+                    profile: Some(parent_profile.into()),
+                    tab_number: Some(tab_number),
+                }),
+                None => Some(TerminalStartupProfileReference {
+                    kind: TerminalStartupProfileReferenceKind::RootTab,
+                    label: format!("root tab {tab_number}"),
+                    profile: None,
+                    tab_number: Some(tab_number),
+                }),
+            }
+        })
+        .collect()
 }
 
 fn startup_description_report(
@@ -9972,7 +10062,19 @@ fn format_startup_profile_description(report: &TerminalStartupProfileDescription
     for (index, tab) in report.tabs.iter().enumerate() {
         format_startup_profile_tab_description(&mut output, index + 1, tab);
     }
+    format_startup_profile_references(&mut output, &report.references);
     output
+}
+
+fn format_startup_profile_references(
+    output: &mut String,
+    references: &[TerminalStartupProfileReference],
+) {
+    writeln!(output, "references: {}", references.len())
+        .expect("writing to string should not fail");
+    for reference in references {
+        writeln!(output, "- {}", reference.label).expect("writing to string should not fail");
+    }
 }
 
 fn format_startup_description(report: &TerminalStartupDescription) -> String {
@@ -10139,11 +10241,28 @@ fn format_startup_profile_description_json(
             .enumerate()
             .map(|(index, tab)| startup_profile_tab_description_json(index + 1, tab))
             .collect::<Vec<_>>(),
+        "reference_count": report.references.len(),
+        "references": report
+            .references
+            .iter()
+            .map(startup_profile_reference_json)
+            .collect::<Vec<_>>(),
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile description as json")?;
     output.push('\n');
     Ok(output)
+}
+
+fn startup_profile_reference_json(
+    reference: &TerminalStartupProfileReference,
+) -> serde_json::Value {
+    serde_json::json!({
+        "kind": reference.kind.as_str(),
+        "label": reference.label.as_str(),
+        "profile": reference.profile.as_deref(),
+        "tab": reference.tab_number,
+    })
 }
 
 fn format_startup_description_json(report: &TerminalStartupDescription) -> Result<String> {
@@ -17148,6 +17267,20 @@ mod tests {
                 env_keys: Vec::new(),
                 split: Some(TerminalStartupSplitDirection::Right),
             }],
+            references: vec![
+                TerminalStartupProfileReference {
+                    kind: TerminalStartupProfileReferenceKind::DefaultProfile,
+                    label: "default_profile".into(),
+                    profile: None,
+                    tab_number: None,
+                },
+                TerminalStartupProfileReference {
+                    kind: TerminalStartupProfileReferenceKind::RootTab,
+                    label: "root tab 2".into(),
+                    profile: None,
+                    tab_number: Some(2),
+                },
+            ],
         };
 
         let output = format_startup_profile_description(&report);
@@ -17174,6 +17307,9 @@ mod tests {
         assert!(output.contains("  title: Admin"));
         assert!(output.contains("  shell: pwsh.exe -NoLogo"));
         assert!(output.contains("  split: right"));
+        assert!(output.contains("references: 2"));
+        assert!(output.contains("- default_profile"));
+        assert!(output.contains("- root tab 2"));
     }
 
     #[test]
@@ -17200,6 +17336,12 @@ mod tests {
                 shell: None,
                 env_keys: vec!["LOG_TOKEN".into()],
                 split: Some(TerminalStartupSplitDirection::Down),
+            }],
+            references: vec![TerminalStartupProfileReference {
+                kind: TerminalStartupProfileReferenceKind::ProfileTab,
+                label: "profile admin tab 1".into(),
+                profile: Some("admin".into()),
+                tab_number: Some(1),
             }],
         };
 
@@ -17234,6 +17376,11 @@ mod tests {
         assert_eq!(json["tabs"][0]["env_count"], 1);
         assert_eq!(json["tabs"][0]["env_keys"][0], "LOG_TOKEN");
         assert_eq!(json["tabs"][0]["split"], "down");
+        assert_eq!(json["reference_count"], 1);
+        assert_eq!(json["references"][0]["kind"], "profile_tab");
+        assert_eq!(json["references"][0]["label"], "profile admin tab 1");
+        assert_eq!(json["references"][0]["profile"], "admin");
+        assert_eq!(json["references"][0]["tab"], 1);
         assert!(output.ends_with('\n'));
     }
 
@@ -17572,6 +17719,95 @@ mod tests {
         assert!(json.contains("LOG_TOKEN"));
         assert!(!json.contains("SECRET_VALUE"));
         assert!(!json.contains("TOKEN_VALUE"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn startup_profile_description_reports_profile_references() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(&startup_config_file, "{}").expect("failed to write startup config");
+
+        let mut profiles = BTreeMap::new();
+        profiles.insert("work".into(), TerminalStartupProfileConfig::default());
+        profiles.insert(
+            "admin".into(),
+            TerminalStartupProfileConfig {
+                tabs: vec![
+                    TerminalStartupTabConfig::default(),
+                    TerminalStartupTabConfig {
+                        profile: Some("work".into()),
+                        title: Some("Nested Work".into()),
+                        ..TerminalStartupTabConfig::default()
+                    },
+                ],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            tabs: vec![
+                TerminalStartupTabConfig::default(),
+                TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    title: Some("Root Work".into()),
+                    ..TerminalStartupTabConfig::default()
+                },
+            ],
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let report = startup_profile_description_report(&config, &startup_config_file, "work")
+            .expect("profile description should report references");
+
+        assert_eq!(report.references.len(), 3);
+        assert_eq!(
+            report.references[0],
+            TerminalStartupProfileReference {
+                kind: TerminalStartupProfileReferenceKind::DefaultProfile,
+                label: "default_profile".into(),
+                profile: None,
+                tab_number: None,
+            }
+        );
+        assert_eq!(
+            report.references[1],
+            TerminalStartupProfileReference {
+                kind: TerminalStartupProfileReferenceKind::RootTab,
+                label: "root tab 2".into(),
+                profile: None,
+                tab_number: Some(2),
+            }
+        );
+        assert_eq!(
+            report.references[2],
+            TerminalStartupProfileReference {
+                kind: TerminalStartupProfileReferenceKind::ProfileTab,
+                label: "profile admin tab 2".into(),
+                profile: Some("admin".into()),
+                tab_number: Some(2),
+            }
+        );
+
+        let text = format_startup_profile_description(&report);
+        assert!(text.contains("references: 3"));
+        assert!(text.contains("- default_profile"));
+        assert!(text.contains("- root tab 2"));
+        assert!(text.contains("- profile admin tab 2"));
+
+        let json = format_startup_profile_description_json(&report)
+            .expect("profile description json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&json).expect("profile description json should parse");
+        assert_eq!(json["reference_count"], 3);
+        assert_eq!(json["references"][0]["kind"], "default_profile");
+        assert_eq!(json["references"][1]["kind"], "root_tab");
+        assert_eq!(json["references"][1]["tab"], 2);
+        assert_eq!(json["references"][2]["kind"], "profile_tab");
+        assert_eq!(json["references"][2]["profile"], "admin");
+        assert_eq!(json["references"][2]["tab"], 2);
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -18458,6 +18694,12 @@ mod tests {
                 env_keys: vec!["LOG_TOKEN".into()],
                 split: Some(TerminalStartupSplitDirection::Down),
             }],
+            references: vec![TerminalStartupProfileReference {
+                kind: TerminalStartupProfileReferenceKind::DefaultProfile,
+                label: "default_profile".into(),
+                profile: None,
+                tab_number: None,
+            }],
         };
 
         write_startup_profile_description_report_file(&report_file, &report)
@@ -18473,6 +18715,8 @@ mod tests {
         assert_eq!(json["env_keys"][0], "API_KEY");
         assert_eq!(json["tabs"][0]["env_keys"][0], "LOG_TOKEN");
         assert_eq!(json["tabs"][0]["split"], "down");
+        assert_eq!(json["reference_count"], 1);
+        assert_eq!(json["references"][0]["kind"], "default_profile");
         assert!(!report_text.contains("SECRET_VALUE"));
         assert!(report_text.ends_with('\n'));
 
