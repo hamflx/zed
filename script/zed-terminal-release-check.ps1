@@ -450,6 +450,9 @@ try {
                 "--describe-keymap-action-format <text\|json>",
                 "--describe-keymap-binding <KEYSTROKES>",
                 "--describe-keymap-binding-format <text\|json>",
+                "--describe-active-keymap-binding <KEYSTROKES>",
+                "--describe-active-keymap-binding-context <CONTEXT>",
+                "--describe-active-keymap-binding-format <text\|json>",
                 "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -657,7 +660,7 @@ try {
 [
   {
     "bindings": {
-      "ctrl-shift-t": "zed_terminal::NewTerminalTab",
+      "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab",
       "ctrl-shift-w": "pane::CloseActiveItem"
     },
     "unbind": {
@@ -672,6 +675,39 @@ try {
   }
 ]
 '@ -Encoding ascii
+            $activeNewTabBindingDescription = Invoke-NativeJsonCommandResult "describe-active-keymap-binding-new-tab" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-active-keymap-binding", "ctrl-shift-t",
+                "--describe-active-keymap-binding-format", "json"
+            )
+            if ($activeNewTabBindingDescription.status -ne "ok" -or $activeNewTabBindingDescription.default_keymap -ne "keymaps/zed-terminal.json" -or $activeNewTabBindingDescription.keymap_file -ne $mutationKeymapFile -or $activeNewTabBindingDescription.user_keymap_source -ne "file" -or $activeNewTabBindingDescription.keystrokes -ne "ctrl-shift-t" -or $activeNewTabBindingDescription.pending) {
+                throw "Active keymap binding description did not report the expected override contract."
+            }
+            if (-not $activeNewTabBindingDescription.contexts -or $activeNewTabBindingDescription.contexts[0] -notmatch "Terminal") {
+                throw "Active keymap binding description did not report the expected Terminal context."
+            }
+            $activeNewTabMatches = @($activeNewTabBindingDescription.matches)
+            if ($activeNewTabMatches.Count -lt 2 -or $activeNewTabMatches[0].source -ne "User" -or $activeNewTabMatches[0].action -ne "zed_terminal::DuplicateTerminalTab" -or $activeNewTabMatches[1].source -ne "Default" -or $activeNewTabMatches[1].action -ne "zed_terminal::NewTerminalTab") {
+                throw "Active keymap binding description did not put the user override before the bundled default binding."
+            }
+            $activePasteBindingDescription = Invoke-NativeJsonCommandResult "describe-active-keymap-binding-paste" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-active-keymap-binding", "ctrl-shift-v",
+                "--describe-active-keymap-binding-context", "Terminal",
+                "--describe-active-keymap-binding-format", "json"
+            )
+            if (-not (@($activePasteBindingDescription.matches) | Where-Object { $_.source -eq "User" -and $_.keystrokes -eq "ctrl-shift-V" -and $_.action -eq "terminal::Paste" -and $_.context -eq "Terminal" })) {
+                throw "Active keymap binding description is missing the user terminal Paste binding."
+            }
+            $activeKeymapBindingDescriptionText = @(
+                $activeNewTabBindingDescription,
+                $activePasteBindingDescription
+            ) | ConvertTo-Json -Depth 20
+            if ($activeKeymapBindingDescriptionText -match "do-not-log-keymap") {
+                throw "Active keymap binding description output leaked keymap file contents."
+            }
             $mutationKeymapBackupFile = Join-Path $mutationCliConfigDir "backups\keymap.backup.json"
             $keymapBackup = Invoke-NativeJsonCommandResult "mutation-backup-keymap" @(
                 "--user-data-dir", $mutationCliDataDir,

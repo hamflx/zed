@@ -20,9 +20,9 @@ use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, Keystroke,
-    Menu, MenuItem, Pixels, SharedString, SystemWindowTabController, Task, TaskExt, WeakEntity,
-    Window, WindowBounds, WindowOptions, actions, px, size,
+    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, KeyContext,
+    Keymap, Keystroke, Menu, MenuItem, Pixels, SharedString, SystemWindowTabController, Task,
+    TaskExt, WeakEntity, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -233,6 +233,12 @@ Keymap backup and restore options:
           Describe bundled default keymap bindings that match a keystroke sequence
       --describe-keymap-binding-format <text|json>
           Set the output format for --describe-keymap-binding
+      --describe-active-keymap-binding <KEYSTROKES>
+          Describe active keymap bindings after user overrides for a keystroke sequence
+      --describe-active-keymap-binding-context <CONTEXT>
+          Add a key context for --describe-active-keymap-binding; defaults to Terminal
+      --describe-active-keymap-binding-format <text|json>
+          Set the output format for --describe-active-keymap-binding
 
 Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir and --config-dir only."
 )]
@@ -2932,11 +2938,20 @@ struct TerminalKeymapBindingDescriptionCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalActiveKeymapBindingDescriptionCommand {
+    path_options: TerminalPathOptions,
+    keystrokes: String,
+    contexts: Vec<String>,
+    format: TerminalActiveKeymapBindingDescriptionOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TerminalKeymapDiscoveryCommand {
     Schema(TerminalKeymapSchemaCommand),
     Actions(TerminalKeymapActionListCommand),
     Action(TerminalKeymapActionDescriptionCommand),
     Binding(TerminalKeymapBindingDescriptionCommand),
+    ActiveBinding(TerminalActiveKeymapBindingDescriptionCommand),
 }
 
 #[derive(Clone, Debug)]
@@ -3947,9 +3962,31 @@ struct TerminalKeymapBindingDescriptionReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalActiveKeymapBindingDescriptionReport {
+    default_keymap: &'static str,
+    keymap_file: PathBuf,
+    user_keymap_source: TerminalUserKeymapSource,
+    keystrokes: String,
+    parsed_keystrokes: Vec<String>,
+    contexts: Vec<String>,
+    pending: bool,
+    matches: Vec<TerminalActiveKeymapBindingMatch>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalKeymapBindingMatch {
     keystrokes: String,
     match_kind: TerminalKeymapBindingMatchKind,
+    action: &'static str,
+    namespace: &'static str,
+    context: Option<String>,
+    input: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalActiveKeymapBindingMatch {
+    source: &'static str,
+    keystrokes: String,
     action: &'static str,
     namespace: &'static str,
     context: Option<String>,
@@ -4260,6 +4297,13 @@ enum TerminalKeymapActionDescriptionOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalKeymapBindingDescriptionOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalActiveKeymapBindingDescriptionOutputFormat {
     #[default]
     Text,
     Json,
@@ -5037,6 +5081,11 @@ impl TerminalKeymapSchemaCommand {
             Some(TerminalKeymapDiscoveryCommand::Binding(_)) => {
                 bail!("--describe-keymap-binding cannot be parsed as a keymap schema command")
             }
+            Some(TerminalKeymapDiscoveryCommand::ActiveBinding(_)) => {
+                bail!(
+                    "--describe-active-keymap-binding cannot be parsed as a keymap schema command"
+                )
+            }
             None => Ok(None),
         }
     }
@@ -5111,6 +5160,23 @@ impl TerminalKeymapDiscoveryCommand {
                         Some(cli_string_value(&mut args, flag, inline_value)?);
                     parser.seen_keymap_discovery_option = true;
                 }
+                "--describe-active-keymap-binding" => {
+                    parser.active_binding = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.mode_name("--describe-active-keymap-binding")?;
+                }
+                "--describe-active-keymap-binding-context" => {
+                    parser.active_binding_contexts.push(cli_string_value(
+                        &mut args,
+                        flag,
+                        inline_value,
+                    )?);
+                    parser.seen_keymap_discovery_option = true;
+                }
+                "--describe-active-keymap-binding-format" => {
+                    parser.active_binding_description_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_keymap_discovery_option = true;
+                }
                 _ => parser.reject_arg(arg)?,
             }
         }
@@ -5124,6 +5190,7 @@ impl TerminalKeymapDiscoveryCommand {
             Self::Actions(command) => &command.path_options,
             Self::Action(command) => &command.path_options,
             Self::Binding(command) => &command.path_options,
+            Self::ActiveBinding(command) => &command.path_options,
         }
     }
 }
@@ -5140,6 +5207,9 @@ struct TerminalKeymapDiscoveryParser {
     action_description_format: Option<String>,
     binding: Option<String>,
     binding_description_format: Option<String>,
+    active_binding: Option<String>,
+    active_binding_contexts: Vec<String>,
+    active_binding_description_format: Option<String>,
 }
 
 impl TerminalKeymapDiscoveryParser {
@@ -5194,6 +5264,21 @@ impl TerminalKeymapDiscoveryParser {
                         "--print-keymap-schema cannot be used with --describe-keymap-binding-format"
                     );
                 }
+                if self.active_binding.is_some() {
+                    bail!(
+                        "--print-keymap-schema cannot be used with --describe-active-keymap-binding"
+                    );
+                }
+                if !self.active_binding_contexts.is_empty() {
+                    bail!(
+                        "--print-keymap-schema cannot be used with --describe-active-keymap-binding-context"
+                    );
+                }
+                if self.active_binding_description_format.is_some() {
+                    bail!(
+                        "--print-keymap-schema cannot be used with --describe-active-keymap-binding-format"
+                    );
+                }
                 Ok(Some(TerminalKeymapDiscoveryCommand::Schema(
                     TerminalKeymapSchemaCommand { path_options },
                 )))
@@ -5213,6 +5298,21 @@ impl TerminalKeymapDiscoveryParser {
                 if self.binding_description_format.is_some() {
                     bail!(
                         "--list-keymap-actions cannot be used with --describe-keymap-binding-format"
+                    );
+                }
+                if self.active_binding.is_some() {
+                    bail!(
+                        "--list-keymap-actions cannot be used with --describe-active-keymap-binding"
+                    );
+                }
+                if !self.active_binding_contexts.is_empty() {
+                    bail!(
+                        "--list-keymap-actions cannot be used with --describe-active-keymap-binding-context"
+                    );
+                }
+                if self.active_binding_description_format.is_some() {
+                    bail!(
+                        "--list-keymap-actions cannot be used with --describe-active-keymap-binding-format"
                     );
                 }
                 Ok(Some(TerminalKeymapDiscoveryCommand::Actions(
@@ -5236,6 +5336,21 @@ impl TerminalKeymapDiscoveryParser {
                 if self.binding_description_format.is_some() {
                     bail!(
                         "--describe-keymap-action cannot be used with --describe-keymap-binding-format"
+                    );
+                }
+                if self.active_binding.is_some() {
+                    bail!(
+                        "--describe-keymap-action cannot be used with --describe-active-keymap-binding"
+                    );
+                }
+                if !self.active_binding_contexts.is_empty() {
+                    bail!(
+                        "--describe-keymap-action cannot be used with --describe-active-keymap-binding-context"
+                    );
+                }
+                if self.active_binding_description_format.is_some() {
+                    bail!(
+                        "--describe-keymap-action cannot be used with --describe-active-keymap-binding-format"
                     );
                 }
                 let Some(action) = self.action else {
@@ -5268,6 +5383,21 @@ impl TerminalKeymapDiscoveryParser {
                         "--describe-keymap-binding cannot be used with --describe-keymap-action-format"
                     );
                 }
+                if self.active_binding.is_some() {
+                    bail!(
+                        "--describe-keymap-binding cannot be used with --describe-active-keymap-binding"
+                    );
+                }
+                if !self.active_binding_contexts.is_empty() {
+                    bail!(
+                        "--describe-keymap-binding cannot be used with --describe-active-keymap-binding-context"
+                    );
+                }
+                if self.active_binding_description_format.is_some() {
+                    bail!(
+                        "--describe-keymap-binding cannot be used with --describe-active-keymap-binding-format"
+                    );
+                }
                 let Some(binding) = self.binding else {
                     bail!("--describe-keymap-binding requires keystrokes");
                 };
@@ -5284,6 +5414,49 @@ impl TerminalKeymapDiscoveryParser {
                     },
                 )))
             }
+            Some("--describe-active-keymap-binding") => {
+                if self.action_list_format.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding cannot be used with --list-keymap-actions-format"
+                    );
+                }
+                if self.action.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding cannot be used with --describe-keymap-action"
+                    );
+                }
+                if self.action_description_format.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding cannot be used with --describe-keymap-action-format"
+                    );
+                }
+                if self.binding.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding cannot be used with --describe-keymap-binding"
+                    );
+                }
+                if self.binding_description_format.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding cannot be used with --describe-keymap-binding-format"
+                    );
+                }
+                let Some(binding) = self.active_binding else {
+                    bail!("--describe-active-keymap-binding requires keystrokes");
+                };
+                if binding.trim().is_empty() {
+                    bail!("--describe-active-keymap-binding requires non-empty keystrokes");
+                }
+                Ok(Some(TerminalKeymapDiscoveryCommand::ActiveBinding(
+                    TerminalActiveKeymapBindingDescriptionCommand {
+                        path_options,
+                        keystrokes: binding,
+                        contexts: self.active_binding_contexts,
+                        format: parse_active_keymap_binding_description_output_format(
+                            self.active_binding_description_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
             Some(mode) => bail!("unsupported terminal keymap discovery mode: {mode}"),
             None => {
                 if self.action_list_format.is_some() {
@@ -5294,6 +5467,16 @@ impl TerminalKeymapDiscoveryParser {
                 }
                 if self.binding_description_format.is_some() {
                     bail!("--describe-keymap-binding-format requires --describe-keymap-binding");
+                }
+                if !self.active_binding_contexts.is_empty() {
+                    bail!(
+                        "--describe-active-keymap-binding-context requires --describe-active-keymap-binding"
+                    );
+                }
+                if self.active_binding_description_format.is_some() {
+                    bail!(
+                        "--describe-active-keymap-binding-format requires --describe-active-keymap-binding"
+                    );
                 }
                 Ok(None)
             }
@@ -7100,6 +7283,13 @@ fn run_terminal_keymap_discovery_command(command: TerminalKeymapDiscoveryCommand
         TerminalKeymapDiscoveryCommand::Binding(command) => {
             run_keymap_binding_description_printing(command.keystrokes, command.format)
         }
+        TerminalKeymapDiscoveryCommand::ActiveBinding(command) => {
+            run_active_keymap_binding_description_printing(
+                command.keystrokes,
+                command.contexts,
+                command.format,
+            )
+        }
     }
 }
 
@@ -7337,6 +7527,38 @@ fn run_keymap_binding_description_printing(
                 }
                 Err(error) => {
                     eprintln!("failed to describe terminal keymap binding: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
+}
+
+fn run_active_keymap_binding_description_printing(
+    keystrokes: String,
+    contexts: Vec<String>,
+    format: TerminalActiveKeymapBindingDescriptionOutputFormat,
+) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match terminal_active_keymap_binding_description_report(
+                cx,
+                paths::keymap_file(),
+                &keystrokes,
+                &contexts,
+            )
+            .and_then(|report| format_active_keymap_binding_description_report(&report, format))
+            {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush active keymap binding description output");
+                }
+                Err(error) => {
+                    eprintln!("failed to describe active terminal keymap binding: {error:#}");
                     io::stderr().flush().ok();
                     process::exit(2);
                 }
@@ -8573,6 +8795,18 @@ fn parse_keymap_binding_description_output_format(
         format => {
             bail!("unsupported --describe-keymap-binding-format {format:?}; expected text or json")
         }
+    }
+}
+
+fn parse_active_keymap_binding_description_output_format(
+    format: Option<&str>,
+) -> Result<TerminalActiveKeymapBindingDescriptionOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalActiveKeymapBindingDescriptionOutputFormat::Text),
+        "json" => Ok(TerminalActiveKeymapBindingDescriptionOutputFormat::Json),
+        format => bail!(
+            "unsupported --describe-active-keymap-binding-format {format:?}; expected text or json"
+        ),
     }
 }
 
@@ -13937,6 +14171,104 @@ fn terminal_keymap_binding_description_report(
     })
 }
 
+fn terminal_active_keymap_binding_description_report(
+    cx: &mut App,
+    keymap_file: &Path,
+    keystrokes: &str,
+    contexts: &[String],
+) -> Result<TerminalActiveKeymapBindingDescriptionReport> {
+    let parsed_keystrokes = parse_binding_query_keystrokes(keystrokes)?;
+    let mut key_bindings =
+        KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
+            .context("failed to load zed terminal default keymap")?;
+    let (user_keymap_content, user_keymap_source) = read_user_keymap_content(keymap_file)?;
+    let mut user_key_bindings = load_keymap_content_for_active_binding_description(
+        "terminal keymap file",
+        &user_keymap_content,
+        cx,
+    )?;
+    for key_binding in &mut user_key_bindings {
+        key_binding.set_meta(KeybindSource::User.meta());
+    }
+    key_bindings.extend(user_key_bindings);
+
+    let context_stack = active_keymap_binding_context_stack(contexts)?;
+    let (bindings, pending) =
+        Keymap::new(key_bindings).bindings_for_input(&parsed_keystrokes, &context_stack);
+    let matches = bindings
+        .into_iter()
+        .map(|binding| {
+            let action = binding.action().name();
+            TerminalActiveKeymapBindingMatch {
+                source: binding_source_name(&binding),
+                keystrokes: format_binding_keystrokes(&binding),
+                action,
+                namespace: action_namespace(action),
+                context: binding.predicate().map(|predicate| predicate.to_string()),
+                input: binding.action_input().map(|input| input.to_string()),
+            }
+        })
+        .collect();
+
+    Ok(TerminalActiveKeymapBindingDescriptionReport {
+        default_keymap: TERMINAL_KEYMAP_PATH,
+        keymap_file: keymap_file.to_path_buf(),
+        user_keymap_source,
+        keystrokes: keystrokes.to_string(),
+        parsed_keystrokes: parsed_keystrokes.iter().map(Keystroke::unparse).collect(),
+        contexts: context_stack
+            .iter()
+            .map(|context| format!("{context:?}"))
+            .collect(),
+        pending,
+        matches,
+    })
+}
+
+fn load_keymap_content_for_active_binding_description(
+    label: &str,
+    content: &str,
+    cx: &App,
+) -> Result<Vec<KeyBinding>> {
+    match KeymapFile::load(content, cx) {
+        KeymapFileLoadResult::Success { key_bindings } => Ok(key_bindings),
+        KeymapFileLoadResult::SomeFailedToLoad { error_message, .. } => {
+            bail!("{label} has errors: {}", error_message.0)
+        }
+        KeymapFileLoadResult::JsonParseFailure { error } => {
+            Err(error).with_context(|| format!("failed to parse {label}"))
+        }
+    }
+}
+
+fn active_keymap_binding_context_stack(contexts: &[String]) -> Result<Vec<KeyContext>> {
+    let context_sources = if contexts.is_empty() {
+        vec!["Terminal".to_string()]
+    } else {
+        contexts.to_vec()
+    };
+    let mut parsed_contexts = Vec::with_capacity(context_sources.len());
+    for context_source in context_sources {
+        if context_source.trim().is_empty() {
+            bail!("--describe-active-keymap-binding-context requires a non-empty context");
+        }
+        let mut context = KeyContext::new_with_defaults();
+        context.extend(&KeyContext::parse(&context_source).with_context(|| {
+            format!("failed to parse active keymap binding context {context_source:?}")
+        })?);
+        parsed_contexts.push(context);
+    }
+    Ok(parsed_contexts)
+}
+
+fn binding_source_name(binding: &KeyBinding) -> &'static str {
+    binding
+        .meta()
+        .map(KeybindSource::from_meta)
+        .unwrap_or(KeybindSource::Unknown)
+        .name()
+}
+
 fn parse_binding_query_keystrokes(keystrokes: &str) -> Result<Vec<Keystroke>> {
     keystrokes
         .split_whitespace()
@@ -13958,6 +14290,20 @@ fn format_keymap_binding_description_report(
         }
         TerminalKeymapBindingDescriptionOutputFormat::Json => {
             format_keymap_binding_description_json(report)
+        }
+    }
+}
+
+fn format_active_keymap_binding_description_report(
+    report: &TerminalActiveKeymapBindingDescriptionReport,
+    format: TerminalActiveKeymapBindingDescriptionOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalActiveKeymapBindingDescriptionOutputFormat::Text => {
+            Ok(format_active_keymap_binding_description(report))
+        }
+        TerminalActiveKeymapBindingDescriptionOutputFormat::Json => {
+            format_active_keymap_binding_description_json(report)
         }
     }
 }
@@ -14035,6 +14381,55 @@ fn format_keymap_binding_description(report: &TerminalKeymapBindingDescriptionRe
                 binding_match.keystrokes,
                 binding_match.match_kind.as_str(),
                 binding_match.action
+            );
+            if let Some(context) = &binding_match.context {
+                write!(&mut summary, " ({context})").expect("writing to string should not fail");
+            }
+            if let Some(input) = &binding_match.input {
+                write!(&mut summary, " input: {input}").expect("writing to string should not fail");
+            }
+            writeln!(&mut output, "  - {summary}").expect("writing to string should not fail");
+        }
+    }
+    output
+}
+
+fn format_active_keymap_binding_description(
+    report: &TerminalActiveKeymapBindingDescriptionReport,
+) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "default_keymap: {}", report.default_keymap)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "keymap_file: {}", report.keymap_file.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "user_keymap_source: {}",
+        report.user_keymap_source.as_str()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "keystrokes: {}", report.keystrokes)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "parsed_keystrokes: {}",
+        report.parsed_keystrokes.join(" ")
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "contexts: {}", report.contexts.join(" > "))
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "pending: {}", report.pending)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "match_count: {}", report.matches.len())
+        .expect("writing to string should not fail");
+    if report.matches.is_empty() {
+        writeln!(&mut output, "matches: none").expect("writing to string should not fail");
+    } else {
+        writeln!(&mut output, "matches:").expect("writing to string should not fail");
+        for binding_match in &report.matches {
+            let mut summary = format!(
+                "{} [{}] action: {}",
+                binding_match.keystrokes, binding_match.source, binding_match.action
             );
             if let Some(context) = &binding_match.context {
                 write!(&mut summary, " ({context})").expect("writing to string should not fail");
@@ -14170,6 +14565,38 @@ fn format_keymap_binding_description_json(
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal keymap binding description as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_active_keymap_binding_description_json(
+    report: &TerminalActiveKeymapBindingDescriptionReport,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "default_keymap": report.default_keymap,
+        "keymap_file": report.keymap_file.display().to_string(),
+        "user_keymap_source": report.user_keymap_source.as_str(),
+        "keystrokes": report.keystrokes,
+        "parsed_keystrokes": report.parsed_keystrokes,
+        "contexts": report.contexts,
+        "pending": report.pending,
+        "match_count": report.matches.len(),
+        "matches": report
+            .matches
+            .iter()
+            .map(|binding_match| serde_json::json!({
+                "source": binding_match.source,
+                "keystrokes": binding_match.keystrokes,
+                "action": binding_match.action,
+                "namespace": binding_match.namespace,
+                "context": binding_match.context,
+                "input": binding_match.input,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize active terminal keymap binding description as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -22685,6 +23112,181 @@ mod tests {
         let error = terminal_keymap_binding_description_report(cx, "ctrl--bad")
             .expect_err("invalid keystrokes should be rejected");
         assert!(format!("{error:#}").contains("failed to parse keymap binding keystroke"));
+    }
+
+    #[gpui::test]
+    fn formats_active_keymap_binding_description(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let keymap_file = root_dir.join("keymap.json");
+        std_fs::write(
+            &keymap_file,
+            r#"// do-not-log-active-keymap
+[
+  {
+    "bindings": {
+      "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab",
+      "ctrl-k ctrl-t": "zed_terminal::NewTerminalTab"
+    },
+    "unbind": {
+      "ctrl-shift-w": "pane::CloseActiveItem"
+    }
+  },
+  {
+    "context": "Terminal",
+    "bindings": {
+      "ctrl-shift-v": "terminal::PasteText"
+    }
+  }
+]
+"#,
+        )
+        .expect("failed to write active keymap fixture");
+
+        let report = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-t",
+            &[],
+        )
+        .expect("active keymap binding description should build");
+        assert_eq!(report.default_keymap, TERMINAL_KEYMAP_PATH);
+        assert_eq!(report.keymap_file, keymap_file);
+        assert_eq!(report.user_keymap_source, TerminalUserKeymapSource::File);
+        assert_eq!(report.keystrokes, "ctrl-shift-t");
+        assert_eq!(report.parsed_keystrokes, vec!["ctrl-shift-t"]);
+        assert_eq!(report.contexts.len(), 1);
+        assert!(report.contexts[0].contains("Terminal"));
+        assert!(!report.pending);
+        assert_eq!(report.matches[0].source, "User");
+        assert_eq!(report.matches[0].keystrokes, "ctrl-shift-T");
+        assert_eq!(
+            report.matches[0].action,
+            "zed_terminal::DuplicateTerminalTab"
+        );
+        assert!(report.matches.iter().any(|binding_match| {
+            binding_match.source == "Default"
+                && binding_match.action == "zed_terminal::NewTerminalTab"
+        }));
+
+        let output = format_active_keymap_binding_description_report(
+            &report,
+            TerminalActiveKeymapBindingDescriptionOutputFormat::Json,
+        )
+        .expect("active keymap binding description should format as json");
+        let json: serde_json::Value = serde_json::from_str(&output)
+            .expect("active keymap binding description json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["default_keymap"], TERMINAL_KEYMAP_PATH);
+        assert_eq!(
+            json["keymap_file"],
+            report.keymap_file.display().to_string()
+        );
+        assert_eq!(json["user_keymap_source"], "file");
+        assert_eq!(json["pending"], false);
+        assert_eq!(json["matches"][0]["source"], "User");
+        assert_eq!(
+            json["matches"][0]["action"],
+            "zed_terminal::DuplicateTerminalTab"
+        );
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("do-not-log-active-keymap"));
+
+        let text = format_active_keymap_binding_description_report(
+            &report,
+            TerminalActiveKeymapBindingDescriptionOutputFormat::Text,
+        )
+        .expect("active keymap binding description should format as text");
+        assert!(text.contains("user_keymap_source: file"));
+        assert!(text.contains("ctrl-shift-T [User] action: zed_terminal::DuplicateTerminalTab"));
+        assert!(!text.contains("do-not-log-active-keymap"));
+
+        let paste_report = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-v",
+            &[],
+        )
+        .expect("active paste keymap binding description should build");
+        assert_eq!(paste_report.matches[0].source, "User");
+        assert_eq!(paste_report.matches[0].action, "terminal::PasteText");
+        assert_eq!(paste_report.matches[0].context.as_deref(), Some("Terminal"));
+
+        let workspace_report = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-v",
+            &["Workspace".to_string()],
+        )
+        .expect("explicit non-terminal context should build");
+        assert!(workspace_report.matches.is_empty());
+
+        let unbound_report = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-w",
+            &[],
+        )
+        .expect("active unbound keymap binding description should build");
+        assert!(unbound_report.matches.is_empty());
+        assert!(!unbound_report.pending);
+
+        let pending_report =
+            terminal_active_keymap_binding_description_report(cx, &keymap_file, "ctrl-k", &[])
+                .expect("active pending keymap binding description should build");
+        assert!(pending_report.matches.is_empty());
+        assert!(pending_report.pending);
+
+        let missing_report = terminal_active_keymap_binding_description_report(
+            cx,
+            &root_dir.join("missing-keymap.json"),
+            "ctrl-shift-t",
+            &[],
+        )
+        .expect("missing user keymap should use initial keymap content");
+        assert_eq!(
+            missing_report.user_keymap_source,
+            TerminalUserKeymapSource::Initial
+        );
+        assert_eq!(missing_report.matches[0].source, "Default");
+        assert_eq!(
+            missing_report.matches[0].action,
+            "zed_terminal::NewTerminalTab"
+        );
+
+        let empty_context_error = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-t",
+            &["".to_string()],
+        )
+        .expect_err("empty active keymap binding context should be rejected");
+        assert!(
+            format!("{empty_context_error:#}")
+                .contains("--describe-active-keymap-binding-context requires a non-empty context")
+        );
+
+        let invalid_keymap_file = root_dir.join("invalid-keymap.json");
+        std_fs::write(
+            &invalid_keymap_file,
+            r#"// do-not-log-active-keymap
+[
+  { "bindings": { "ctrl-shift-x": "missing::Action" } }
+]
+"#,
+        )
+        .expect("failed to write invalid active keymap fixture");
+        let error = terminal_active_keymap_binding_description_report(
+            cx,
+            &invalid_keymap_file,
+            "ctrl-shift-x",
+            &[],
+        )
+        .expect_err("invalid active keymap should be rejected");
+        let error_text = format!("{error:#}");
+        assert!(error_text.contains("terminal keymap file has errors"));
+        assert!(!error_text.contains("do-not-log-active-keymap"));
+
+        std_fs::remove_dir_all(root_dir).ok();
     }
 
     #[gpui::test]
@@ -32457,6 +33059,46 @@ mod tests {
     }
 
     #[test]
+    fn describe_active_keymap_binding_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+            "--describe-active-keymap-binding-context",
+            "Terminal",
+            "--describe-active-keymap-binding-format",
+            "json",
+        ])
+        .expect("active keymap binding description mode should parse")
+        .expect("active keymap binding description mode should resolve");
+
+        let TerminalKeymapDiscoveryCommand::ActiveBinding(command) = command else {
+            panic!("expected active keymap binding description command");
+        };
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.keystrokes, "ctrl-shift-t");
+        assert_eq!(command.contexts, vec!["Terminal".to_string()]);
+        assert_eq!(
+            command.format,
+            TerminalActiveKeymapBindingDescriptionOutputFormat::Json
+        );
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn print_default_keymap_mode_does_not_load_startup_config_file() {
         let data_dir = temp_test_dir();
         let config_dir = data_dir.join("config");
@@ -34048,6 +34690,9 @@ mod tests {
         assert!(help.contains("--describe-keymap-action-format <text|json>"));
         assert!(help.contains("--describe-keymap-binding <KEYSTROKES>"));
         assert!(help.contains("--describe-keymap-binding-format <text|json>"));
+        assert!(help.contains("--describe-active-keymap-binding <KEYSTROKES>"));
+        assert!(help.contains("--describe-active-keymap-binding-context <CONTEXT>"));
+        assert!(help.contains("--describe-active-keymap-binding-format <text|json>"));
         assert!(help.contains(
             "Profile transfer, startup config file, and keymap file options may be combined"
         ));
@@ -38445,6 +39090,139 @@ mod tests {
         assert!(
             format!("{error:#}")
                 .contains("--describe-keymap-binding requires non-empty keystrokes")
+        );
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn describe_active_keymap_binding_rejects_startup_only_arguments() {
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with active keymap binding description");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with active keymap binding description");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--paths",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+        ])
+        .expect_err("path inspection should conflict with active keymap binding description");
+        assert!(
+            format!("{error:#}")
+                .contains("--describe-active-keymap-binding cannot be used with --paths")
+        );
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--print-keymap-schema",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+        ])
+        .expect_err(
+            "keymap schema printing should conflict with active keymap binding description",
+        );
+        assert!(format!("{error:#}").contains(
+            "--print-keymap-schema cannot be used with --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--list-keymap-actions",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+        ])
+        .expect_err("keymap action listing should conflict with active keymap binding description");
+        assert!(format!("{error:#}").contains(
+            "--list-keymap-actions cannot be used with --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-keymap-action",
+            "zed_terminal::NewTerminalTab",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+        ])
+        .expect_err(
+            "keymap action description should conflict with active keymap binding description",
+        );
+        assert!(format!("{error:#}").contains(
+            "--describe-keymap-action cannot be used with --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-keymap-binding",
+            "ctrl-shift-t",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-v",
+        ])
+        .expect_err(
+            "default keymap binding description should conflict with active keymap binding description",
+        );
+        assert!(format!("{error:#}").contains(
+            "--describe-keymap-binding cannot be used with --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding-context",
+            "Terminal",
+        ])
+        .expect_err("active keymap binding context should require an active binding");
+        assert!(format!("{error:#}").contains(
+            "--describe-active-keymap-binding-context requires --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding-format",
+            "json",
+        ])
+        .expect_err("active keymap binding format should require an active binding");
+        assert!(format!("{error:#}").contains(
+            "--describe-active-keymap-binding-format requires --describe-active-keymap-binding"
+        ));
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding",
+            "ctrl-shift-t",
+            "--describe-active-keymap-binding-format",
+            "yaml",
+        ])
+        .expect_err("active keymap binding format should reject unknown formats");
+        assert!(
+            format!("{error:#}")
+                .contains("unsupported --describe-active-keymap-binding-format \"yaml\"")
+        );
+
+        let error = TerminalKeymapDiscoveryCommand::from_args([
+            "zed-terminal",
+            "--describe-active-keymap-binding=",
+        ])
+        .expect_err("empty active keymap binding description should be rejected");
+        assert!(
+            format!("{error:#}")
+                .contains("--describe-active-keymap-binding requires non-empty keystrokes")
         );
 
         std_fs::remove_dir_all(dir).ok();
