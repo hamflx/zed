@@ -19,9 +19,9 @@ use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
-    Action, App, AppContext as _, Axis, Bounds, Context, KeyBinding, Menu, MenuItem, Pixels,
-    SharedString, SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds,
-    WindowOptions, actions, px, size,
+    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, Menu, MenuItem,
+    Pixels, SharedString, SystemWindowTabController, Task, TaskExt, WeakEntity, Window,
+    WindowBounds, WindowOptions, actions, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -55,6 +55,7 @@ actions!(
         OpenStartupDescriptionReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
+        CopySupportInfoToClipboard,
         OpenLogFile,
         OpenLogsDirectory,
         OpenThemesDirectory,
@@ -9957,6 +9958,39 @@ fn format_terminal_paths(report: &TerminalPathReport) -> String {
     output
 }
 
+fn format_terminal_support_info(
+    version: &str,
+    paths: &TerminalPathReport,
+    doctor: &TerminalDoctorReport,
+) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "{TERMINAL_APP_NAME} Support Info")
+        .expect("writing to string should not fail");
+    writeln!(&mut output).expect("writing to string should not fail");
+    writeln!(&mut output, "app_name: {TERMINAL_APP_NAME}")
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "version: {version}").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "status: {}",
+        if doctor.has_errors() { "error" } else { "ok" }
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output).expect("writing to string should not fail");
+    writeln!(&mut output, "paths:").expect("writing to string should not fail");
+    write_prefixed_lines(&mut output, &format_terminal_paths(paths), "  ");
+    writeln!(&mut output).expect("writing to string should not fail");
+    writeln!(&mut output, "diagnostics:").expect("writing to string should not fail");
+    write_prefixed_lines(&mut output, &format_doctor_report(doctor), "  ");
+    output
+}
+
+fn write_prefixed_lines(output: &mut String, text: &str, prefix: &str) {
+    for line in text.lines() {
+        writeln!(output, "{prefix}{line}").expect("writing to string should not fail");
+    }
+}
+
 fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
     let value = serde_json::json!({
         "config_dir": report.config_dir.display().to_string(),
@@ -11502,6 +11536,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
+    cx.on_action(copy_support_info_to_clipboard);
     cx.on_action(open_profile_description_report);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
@@ -11699,6 +11734,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
     vec![
         TypeId::of::<ClearDefaultStartupProfile>(),
         TypeId::of::<CloseTerminalWindow>(),
+        TypeId::of::<CopySupportInfoToClipboard>(),
         TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
@@ -12241,6 +12277,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
+        MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
         MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
         MenuItem::action("Open Themes Directory", OpenThemesDirectory),
@@ -13001,6 +13038,16 @@ fn open_keymap_validation_report(_: &OpenKeymapValidationReport, cx: &mut App) {
     cx.open_with_system(&validation_report_file);
 }
 
+fn copy_support_info_to_clipboard(_: &CopySupportInfoToClipboard, cx: &mut App) {
+    let path_report = active_terminal_path_report();
+    let doctor_report = diagnose_terminal(&active_terminal_path_options(), cx);
+    let support_info =
+        format_terminal_support_info(env!("CARGO_PKG_VERSION"), &path_report, &doctor_report);
+
+    cx.write_to_clipboard(ClipboardItem::new_string(support_info));
+    log::info!("copied zed terminal support info to clipboard");
+}
+
 fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let startup_description_report_file = active_terminal_startup_description_report_file();
@@ -13679,6 +13726,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
+        assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
@@ -14536,6 +14584,11 @@ mod tests {
             "Open Diagnostics Report",
             "zed_terminal::OpenDiagnosticsReport",
         );
+        assert_menu_action(
+            &items,
+            "Copy Support Info",
+            "zed_terminal::CopySupportInfoToClipboard",
+        );
         assert_menu_action(&items, "Open Log File", "zed_terminal::OpenLogFile");
         assert_menu_action(
             &items,
@@ -15157,6 +15210,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenKeymapValidationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_copy_support_info_to_clipboard_action_input() {
+        let action =
+            <CopySupportInfoToClipboard as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("copy support info action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<CopySupportInfoToClipboard>()
                 .is_some()
         );
     }
@@ -16718,6 +16785,56 @@ mod tests {
         assert_eq!(json["themes_dir"], "themes");
         assert_eq!(json["log_file"], "zed-terminal.log");
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_terminal_support_info_for_clipboard() {
+        let output =
+            format_terminal_support_info("1.2.3", &sample_path_report(), &sample_doctor_report());
+
+        assert_eq!(
+            output,
+            concat!(
+                "Zed Terminal Support Info\n",
+                "\n",
+                "app_name: Zed Terminal\n",
+                "version: 1.2.3\n",
+                "status: error\n",
+                "\n",
+                "paths:\n",
+                "  config_dir: config\n",
+                "  data_dir: data\n",
+                "  logs_dir: logs\n",
+                "  settings_file: settings.json\n",
+                "  startup_config_file: terminal.json\n",
+                "  startup_config_schema_file: terminal.schema.json\n",
+                "  global_settings_file: global-settings.json\n",
+                "  keymap_file: keymap.json\n",
+                "  default_keymap_reference_file: default-keymap.json\n",
+                "  themes_dir: themes\n",
+                "  log_file: zed-terminal.log\n",
+                "\n",
+                "diagnostics:\n",
+                "  status: error\n",
+                "  directories:\n",
+                "    data_dir: ok data\n",
+                "    logs_dir: missing logs\n",
+                "  config_files:\n",
+                "    settings_file: error settings.json\n",
+                "      message: expected a file\n",
+                "  startup_config:\n",
+                "    startup_config_file: ok terminal.json\n",
+                "    source: file\n",
+                "    layouts: 2\n",
+                "    tabs: 4\n",
+                "  keymap:\n",
+                "    keymap_file: missing keymap.json\n",
+                "    source: initial\n",
+                "    default_bindings: 31\n",
+                "    user_bindings: 0\n",
+            )
+        );
+        assert!(!output.contains("SECRET_VALUE"));
     }
 
     #[test]
