@@ -2,6 +2,7 @@ use std::{
     any::TypeId,
     collections::{BTreeMap, BTreeSet},
     env,
+    ffi::OsString,
     fmt::Write as _,
     fs as std_fs,
     io::{self, Write as _},
@@ -156,6 +157,8 @@ const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-prof
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
+const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
+const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -2755,6 +2758,23 @@ enum TerminalCliCommand {
     Launch(LaunchOptions),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalProfileTransferCommand {
+    Export {
+        path_options: TerminalPathOptions,
+        profile: String,
+        export_file: PathBuf,
+        format: TerminalStartupProfileExportOutputFormat,
+    },
+    Import {
+        path_options: TerminalPathOptions,
+        profile: String,
+        import_file: PathBuf,
+        replace: bool,
+        format: TerminalStartupProfileImportOutputFormat,
+    },
+}
+
 #[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
@@ -3283,6 +3303,28 @@ struct TerminalStartupProfileCopy {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileExport {
+    path: PathBuf,
+    export_file: PathBuf,
+    profile: String,
+    env_keys: Vec<String>,
+    tab_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileImport {
+    path: PathBuf,
+    import_file: PathBuf,
+    source_profile: Option<String>,
+    profile: String,
+    replaced: bool,
+    changed: bool,
+    env_keys: Vec<String>,
+    tab_count: usize,
+    total_profile_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalStartupProfileRemoval {
     path: PathBuf,
     profile: String,
@@ -3306,6 +3348,21 @@ struct TerminalStartupProfileVisibilityUpdate {
     previous_hidden: bool,
     hidden: bool,
     changed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalStartupProfileExportFile {
+    format: String,
+    version: u64,
+    profile: String,
+    config: TerminalStartupProfileConfig,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileImportFile {
+    source_profile: Option<String>,
+    config: TerminalStartupProfileConfig,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -3552,6 +3609,20 @@ enum TerminalStartupProfileEnvUpdateOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupProfileCopyOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileExportOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalStartupProfileImportOutputFormat {
     #[default]
     Text,
     Json,
@@ -4121,6 +4192,257 @@ impl TerminalCliCommand {
             Self::Launch(launch_options) => &launch_options.path_options,
         }
     }
+}
+
+impl TerminalProfileTransferCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalProfileTransferParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(&arg) else {
+                parser.reject_arg(&arg)?;
+                continue;
+            };
+
+            match flag {
+                "--user-data-dir" => {
+                    parser.user_data_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--config-dir" => {
+                    parser.config_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--export-profile" => {
+                    parser.export_profile = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.mode = Some(parser.mode_name("--export-profile")?);
+                }
+                "--export-profile-file" => {
+                    parser.export_profile_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_profile_transfer_option = true;
+                }
+                "--export-profile-format" => {
+                    parser.export_profile_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_profile_transfer_option = true;
+                }
+                "--import-profile" => {
+                    parser.import_profile = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.mode = Some(parser.mode_name("--import-profile")?);
+                }
+                "--import-profile-file" => {
+                    parser.import_profile_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_profile_transfer_option = true;
+                }
+                "--replace-profile" => {
+                    if inline_value.is_some() {
+                        bail!("--replace-profile does not accept a value");
+                    }
+                    parser.replace_profile = true;
+                    parser.seen_profile_transfer_option = true;
+                }
+                "--import-profile-format" => {
+                    parser.import_profile_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_profile_transfer_option = true;
+                }
+                _ => {
+                    parser.reject_arg(&arg)?;
+                }
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Export { path_options, .. } | Self::Import { path_options, .. } => path_options,
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalProfileTransferParser {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    mode: Option<&'static str>,
+    seen_profile_transfer_option: bool,
+    pre_transfer_arg: Option<String>,
+    export_profile: Option<String>,
+    export_profile_file: Option<PathBuf>,
+    export_profile_format: Option<String>,
+    import_profile: Option<String>,
+    import_profile_file: Option<PathBuf>,
+    replace_profile: bool,
+    import_profile_format: Option<String>,
+}
+
+impl TerminalProfileTransferParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_profile_transfer_option = true;
+        if let Some(arg) = &self.pre_transfer_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode {
+            if mode != flag {
+                bail!("{mode} cannot be used with {flag}");
+            }
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_profile_transfer_option {
+            let mode = self.mode.unwrap_or("terminal profile transfer");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_transfer_arg.is_none() {
+            self.pre_transfer_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalProfileTransferCommand>> {
+        if !self.seen_profile_transfer_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(
+            self.user_data_dir.as_deref(),
+            self.config_dir.as_deref(),
+        )
+        .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--export-profile") => {
+                if self.import_profile_file.is_some()
+                    || self.replace_profile
+                    || self.import_profile_format.is_some()
+                {
+                    bail!("--export-profile cannot be used with import profile options");
+                }
+                let profile = self
+                    .export_profile
+                    .context("--export-profile requires a profile name")?;
+                let export_file = self
+                    .export_profile_file
+                    .context("--export-profile requires --export-profile-file")?;
+                Ok(Some(TerminalProfileTransferCommand::Export {
+                    path_options,
+                    profile,
+                    export_file,
+                    format: parse_profile_export_output_format(
+                        self.export_profile_format.as_deref(),
+                    )?,
+                }))
+            }
+            Some("--import-profile") => {
+                if self.export_profile_file.is_some() || self.export_profile_format.is_some() {
+                    bail!("--import-profile cannot be used with export profile options");
+                }
+                let profile = self
+                    .import_profile
+                    .context("--import-profile requires a profile name")?;
+                let import_file = self
+                    .import_profile_file
+                    .context("--import-profile requires --import-profile-file")?;
+                Ok(Some(TerminalProfileTransferCommand::Import {
+                    path_options,
+                    profile,
+                    import_file,
+                    replace: self.replace_profile,
+                    format: parse_profile_import_output_format(
+                        self.import_profile_format.as_deref(),
+                    )?,
+                }))
+            }
+            Some(mode) => bail!("unsupported terminal profile transfer mode: {mode}"),
+            None => {
+                if self.export_profile_file.is_some() {
+                    bail!("--export-profile-file requires --export-profile");
+                }
+                if self.export_profile_format.is_some() {
+                    bail!("--export-profile-format requires --export-profile");
+                }
+                if self.import_profile_file.is_some() {
+                    bail!("--import-profile-file requires --import-profile");
+                }
+                if self.replace_profile {
+                    bail!("--replace-profile requires --import-profile");
+                }
+                if self.import_profile_format.is_some() {
+                    bail!("--import-profile-format requires --import-profile");
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn split_cli_flag_value(arg: &str) -> Option<(&str, Option<&str>)> {
+    if !arg.starts_with("--") {
+        return None;
+    }
+
+    match arg.split_once('=') {
+        Some((flag, value)) => Some((flag, Some(value))),
+        None => Some((arg, None)),
+    }
+}
+
+fn cli_os_value<I>(args: &mut I, flag: &str, inline_value: Option<&str>) -> Result<OsString>
+where
+    I: Iterator<Item = OsString>,
+{
+    match inline_value {
+        Some(value) => Ok(OsString::from(value)),
+        None => next_cli_value(args, flag),
+    }
+}
+
+fn cli_string_value<I>(args: &mut I, flag: &str, inline_value: Option<&str>) -> Result<String>
+where
+    I: Iterator<Item = OsString>,
+{
+    match inline_value {
+        Some(value) => Ok(value.to_string()),
+        None => next_cli_string_value(args, flag),
+    }
+}
+
+fn next_cli_value<I>(args: &mut I, flag: &str) -> Result<OsString>
+where
+    I: Iterator<Item = OsString>,
+{
+    args.next()
+        .with_context(|| format!("{flag} requires a value"))
+}
+
+fn next_cli_string_value<I>(args: &mut I, flag: &str) -> Result<String>
+where
+    I: Iterator<Item = OsString>,
+{
+    next_cli_value(args, flag)?
+        .into_string()
+        .map_err(|value| anyhow::anyhow!("{flag} value must be valid UTF-8: {value:?}"))
 }
 
 impl LaunchOptions {
@@ -4843,6 +5165,18 @@ struct TerminalStartupLayout<'a> {
 }
 
 fn main() {
+    match TerminalProfileTransferCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_profile_transfer_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     let command = match TerminalCliCommand::from_cli_and_config_file(Cli::parse()) {
         Ok(command) => command,
         Err(error) => {
@@ -5152,6 +5486,41 @@ fn main() {
         }
         TerminalCliCommand::ValidateKeymap { format, .. } => run_keymap_validation(format),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
+    }
+}
+
+fn run_terminal_profile_transfer_command(command: TerminalProfileTransferCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    match command {
+        TerminalProfileTransferCommand::Export {
+            profile,
+            export_file,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_export(&profile, &export_file, format) {
+                eprintln!("failed to export startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
+        TerminalProfileTransferCommand::Import {
+            profile,
+            import_file,
+            replace,
+            format,
+            ..
+        } => {
+            if let Err(error) =
+                print_startup_profile_import(&profile, &import_file, replace, format)
+            {
+                eprintln!("failed to import startup profile: {error:#}");
+                process::exit(2);
+            }
+        }
     }
 }
 
@@ -5758,6 +6127,47 @@ fn print_startup_profile_copy(
     Ok(())
 }
 
+fn print_startup_profile_export(
+    profile: &str,
+    export_file: &Path,
+    format: TerminalStartupProfileExportOutputFormat,
+) -> Result<()> {
+    let export =
+        export_startup_profile(&active_terminal_startup_config_file(), profile, export_file)?;
+    match format {
+        TerminalStartupProfileExportOutputFormat::Text => {
+            print!("{}", format_startup_profile_export(&export))
+        }
+        TerminalStartupProfileExportOutputFormat::Json => {
+            print!("{}", format_startup_profile_export_json(&export)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_import(
+    profile: &str,
+    import_file: &Path,
+    replace: bool,
+    format: TerminalStartupProfileImportOutputFormat,
+) -> Result<()> {
+    let import = import_startup_profile(
+        &active_terminal_startup_config_file(),
+        profile,
+        import_file,
+        replace,
+    )?;
+    match format {
+        TerminalStartupProfileImportOutputFormat::Text => {
+            print!("{}", format_startup_profile_import(&import))
+        }
+        TerminalStartupProfileImportOutputFormat::Json => {
+            print!("{}", format_startup_profile_import_json(&import)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_startup_profile_removal(
     profile: &str,
     format: TerminalStartupProfileRemovalOutputFormat,
@@ -6130,6 +6540,26 @@ impl TerminalStartupEnvUpdateRequest {
             );
         }
         Ok(())
+    }
+}
+
+fn parse_profile_export_output_format(
+    format: Option<&str>,
+) -> Result<TerminalStartupProfileExportOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalStartupProfileExportOutputFormat::Text),
+        "json" => Ok(TerminalStartupProfileExportOutputFormat::Json),
+        format => bail!("unsupported --export-profile-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_profile_import_output_format(
+    format: Option<&str>,
+) -> Result<TerminalStartupProfileImportOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalStartupProfileImportOutputFormat::Text),
+        "json" => Ok(TerminalStartupProfileImportOutputFormat::Json),
+        format => bail!("unsupported --import-profile-format {format:?}; expected text or json"),
     }
 }
 
@@ -8144,6 +8574,191 @@ fn copy_startup_profile(
         changed: true,
         copied_tab_count,
         total_profile_count: updated_config.profiles.len(),
+    })
+}
+
+fn export_startup_profile(
+    path: &Path,
+    profile: &str,
+    export_file: &Path,
+) -> Result<TerminalStartupProfileExport> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    let profile_config = startup_config.profiles.get(&profile).with_context(|| {
+        if startup_config.profiles.is_empty() {
+            format!("startup profile not found: {profile}")
+        } else {
+            format!(
+                "startup profile not found: {profile}. Available profiles: {}",
+                startup_config.profile_names().join(", ")
+            )
+        }
+    })?;
+
+    let export_value = serde_json::json!({
+        "format": TERMINAL_PROFILE_EXPORT_FORMAT,
+        "version": TERMINAL_PROFILE_EXPORT_VERSION,
+        "profile": profile.as_str(),
+        "config": startup_profile_config_to_json_value(profile_config),
+    });
+    let mut export_text = serde_json::to_string_pretty(&export_value)
+        .context("failed to serialize terminal startup profile export")?;
+    export_text.push('\n');
+
+    if let Some(parent) = export_file.parent() {
+        if !parent.as_os_str().is_empty() {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create profile export directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    std_fs::write(export_file, export_text)
+        .with_context(|| format!("failed to write profile export {}", export_file.display()))?;
+
+    Ok(TerminalStartupProfileExport {
+        path: path.to_path_buf(),
+        export_file: export_file.to_path_buf(),
+        profile,
+        env_keys: sorted_env_keys(&profile_config.env),
+        tab_count: profile_config.tabs.len(),
+    })
+}
+
+fn import_startup_profile(
+    path: &Path,
+    profile: &str,
+    import_file: &Path,
+    replace: bool,
+) -> Result<TerminalStartupProfileImport> {
+    let profile = normalize_startup_profile_name(profile)?;
+    let imported = read_startup_profile_import_file(import_file)?;
+    let mut imported_config = imported.config;
+    if let Some(source_profile) = imported.source_profile.as_deref() {
+        if source_profile != profile {
+            rename_startup_tab_profile_references(
+                &mut imported_config.tabs,
+                source_profile,
+                &profile,
+            );
+        }
+    }
+
+    let mut text = match std_fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            initial_terminal_startup_config_content().into()
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    let existed = startup_config.profiles.contains_key(&profile);
+    if existed && !replace {
+        bail!("startup profile already exists: {profile}; pass --replace-profile to overwrite it");
+    }
+
+    let mut updated_config = startup_config.clone();
+    updated_config
+        .profiles
+        .insert(profile.clone(), imported_config.clone());
+    updated_config.validate().with_context(|| {
+        format!(
+            "refusing to import startup profile {profile:?} because it would make {} invalid",
+            path.display()
+        )
+    })?;
+
+    let new_value = startup_profile_config_to_json_value(&imported_config);
+    let (range, replacement) = settings_json::replace_value_in_json_text(
+        &text,
+        &["profiles", profile.as_str()],
+        settings_json::infer_json_indent_size(&text),
+        Some(&new_value),
+        None,
+    );
+    text.replace_range(range, &replacement);
+
+    let parsed_updated_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse updated terminal startup config {}",
+                path.display()
+            )
+        })?;
+    parsed_updated_config.validate().with_context(|| {
+        format!(
+            "refusing to write invalid updated terminal startup config {}",
+            path.display()
+        )
+    })?;
+    if parsed_updated_config != updated_config {
+        bail!(
+            "refusing to write terminal startup config {} because profile import produced unexpected content",
+            path.display()
+        );
+    }
+
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+    std_fs::write(path, text)
+        .with_context(|| format!("failed to write terminal startup config {}", path.display()))?;
+
+    Ok(TerminalStartupProfileImport {
+        path: path.to_path_buf(),
+        import_file: import_file.to_path_buf(),
+        source_profile: imported.source_profile,
+        profile,
+        replaced: existed,
+        changed: true,
+        env_keys: sorted_env_keys(&imported_config.env),
+        tab_count: imported_config.tabs.len(),
+        total_profile_count: updated_config.profiles.len(),
+    })
+}
+
+fn read_startup_profile_import_file(path: &Path) -> Result<TerminalStartupProfileImportFile> {
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read profile import file {}", path.display()))?;
+    if let Ok(export_file) =
+        settings::parse_json_with_comments::<TerminalStartupProfileExportFile>(&text)
+    {
+        if export_file.format != TERMINAL_PROFILE_EXPORT_FORMAT {
+            bail!(
+                "unsupported terminal startup profile export format: {}",
+                export_file.format
+            );
+        }
+        if export_file.version != TERMINAL_PROFILE_EXPORT_VERSION {
+            bail!(
+                "unsupported terminal startup profile export version: {}",
+                export_file.version
+            );
+        }
+        let source_profile = normalize_startup_profile_name(&export_file.profile)
+            .context("failed to read profile name from import file")?;
+        return Ok(TerminalStartupProfileImportFile {
+            source_profile: Some(source_profile),
+            config: export_file.config,
+        });
+    }
+
+    let config = settings::parse_json_with_comments::<TerminalStartupProfileConfig>(&text)
+        .with_context(|| format!("failed to parse profile import file {}", path.display()))?;
+    Ok(TerminalStartupProfileImportFile {
+        source_profile: None,
+        config,
     })
 }
 
@@ -11115,6 +11730,94 @@ fn format_startup_profile_copy_json(copy: &TerminalStartupProfileCopy) -> Result
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile copy as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_export(export: &TerminalStartupProfileExport) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        export.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "export_file: {}", export.export_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", export.profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", export.tab_count).expect("writing to string should not fail");
+    format_env_key_list(&mut output, "", &export.env_keys);
+    output
+}
+
+fn format_startup_profile_export_json(export: &TerminalStartupProfileExport) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": export.path.display().to_string(),
+        "export_file": export.export_file.display().to_string(),
+        "status": "ok",
+        "profile": export.profile.as_str(),
+        "tab_count": export.tab_count,
+        "env_count": export.env_keys.len(),
+        "env_keys": &export.env_keys,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile export as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_startup_profile_import(import: &TerminalStartupProfileImport) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        import.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "import_file: {}", import.import_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "source_profile: {}",
+        import.source_profile.as_deref().unwrap_or("none")
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "profile: {}", import.profile)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "replaced: {}", import.replaced)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "changed: {}", import.changed)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", import.tab_count).expect("writing to string should not fail");
+    format_env_key_list(&mut output, "", &import.env_keys);
+    writeln!(
+        &mut output,
+        "total_profiles: {}",
+        import.total_profile_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_startup_profile_import_json(import: &TerminalStartupProfileImport) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": import.path.display().to_string(),
+        "import_file": import.import_file.display().to_string(),
+        "status": "ok",
+        "source_profile": import.source_profile.as_deref(),
+        "profile": import.profile.as_str(),
+        "replaced": import.replaced,
+        "changed": import.changed,
+        "tab_count": import.tab_count,
+        "env_count": import.env_keys.len(),
+        "env_keys": &import.env_keys,
+        "total_profile_count": import.total_profile_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile import as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -25028,6 +25731,265 @@ mod tests {
     }
 
     #[test]
+    fn export_startup_profile_writes_portable_profile_json() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let export_file = root_dir.join("exports").join("work-profile.json");
+        std_fs::write(
+            &startup_config_file,
+            r##"{
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "description": "Project shell",
+      "icon": "terminal",
+      "color": "#0f766e",
+      "hidden": true,
+      "command": "pwsh -NoLogo",
+      "title": "Work Shell",
+      "env": {
+        "TOKEN": "do-not-log"
+      },
+      "tabs": [
+        { "title": "Nested Self", "profile": "work", "split": "right" }
+      ]
+    }
+  }
+}
+"##,
+        )
+        .expect("failed to write startup config");
+
+        let export = export_startup_profile(&startup_config_file, " work ", &export_file)
+            .expect("startup profile should export");
+
+        assert_eq!(export.path, startup_config_file);
+        assert_eq!(export.export_file, export_file);
+        assert_eq!(export.profile, "work");
+        assert_eq!(export.env_keys, vec!["TOKEN"]);
+        assert_eq!(export.tab_count, 1);
+
+        let export_text =
+            std_fs::read_to_string(&export.export_file).expect("failed to read profile export");
+        let export_json: serde_json::Value =
+            serde_json::from_str(&export_text).expect("profile export should be json");
+        assert_eq!(export_json["format"], TERMINAL_PROFILE_EXPORT_FORMAT);
+        assert_eq!(export_json["version"], TERMINAL_PROFILE_EXPORT_VERSION);
+        assert_eq!(export_json["profile"], "work");
+        assert_eq!(export_json["config"]["display_name"], "Work");
+        assert_eq!(export_json["config"]["env"]["TOKEN"], "do-not-log");
+        assert_eq!(export_json["config"]["tabs"][0]["profile"], "work");
+
+        let summary = format_startup_profile_export(&export);
+        assert!(summary.contains("profile: work"));
+        assert!(summary.contains("env: 1 variables"));
+        assert!(summary.contains("  - TOKEN"));
+        assert!(!summary.contains("do-not-log"));
+        let summary_json = format_startup_profile_export_json(&export)
+            .expect("profile export summary json should serialize");
+        assert!(!summary_json.contains("do-not-log"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn export_startup_profile_rejects_missing_profile_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let export_file = root_dir.join("missing.json");
+        std_fs::write(&startup_config_file, r#"{ "profiles": { "work": {} } }"#)
+            .expect("failed to write startup config");
+
+        let error = export_startup_profile(&startup_config_file, "old", &export_file)
+            .expect_err("missing startup profile should not export");
+        let message = format!("{error:#}");
+        assert!(message.contains("startup profile not found: old"));
+        assert!(message.contains("Available profiles: work"));
+        assert!(!export_file.exists());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn import_startup_profile_adds_profile_and_rewrites_exported_self_references() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let import_file = root_dir.join("work-profile.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  "default_profile": "ops",
+  // keep profiles comment
+  "profiles": {
+    "ops": {
+      "display_name": "Ops"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+        std_fs::write(
+            &import_file,
+            r##"{
+  "format": "zed-terminal-startup-profile",
+  "version": 1,
+  "profile": "work",
+  "config": {
+    "display_name": "Work",
+    "command": "pwsh -NoLogo",
+    "env": {
+      "TOKEN": "do-not-log"
+    },
+    "tabs": [
+      { "title": "Nested Self", "profile": "work", "split": "right" }
+    ]
+  }
+}
+"##,
+        )
+        .expect("failed to write profile import file");
+
+        let import = import_startup_profile(&startup_config_file, " admin ", &import_file, false)
+            .expect("startup profile should import");
+
+        assert_eq!(import.path, startup_config_file);
+        assert_eq!(import.import_file, import_file);
+        assert_eq!(import.source_profile.as_deref(), Some("work"));
+        assert_eq!(import.profile, "admin");
+        assert!(!import.replaced);
+        assert!(import.changed);
+        assert_eq!(import.env_keys, vec!["TOKEN"]);
+        assert_eq!(import.tab_count, 1);
+        assert_eq!(import.total_profile_count, 2);
+
+        let content =
+            std_fs::read_to_string(&import.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(content.contains("// keep profiles comment"));
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.default_profile.as_deref(), Some("ops"));
+        assert!(updated_config.profiles.contains_key("ops"));
+        assert!(updated_config.profiles.contains_key("admin"));
+        let imported = &updated_config.profiles["admin"];
+        assert_eq!(imported.display_name.as_deref(), Some("Work"));
+        assert_eq!(imported.command.as_deref(), Some("pwsh -NoLogo"));
+        assert_eq!(imported.env, test_env(&[("TOKEN", "do-not-log")]));
+        assert_eq!(imported.tabs[0].profile.as_deref(), Some("admin"));
+
+        let summary = format_startup_profile_import(&import);
+        assert!(summary.contains("source_profile: work"));
+        assert!(summary.contains("profile: admin"));
+        assert!(summary.contains("env: 1 variables"));
+        assert!(summary.contains("  - TOKEN"));
+        assert!(!summary.contains("do-not-log"));
+        let summary_json = format_startup_profile_import_json(&import)
+            .expect("profile import summary json should serialize");
+        assert!(!summary_json.contains("do-not-log"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn import_startup_profile_supports_raw_config_and_replace_mode() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let import_file = root_dir.join("profile.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "default_profile": "work",
+  "profiles": {
+    "work": {
+      "display_name": "Old Work",
+      "command": "cmd /C old"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+        let original =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read startup config");
+        std_fs::write(
+            &import_file,
+            r#"{
+  "display_name": "New Work",
+  "command": "cmd /C new",
+  "tabs": [
+    { "title": "Logs", "command": "cmd /C logs" }
+  ]
+}
+"#,
+        )
+        .expect("failed to write raw profile import file");
+
+        let error = import_startup_profile(&startup_config_file, "work", &import_file, false)
+            .expect_err("existing profile should require replace mode");
+        assert!(format!("{error:#}").contains("--replace-profile"));
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected import"),
+            original
+        );
+
+        let import = import_startup_profile(&startup_config_file, "work", &import_file, true)
+            .expect("startup profile should import with replace mode");
+
+        assert_eq!(import.source_profile, None);
+        assert_eq!(import.profile, "work");
+        assert!(import.replaced);
+        assert!(import.changed);
+        assert!(import.env_keys.is_empty());
+        assert_eq!(import.tab_count, 1);
+        assert_eq!(import.total_profile_count, 1);
+
+        let content =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read updated config");
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        let imported = &updated_config.profiles["work"];
+        assert_eq!(imported.display_name.as_deref(), Some("New Work"));
+        assert_eq!(imported.command.as_deref(), Some("cmd /C new"));
+        assert_eq!(imported.tabs[0].title.as_deref(), Some("Logs"));
+        assert_eq!(imported.tabs[0].command.as_deref(), Some("cmd /C logs"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn import_startup_profile_rejects_invalid_profile_file_without_writing() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let import_file = root_dir.join("broken.json");
+        let original = r#"{ "profiles": { "work": {} } }"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+        std_fs::write(&import_file, r#"{ "format": "zed-terminal-startup-profile", "version": 2, "profile": "work", "config": {} }"#)
+            .expect("failed to write invalid import file");
+
+        let error = import_startup_profile(&startup_config_file, "admin", &import_file, false)
+            .expect_err("unsupported export version should be rejected");
+        assert!(
+            format!("{error:#}").contains("unsupported terminal startup profile export version")
+        );
+        assert_eq!(
+            std_fs::read_to_string(&startup_config_file)
+                .expect("failed to read startup config after rejected import"),
+            original
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn remove_startup_profile_updates_jsonc_profiles_field() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -27412,6 +28374,68 @@ mod tests {
         assert_eq!(source_profile, "old");
         assert_eq!(target_profile, "copy");
         assert_eq!(format, TerminalStartupProfileCopyOutputFormat::Text);
+    }
+
+    #[test]
+    fn export_profile_transfer_json_format_is_parsed_early() {
+        let export_file = PathBuf::from("work-profile.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--export-profile",
+            "work",
+            "--export-profile-file",
+            export_file.to_str().unwrap(),
+            "--export-profile-format",
+            "json",
+        ])
+        .expect("export profile json mode should parse")
+        .expect("export profile json mode should resolve");
+
+        let TerminalProfileTransferCommand::Export {
+            path_options,
+            profile,
+            export_file: parsed_export_file,
+            format,
+        } = command
+        else {
+            panic!("expected export profile mode");
+        };
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(profile, "work");
+        assert_eq!(parsed_export_file, export_file);
+        assert_eq!(format, TerminalStartupProfileExportOutputFormat::Json);
+    }
+
+    #[test]
+    fn import_profile_transfer_json_format_is_parsed_early() {
+        let import_file = PathBuf::from("work-profile.json");
+        let command = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--import-profile=work",
+            &format!("--import-profile-file={}", import_file.display()),
+            "--replace-profile",
+            "--import-profile-format=json",
+        ])
+        .expect("import profile json mode should parse")
+        .expect("import profile json mode should resolve");
+
+        let TerminalProfileTransferCommand::Import {
+            profile,
+            import_file: parsed_import_file,
+            replace,
+            format,
+            ..
+        } = command
+        else {
+            panic!("expected import profile mode");
+        };
+        assert_eq!(profile, "work");
+        assert_eq!(parsed_import_file, import_file);
+        assert!(replace);
+        assert_eq!(format, TerminalStartupProfileImportOutputFormat::Json);
     }
 
     #[test]
@@ -30244,6 +31268,124 @@ mod tests {
         ])
         .expect_err("profile copy should conflict with profile visibility updates");
         assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn profile_transfer_rejects_startup_only_arguments() {
+        let dir = temp_test_dir();
+        let export_file = dir.join("export.json");
+        let import_file = dir.join("import.json");
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--export-profile",
+            "work",
+            "--export-profile-file",
+            export_file.to_str().unwrap(),
+            "--profile",
+            "admin",
+        ])
+        .expect_err("profile selection should conflict with profile export");
+        assert!(format!("{error:#}").contains("--export-profile cannot be used with --profile"));
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--import-profile",
+            "work",
+            "--import-profile-file",
+            import_file.to_str().unwrap(),
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile import");
+        assert!(format!("{error:#}").contains("--import-profile cannot be used with -d"));
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--export-profile",
+            "work",
+            "--export-profile-file",
+            export_file.to_str().unwrap(),
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile export");
+        assert!(
+            format!("{error:#}").contains("--export-profile cannot be used with --new-tab-command")
+        );
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--import-profile",
+            "work",
+            "--import-profile-file",
+            import_file.to_str().unwrap(),
+            "--paths",
+        ])
+        .expect_err("path inspection should conflict with profile import");
+        assert!(format!("{error:#}").contains("--import-profile cannot be used with --paths"));
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--all-profiles",
+            "--export-profile",
+            "work",
+            "--export-profile-file",
+            export_file.to_str().unwrap(),
+        ])
+        .expect_err("hidden profile listing should conflict with profile export");
+        assert!(
+            format!("{error:#}").contains("--export-profile cannot be used with --all-profiles")
+        );
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--export-profile",
+            "work",
+            "--export-profile-file",
+            export_file.to_str().unwrap(),
+            "--import-profile",
+            "admin",
+            "--import-profile-file",
+            import_file.to_str().unwrap(),
+        ])
+        .expect_err("profile export and import should conflict");
+        assert!(
+            format!("{error:#}").contains("--export-profile cannot be used with --import-profile")
+        );
+
+        let error =
+            TerminalProfileTransferCommand::from_args(["zed-terminal", "--export-profile", "work"])
+                .expect_err("export profile should require an export file");
+        assert!(format!("{error:#}").contains("--export-profile-file"));
+
+        let error =
+            TerminalProfileTransferCommand::from_args(["zed-terminal", "--import-profile", "work"])
+                .expect_err("import profile should require an import file");
+        assert!(format!("{error:#}").contains("--import-profile-file"));
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--export-profile-format",
+            "json",
+        ])
+        .expect_err("export profile format should require export profile mode");
+        assert!(format!("{error:#}").contains("--export-profile-format requires --export-profile"));
+
+        let error = TerminalProfileTransferCommand::from_args([
+            "zed-terminal",
+            "--import-profile-format",
+            "json",
+        ])
+        .expect_err("import profile format should require import profile mode");
+        assert!(format!("{error:#}").contains("--import-profile-format requires --import-profile"));
+
+        let error =
+            TerminalProfileTransferCommand::from_args(["zed-terminal", "--replace-profile"])
+                .expect_err("replace profile should require import profile mode");
+        assert!(format!("{error:#}").contains("--replace-profile requires --import-profile"));
 
         std_fs::remove_dir_all(dir).ok();
     }

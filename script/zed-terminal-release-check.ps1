@@ -599,6 +599,68 @@ try {
             if ($mutationProfileDescriptionText -match "release-check-value") {
                 throw "Mutated profile description leaked an environment variable value."
             }
+            $mutationProfileExportFile = Join-Path $mutationCliConfigDir "work-profile-export.json"
+            $profileExport = Invoke-NativeJsonCommandResult "mutation-export-profile-work" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--export-profile", "work",
+                "--export-profile-file", $mutationProfileExportFile,
+                "--export-profile-format", "json"
+            )
+            if ($profileExport.profile -ne "work" -or $profileExport.export_file -ne $mutationProfileExportFile -or $profileExport.tab_count -ne 0) {
+                throw "Profile export mutation did not report the expected work profile export."
+            }
+            $profileExportEnvKeys = @($profileExport.env_keys)
+            if ($profileExportEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
+                throw "Profile export mutation did not report the expected environment key."
+            }
+            $profileExportText = $profileExport | ConvertTo-Json -Depth 10
+            if ($profileExportText -match "release-check-value") {
+                throw "Profile export mutation output leaked an environment variable value."
+            }
+            $profileExportFileText = Get-Content -Raw -LiteralPath $mutationProfileExportFile
+            $profileExportFileJson = $profileExportFileText | ConvertFrom-Json
+            if ($profileExportFileJson.format -ne "zed-terminal-startup-profile" -or $profileExportFileJson.version -ne 1 -or $profileExportFileJson.profile -ne "work" -or $profileExportFileJson.config.env.ZED_TERMINAL_MUTATION_TOKEN -ne "release-check-value") {
+                throw "Profile export file did not contain the expected portable profile payload."
+            }
+            $profileImport = Invoke-NativeJsonCommandResult "mutation-import-profile-admin" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--import-profile", "admin",
+                "--import-profile-file", $mutationProfileExportFile,
+                "--import-profile-format", "json"
+            )
+            if ($profileImport.source_profile -ne "work" -or $profileImport.profile -ne "admin" -or $profileImport.replaced -or -not $profileImport.changed -or $profileImport.total_profile_count -ne 2) {
+                throw "Profile import mutation did not report the expected imported admin profile."
+            }
+            $profileImportEnvKeys = @($profileImport.env_keys)
+            if ($profileImportEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
+                throw "Profile import mutation did not report the expected environment key."
+            }
+            $profileImportText = $profileImport | ConvertTo-Json -Depth 10
+            if ($profileImportText -match "release-check-value") {
+                throw "Profile import mutation output leaked an environment variable value."
+            }
+            Invoke-NativeJsonCommand "mutation-validate-startup-config-after-import" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--validate-startup-config",
+                "--validate-startup-config-format", "json"
+            )
+            $mutationAdminDescription = Invoke-NativeJsonCommandResult "mutation-describe-profile-admin" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-profile", "admin",
+                "--describe-profile-format", "json"
+            )
+            $mutationAdminEnvKeys = @($mutationAdminDescription.env_keys)
+            if ($mutationAdminDescription.profile -ne "admin" -or $mutationAdminDescription.is_default -or $mutationAdminDescription.command -ne "pwsh -NoLogo" -or $mutationAdminDescription.title -ne "Work Home" -or $mutationAdminEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
+                throw "Imported admin profile description did not report the expected imported state."
+            }
+            $mutationAdminDescriptionText = $mutationAdminDescription | ConvertTo-Json -Depth 10
+            if ($mutationAdminDescriptionText -match "release-check-value") {
+                throw "Imported admin profile description leaked an environment variable value."
+            }
             Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
 {
   "default_profile": "work",
