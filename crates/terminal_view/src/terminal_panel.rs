@@ -11,9 +11,9 @@ use collections::HashMap;
 use db::kvp::KeyValueStore;
 use futures::{channel::oneshot, future::join_all};
 use gpui::{
-    Action, Anchor, AnyView, App, AsyncApp, AsyncWindowContext, Context, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, TaskExt,
-    WeakEntity, Window, actions,
+    Action, Anchor, AnyView, App, AppContext as _, AsyncApp, AsyncWindowContext, Context, Entity,
+    EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
+    TaskExt, WeakEntity, Window, actions,
 };
 use itertools::Itertools;
 use project::{Fs, Project};
@@ -780,7 +780,22 @@ impl TerminalPanel {
         }
         let project = workspace.project().downgrade();
         cx.spawn_in(window, async move |workspace, cx| {
-            let terminal = project.update(cx, create_terminal)?.await?;
+            let terminal = match project.update(cx, create_terminal)?.await {
+                Ok(terminal) => terminal,
+                Err(error) => {
+                    workspace.update_in(cx, |workspace, window, cx| {
+                        let failed_to_spawn = failed_to_spawn_terminal(error.to_string(), cx);
+                        workspace.add_item_to_active_pane(
+                            Box::new(failed_to_spawn),
+                            None,
+                            true,
+                            window,
+                            cx,
+                        );
+                    })?;
+                    return Err(error);
+                }
+            };
 
             workspace.update_in(cx, |workspace, window, cx| {
                 let terminal_view = cx.new(|cx| {
@@ -819,7 +834,21 @@ impl TerminalPanel {
         }
         let project = workspace.project().downgrade();
         cx.spawn_in(window, async move |workspace, cx| {
-            let terminal = project.update(cx, create_terminal)?.await?;
+            let terminal = match project.update(cx, create_terminal)?.await {
+                Ok(terminal) => terminal,
+                Err(error) => {
+                    workspace.update_in(cx, |workspace, window, cx| {
+                        let failed_to_spawn = failed_to_spawn_terminal(error.to_string(), cx);
+                        workspace.split_item(
+                            split_direction,
+                            Box::new(failed_to_spawn),
+                            window,
+                            cx,
+                        );
+                    })?;
+                    return Err(error);
+                }
+            };
 
             workspace.update_in(cx, |workspace, window, cx| {
                 let terminal_view = cx.new(|cx| {
@@ -986,10 +1015,7 @@ impl TerminalPanel {
                 Err(error) => {
                     pane.update_in(cx, |pane, window, cx| {
                         let focus = pane.has_focus(window, cx);
-                        let failed_to_spawn = cx.new(|cx| FailedToSpawnTerminal {
-                            error: error.to_string(),
-                            focus_handle: cx.focus_handle(),
-                        });
+                        let failed_to_spawn = failed_to_spawn_terminal(error.to_string(), cx);
                         pane.add_item(Box::new(failed_to_spawn), true, focus, None, window, cx);
                     })?;
                     Err(error)
@@ -1343,6 +1369,16 @@ async fn wait_for_terminals_tasks(
 struct FailedToSpawnTerminal {
     error: String,
     focus_handle: FocusHandle,
+}
+
+fn failed_to_spawn_terminal(
+    error: String,
+    cx: &mut impl gpui::AppContext,
+) -> Entity<FailedToSpawnTerminal> {
+    cx.new(|cx| FailedToSpawnTerminal {
+        error,
+        focus_handle: cx.focus_handle(),
+    })
 }
 
 impl Focusable for FailedToSpawnTerminal {
@@ -1892,15 +1928,7 @@ mod tests {
     async fn renders_error_if_default_shell_fails(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
         init_test(cx);
-
-        cx.update(|cx| {
-            SettingsStore::update_global(cx, |store, cx| {
-                store.update_user_settings(cx, |settings| {
-                    settings.terminal.get_or_insert_default().project.shell =
-                        Some(settings::Shell::Program("__nonexistent_shell__".to_owned()));
-                });
-            });
-        });
+        force_terminal_shell_failure(cx);
 
         let fs = FakeFs::new(cx.executor());
         let project = Project::test(fs, [], cx).await;
@@ -1939,6 +1967,96 @@ mod tests {
                 })
             })
             .unwrap();
+    }
+
+    #[gpui::test]
+    async fn renders_error_if_center_terminal_spawn_fails(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        force_terminal_shell_failure(cx);
+
+        let (window_handle, _) = init_workspace_with_panel(cx).await;
+
+        window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    TerminalPanel::add_center_terminal(workspace, window, cx, |project, cx| {
+                        project.create_terminal_shell(None, cx)
+                    })
+                })
+            })
+            .unwrap()
+            .await
+            .unwrap_err();
+
+        let has_failed_to_spawn = window_handle
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                workspace
+                    .active_pane()
+                    .read(cx)
+                    .items()
+                    .any(|item| item.downcast::<FailedToSpawnTerminal>().is_some())
+            })
+            .unwrap();
+        assert!(
+            has_failed_to_spawn,
+            "center terminal spawn failures should leave a visible FailedToSpawnTerminal item"
+        );
+    }
+
+    #[gpui::test]
+    async fn renders_error_if_center_split_terminal_spawn_fails(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        init_test(cx);
+        force_terminal_shell_failure(cx);
+
+        let (window_handle, _) = init_workspace_with_panel(cx).await;
+        let pane_count_before = window_handle
+            .read_with(cx, |multi_workspace, cx| {
+                multi_workspace.workspace().read(cx).panes().len()
+            })
+            .unwrap();
+
+        window_handle
+            .update(cx, |multi_workspace, window, cx| {
+                multi_workspace.workspace().update(cx, |workspace, cx| {
+                    TerminalPanel::split_center_terminal_with_custom_title(
+                        workspace,
+                        window,
+                        cx,
+                        SplitDirection::Right,
+                        None,
+                        |project, cx| project.create_terminal_shell(None, cx),
+                    )
+                })
+            })
+            .unwrap()
+            .await
+            .unwrap_err();
+
+        let (pane_count_after, has_failed_to_spawn) = window_handle
+            .read_with(cx, |multi_workspace, cx| {
+                let workspace = multi_workspace.workspace().read(cx);
+                (
+                    workspace.panes().len(),
+                    workspace.panes().iter().any(|pane| {
+                        pane.read(cx)
+                            .items()
+                            .any(|item| item.downcast::<FailedToSpawnTerminal>().is_some())
+                    }),
+                )
+            })
+            .unwrap();
+        assert_eq!(
+            pane_count_after,
+            pane_count_before + 1,
+            "failed split terminal spawns should still create the requested split pane"
+        );
+        assert!(
+            has_failed_to_spawn,
+            "split terminal spawn failures should leave a visible FailedToSpawnTerminal item"
+        );
     }
 
     #[gpui::test]
@@ -2408,6 +2526,17 @@ mod tests {
         cx.update_global(|store: &mut SettingsStore, cx| {
             store.update_user_settings(cx, |settings| {
                 settings.workspace.max_tabs = value.map(|v| NonZero::new(v).unwrap())
+            });
+        });
+    }
+
+    fn force_terminal_shell_failure(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            SettingsStore::update_global(cx, |store, cx| {
+                store.update_user_settings(cx, |settings| {
+                    settings.terminal.get_or_insert_default().project.shell =
+                        Some(settings::Shell::Program("__nonexistent_shell__".to_owned()));
+                });
             });
         });
     }
