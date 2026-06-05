@@ -52,6 +52,7 @@ actions!(
         OpenKeymapFile,
         OpenKeymapSchemaFile,
         OpenDefaultKeymapReferenceFile,
+        OpenKeymapToolsPicker,
         OpenKeymapActionCatalogReport,
         OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
@@ -17260,6 +17261,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenActiveKeymapBindingsReport>(),
         TerminalActionSurface::new::<OpenKeymapActionCatalogReport>(),
         TerminalActionSurface::new::<OpenKeymapSchemaFile>(),
+        TerminalActionSurface::new::<OpenKeymapToolsPicker>(),
         TerminalActionSurface::new::<OpenKeymapValidationReport>(),
         TerminalActionSurface::new::<OpenLogFile>(),
         TerminalActionSurface::new::<OpenLogsDirectory>(),
@@ -17947,6 +17949,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupConfigValidationReport,
         ),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+        MenuItem::action("Open Keymap Tools...", OpenKeymapToolsPicker),
         MenuItem::action("Open Keymap Schema File", OpenKeymapSchemaFile),
         MenuItem::action(
             "Open Default Keymap Reference File",
@@ -18103,6 +18106,9 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &OpenStartupProfilePicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "profile", window, cx);
+                });
+                workspace.register_action(|workspace, _: &OpenKeymapToolsPicker, window, cx| {
+                    command_palette::CommandPalette::toggle(workspace, "keymap", window, cx);
                 });
                 let profile_terminal_window_app_state = app_state.clone();
                 workspace.register_action(
@@ -19761,6 +19767,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapActionCatalogReport);
+        assert_command_palette_action_visible(&filter, &OpenKeymapToolsPicker);
         assert_command_palette_action_visible(&filter, &OpenActiveKeymapBindingsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
@@ -20919,6 +20926,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Keymap Tools...",
+            "zed_terminal::OpenKeymapToolsPicker",
+        );
+        assert_menu_action(
+            &items,
             "Open Keymap Action Catalog Report",
             "zed_terminal::OpenKeymapActionCatalogReport",
         );
@@ -21741,6 +21753,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenKeymapActionCatalogReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_keymap_tools_picker_action_input() {
+        let action = <OpenKeymapToolsPicker as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open keymap tools picker action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenKeymapToolsPicker>()
                 .is_some()
         );
     }
@@ -23476,6 +23501,7 @@ mod tests {
         for action_name in [
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "terminal::Paste",
@@ -23553,6 +23579,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenStartupProfilePicker")
             .expect("profile picker action should be listed");
         assert_eq!(profile_picker.input, TerminalKeymapActionInput::None);
+
+        let keymap_tools_picker = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenKeymapToolsPicker")
+            .expect("keymap tools picker action should be listed");
+        assert_eq!(keymap_tools_picker.input, TerminalKeymapActionInput::None);
 
         let paste = report
             .actions
