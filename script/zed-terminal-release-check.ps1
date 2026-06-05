@@ -236,7 +236,7 @@ function Invoke-NativeCommand {
     }
 }
 
-function Invoke-NativeJsonCommand {
+function Invoke-NativeJsonCommandResult {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string[]]$Arguments
@@ -272,6 +272,17 @@ function Invoke-NativeJsonCommand {
     if ($statusProperty -and $statusProperty.Value -ne "ok") {
         throw "Command reported status '$($statusProperty.Value)' for $Name`: $Binary $($Arguments -join ' ')"
     }
+
+    return $json
+}
+
+function Invoke-NativeJsonCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $null = Invoke-NativeJsonCommandResult -Name $Name -Arguments $Arguments
 }
 
 function Invoke-NativeTextCommand {
@@ -448,6 +459,78 @@ try {
                 "--print-startup-layout",
                 "--startup-layout-format", "json"
             )
+            Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
+{
+  "default_profile": "work",
+  "profiles": {
+    "work": {
+      "display_name": "Work Shell",
+      "description": "Project startup shell",
+      "icon": "terminal",
+      "color": "#0f766e",
+      "command": "pwsh -NoLogo",
+      "env": {
+        "ZED_TERMINAL_RELEASE_SECRET": "do-not-log"
+      },
+      "tabs": [
+        {
+          "title": "Logs",
+          "command": "pwsh -NoLogo",
+          "env": {
+            "LOG_TOKEN": "do-not-log"
+          }
+        }
+      ]
+    },
+    "secret": {
+      "display_name": "Secret",
+      "hidden": true
+    }
+  }
+}
+'@ -Encoding ascii
+            $visibleProfiles = Invoke-NativeJsonCommandResult "list-profiles-visible" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--list-profiles",
+                "--list-profiles-format", "json"
+            )
+            if ($visibleProfiles.total_count -ne 2 -or $visibleProfiles.visible_count -ne 1 -or $visibleProfiles.hidden_count -ne 1) {
+                throw "Visible profile list reported unexpected counts."
+            }
+            $visibleProfileEntries = @($visibleProfiles.profiles)
+            if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default) {
+                throw "Visible profile list did not report only the default work profile."
+            }
+            $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--list-profiles",
+                "--all-profiles",
+                "--list-profiles-format", "json"
+            )
+            $hiddenProfileEntries = @($allProfiles.profiles | Where-Object { $_.name -eq "secret" })
+            if ($hiddenProfileEntries.Count -ne 1 -or -not $hiddenProfileEntries[0].hidden) {
+                throw "All-profile list did not include the hidden secret profile."
+            }
+            $profileDescription = Invoke-NativeJsonCommandResult "describe-profile-work" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-profile", "work",
+                "--describe-profile-format", "json"
+            )
+            if ($profileDescription.profile -ne "work" -or $profileDescription.display_name -ne "Work Shell" -or -not $profileDescription.is_default) {
+                throw "Profile description did not report the expected work profile metadata."
+            }
+            $profileEnvKeys = @($profileDescription.env_keys)
+            $profileTabEnvKeys = @($profileDescription.tabs[0].env_keys)
+            if ($profileEnvKeys -notcontains "ZED_TERMINAL_RELEASE_SECRET" -or $profileTabEnvKeys -notcontains "LOG_TOKEN") {
+                throw "Profile description did not report expected environment key names."
+            }
+            $profileDescriptionText = $profileDescription | ConvertTo-Json -Depth 10
+            if ($profileDescriptionText -match "do-not-log") {
+                throw "Profile description leaked an environment variable value."
+            }
         }
     }
 

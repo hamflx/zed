@@ -54,6 +54,7 @@ actions!(
         OpenDiagnosticsReport,
         OpenSupportInfoReport,
         OpenStartupDescriptionReport,
+        OpenStartupProfilesReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
         CopySupportInfoToClipboard,
@@ -148,6 +149,7 @@ const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
+const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
@@ -10003,6 +10005,24 @@ fn write_startup_description_report_file(
     })
 }
 
+fn write_startup_profiles_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileListReport,
+) -> Result<()> {
+    let report = format_startup_profiles_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profiles report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write startup profiles report {}", path.display()))
+}
+
 fn write_startup_profile_description_report_file(
     path: &Path,
     report: &TerminalStartupProfileDescription,
@@ -11605,6 +11625,10 @@ fn active_terminal_startup_description_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
 }
 
+fn active_terminal_startup_profiles_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_PROFILES_REPORT_FILE)
+}
+
 fn active_terminal_startup_config_validation_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE)
 }
@@ -11703,6 +11727,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_diagnostics_report);
     cx.on_action(open_support_info_report);
     cx.on_action(open_startup_description_report);
+    cx.on_action(open_startup_profiles_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
     cx.on_action(copy_support_info_to_clipboard);
@@ -11937,6 +11962,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenStartupConfigSchemaFile>(),
         TypeId::of::<OpenStartupConfigValidationReport>(),
         TypeId::of::<OpenStartupDescriptionReport>(),
+        TypeId::of::<OpenStartupProfilesReport>(),
         TypeId::of::<OpenThemesDirectory>(),
         TypeId::of::<ResetPaneSizes>(),
         TypeId::of::<ResizePaneDown>(),
@@ -12601,6 +12627,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Startup Description Report",
             OpenStartupDescriptionReport,
         ),
+        MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
         MenuItem::action(
             "Open Startup Config Validation Report",
             OpenStartupConfigValidationReport,
@@ -13551,6 +13578,25 @@ fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut Ap
     cx.open_with_system(&startup_description_report_file);
 }
 
+fn open_startup_profiles_report(_: &OpenStartupProfilesReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_profiles_report_file = active_terminal_startup_profiles_report_file();
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!("failed to load startup config for startup profiles report: {error:#}");
+            return;
+        }
+    };
+    let report = startup_profile_list_report(&startup_config, &startup_config_file, true);
+    if let Err(error) = write_startup_profiles_report_file(&startup_profiles_report_file, &report) {
+        log::warn!("failed to write startup profiles report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_profiles_report_file);
+}
+
 fn open_profile_description_report(action: &OpenProfileDescriptionReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let profile_description_report_file =
@@ -14290,6 +14336,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(
             &filter,
             &OpenProfileDescriptionReport {
@@ -15400,6 +15447,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Profiles Report",
+            "zed_terminal::OpenStartupProfilesReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Validation Report",
             "zed_terminal::OpenStartupConfigValidationReport",
         );
@@ -16125,6 +16177,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupDescriptionReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_profiles_report_action_input() {
+        let action =
+            <OpenStartupProfilesReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup profiles report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfilesReport>()
                 .is_some()
         );
     }
@@ -17604,6 +17670,39 @@ mod tests {
         assert_eq!(json["default_profile"], "work");
         assert_eq!(json["hidden_profile_count"], 1);
         assert!(!report_text.contains("SECRET_VALUE"));
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profiles_report_file_as_profile_list_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_PROFILES_REPORT_FILE);
+        let report = startup_profile_list_report(
+            &sample_startup_profile_list_config(),
+            Path::new("terminal.json"),
+            true,
+        );
+
+        write_startup_profiles_report_file(&report_file, &report)
+            .expect("startup profiles report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read profiles report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("profiles report should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["include_hidden"], true);
+        assert_eq!(json["total_count"], 2);
+        assert_eq!(json["visible_count"], 1);
+        assert_eq!(json["hidden_count"], 1);
+        assert_eq!(json["profiles"][0]["name"], "secret");
+        assert_eq!(json["profiles"][0]["hidden"], true);
+        assert_eq!(json["profiles"][1]["name"], "work");
+        assert_eq!(json["profiles"][1]["is_default"], true);
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
