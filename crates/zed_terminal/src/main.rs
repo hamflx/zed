@@ -52,6 +52,7 @@ actions!(
         OpenConfigDirectory,
         OpenDataDirectory,
         OpenDiagnosticsReport,
+        OpenSupportInfoReport,
         OpenStartupDescriptionReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -145,6 +146,7 @@ const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
+const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
@@ -9816,6 +9818,20 @@ fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> 
         .with_context(|| format!("failed to write diagnostics report {}", path.display()))
 }
 
+fn write_support_info_report_file(path: &Path, report: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create support info report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write support info report {}", path.display()))
+}
+
 fn write_startup_config_validation_report_file(
     path: &Path,
     report: &TerminalDoctorStartupConfigCheck,
@@ -11476,6 +11492,10 @@ fn active_terminal_diagnostics_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
 }
 
+fn active_terminal_support_info_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_SUPPORT_INFO_REPORT_FILE)
+}
+
 fn active_terminal_startup_description_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
 }
@@ -11576,6 +11596,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
     cx.on_action(open_diagnostics_report);
+    cx.on_action(open_support_info_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
@@ -11806,6 +11827,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenProfileDescriptionReport>(),
+        TypeId::of::<OpenSupportInfoReport>(),
         TypeId::of::<OpenStartupConfigFile>(),
         TypeId::of::<OpenStartupConfigSchemaFile>(),
         TypeId::of::<OpenStartupConfigValidationReport>(),
@@ -12487,6 +12509,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
+        MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
         MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
         MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
@@ -13348,6 +13371,17 @@ fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
     cx.open_with_system(&diagnostics_report_file);
 }
 
+fn open_support_info_report(_: &OpenSupportInfoReport, cx: &mut App) {
+    let support_info_report_file = active_terminal_support_info_report_file();
+    let support_info = active_terminal_support_info(cx);
+    if let Err(error) = write_support_info_report_file(&support_info_report_file, &support_info) {
+        log::warn!("failed to write support info report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&support_info_report_file);
+}
+
 fn open_startup_config_validation_report(_: &OpenStartupConfigValidationReport, cx: &mut App) {
     let validation_report_file = active_terminal_startup_config_validation_report_file();
     let report = diagnose_startup_config_file(active_terminal_startup_config_file());
@@ -13373,13 +13407,16 @@ fn open_keymap_validation_report(_: &OpenKeymapValidationReport, cx: &mut App) {
 }
 
 fn copy_support_info_to_clipboard(_: &CopySupportInfoToClipboard, cx: &mut App) {
-    let path_report = active_terminal_path_report();
-    let doctor_report = diagnose_terminal(&active_terminal_path_options(), cx);
-    let support_info =
-        format_terminal_support_info(env!("CARGO_PKG_VERSION"), &path_report, &doctor_report);
+    let support_info = active_terminal_support_info(cx);
 
     cx.write_to_clipboard(ClipboardItem::new_string(support_info));
     log::info!("copied zed terminal support info to clipboard");
+}
+
+fn active_terminal_support_info(cx: &mut App) -> String {
+    let path_report = active_terminal_path_report();
+    let doctor_report = diagnose_terminal(&active_terminal_path_options(), cx);
+    format_terminal_support_info(env!("CARGO_PKG_VERSION"), &path_report, &doctor_report)
 }
 
 fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut App) {
@@ -14143,6 +14180,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
+        assert_command_palette_action_visible(&filter, &OpenSupportInfoReport);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
@@ -15287,6 +15325,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Support Info Report",
+            "zed_terminal::OpenSupportInfoReport",
+        );
+        assert_menu_action(
+            &items,
             "Copy Support Info",
             "zed_terminal::CopySupportInfoToClipboard",
         );
@@ -16020,6 +16063,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<CopySupportInfoToClipboard>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_support_info_report_action_input() {
+        let action = <OpenSupportInfoReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open support info report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSupportInfoReport>()
                 .is_some()
         );
     }
@@ -17340,6 +17396,28 @@ mod tests {
         assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_support_info_report_file_as_plain_text() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_SUPPORT_INFO_REPORT_FILE);
+        let support_info =
+            format_terminal_support_info("1.2.3", &sample_path_report(), &sample_doctor_report());
+
+        write_support_info_report_file(&report_file, &support_info)
+            .expect("support info report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read support info report");
+        assert_eq!(report_text, support_info);
+        assert!(report_text.starts_with("Zed Terminal Support Info\n"));
+        assert!(report_text.contains("version: 1.2.3\n"));
+        assert!(report_text.contains("diagnostics:\n"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
