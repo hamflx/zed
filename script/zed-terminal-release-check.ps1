@@ -565,6 +565,7 @@ try {
                 "zed_terminal::OpenKeymapToolsPicker",
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfilePicker",
+                "zed_terminal::OpenStartupToolsPicker",
                 "zed_terminal::OpenActiveKeymapBindingsReport",
                 "terminal::Paste",
                 "pane::CloseActiveItem"
@@ -600,6 +601,10 @@ try {
             $profilePickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfilePicker" } | Select-Object -First 1
             if (-not $profilePickerAction -or $profilePickerAction.namespace -ne "zed_terminal" -or $profilePickerAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfilePicker no-input metadata."
+            }
+            $startupToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupToolsPicker" } | Select-Object -First 1
+            if (-not $startupToolsPickerAction -or $startupToolsPickerAction.namespace -ne "zed_terminal" -or $startupToolsPickerAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupToolsPicker no-input metadata."
             }
             $keymapToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenKeymapToolsPicker" } | Select-Object -First 1
             if (-not $keymapToolsPickerAction -or $keymapToolsPickerAction.namespace -ne "zed_terminal" -or $keymapToolsPickerAction.input -ne "none") {
@@ -656,6 +661,15 @@ try {
             if ($profilePickerActionDescription.action.name -ne "zed_terminal::OpenStartupProfilePicker" -or $profilePickerActionDescription.action.namespace -ne "zed_terminal" -or $profilePickerActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected profile picker action contract."
             }
+            $startupToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-tools-picker" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupToolsPicker",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupToolsPickerActionDescription.action.name -ne "zed_terminal::OpenStartupToolsPicker" -or $startupToolsPickerActionDescription.action.namespace -ne "zed_terminal" -or $startupToolsPickerActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup tools picker action contract."
+            }
             $keymapToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-keymap-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -688,6 +702,7 @@ try {
                 $profileTabActionDescription,
                 $profileConfigActionDescription,
                 $profilePickerActionDescription,
+                $startupToolsPickerActionDescription,
                 $keymapToolsPickerActionDescription,
                 $activeBindingsReportActionDescription,
                 $pasteActionDescription
