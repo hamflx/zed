@@ -740,11 +740,63 @@ function Assert-PowerShellSyntax {
     }
 }
 
+function Get-SkippedReleaseChecks {
+    $skipped = New-Object System.Collections.Generic.List[string]
+    if ($SkipCargo) {
+        $skipped.Add("cargo fmt")
+        $skipped.Add("cargo test")
+        $skipped.Add("cargo check")
+        $skipped.Add("cargo build")
+    } elseif ($SkipRustTests) {
+        $skipped.Add("cargo test")
+    }
+    if ($SkipPackage) {
+        $skipped.Add("package smoke")
+    }
+    if ($SkipCliDiagnostics) {
+        $skipped.Add("CLI diagnostics")
+    }
+    if ($SkipVisualSmoke) {
+        $skipped.Add("default visual smoke")
+        $skipped.Add("split visual smoke")
+    } else {
+        if ($SkipVisualBaseline) {
+            $skipped.Add("default visual baseline")
+            $skipped.Add("split visual baseline")
+        } else {
+            if (-not $VisualBaselineImage) {
+                $skipped.Add("default visual baseline")
+            }
+            if ($SkipSplitVisualSmoke) {
+                $skipped.Add("split visual smoke")
+            } elseif (-not $SplitVisualBaselineImage) {
+                $skipped.Add("split visual baseline")
+            }
+        }
+    }
+
+    return @($skipped)
+}
+
 function Write-ReleaseSummary {
     param([Parameter(Mandatory = $true)][string]$Status)
 
+    $skippedReleaseChecks = @(Get-SkippedReleaseChecks)
+    $releaseReady = $Status -eq "ok" -and $skippedReleaseChecks.Count -eq 0
     $payload = [pscustomobject]@{
         status = $Status
+        release_ready = $releaseReady
+        release_mode = if ($releaseReady) { "full" } else { "partial" }
+        skip_options = [pscustomobject]@{
+            cargo = [bool]$SkipCargo
+            rust_tests = [bool]$SkipRustTests
+            cli_diagnostics = [bool]$SkipCliDiagnostics
+            package = [bool]$SkipPackage
+            visual_smoke = [bool]$SkipVisualSmoke
+            visual_baseline = [bool]$SkipVisualBaseline
+            split_visual_smoke = [bool]$SkipSplitVisualSmoke
+        }
+        skipped_release_checks = $skippedReleaseChecks
         run_dir = $runDir
         binary = $Binary
         log_file = $releaseLog
