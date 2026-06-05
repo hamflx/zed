@@ -425,7 +425,11 @@ try {
                 "--import-profile <NAME> --import-profile-file <FILE>",
                 "--replace-profile",
                 "--import-profile-format <text\|json>",
-                "Profile transfer options may be combined with --user-data-dir and --config-dir only."
+                "Startup config backup options:",
+                "--backup-startup-config --backup-startup-config-file <FILE>",
+                "--backup-startup-config-format <text\|json>",
+                "Profile transfer and startup config backup options may be combined with --user-data-dir and",
+                "--config-dir only."
             )
             Invoke-NativeJsonCommand "init-config" @(
                 "--user-data-dir", $cliDataDir,
@@ -613,6 +617,30 @@ try {
             $mutationProfileDescriptionText = $mutationProfileDescription | ConvertTo-Json -Depth 10
             if ($mutationProfileDescriptionText -match "release-check-value") {
                 throw "Mutated profile description leaked an environment variable value."
+            }
+            $mutationStartupConfigFile = Join-Path $mutationCliConfigDir "terminal.json"
+            $mutationStartupBackupFile = Join-Path $mutationCliConfigDir "backups\terminal.backup.json"
+            $startupBackup = Invoke-NativeJsonCommandResult "mutation-backup-startup-config" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--backup-startup-config",
+                "--backup-startup-config-file", $mutationStartupBackupFile,
+                "--backup-startup-config-format", "json"
+            )
+            if ($startupBackup.startup_config_file -ne $mutationStartupConfigFile -or $startupBackup.backup_file -ne $mutationStartupBackupFile -or $startupBackup.layout_count -ne 2 -or $startupBackup.tab_count -ne 3 -or $startupBackup.profile_count -ne 1 -or $startupBackup.byte_count -le 0) {
+                throw "Startup config backup did not report the expected mutated startup config summary."
+            }
+            $startupBackupText = $startupBackup | ConvertTo-Json -Depth 10
+            if ($startupBackupText -match "release-check-value") {
+                throw "Startup config backup output leaked an environment variable value."
+            }
+            $startupBackupFileText = Get-Content -Raw -LiteralPath $mutationStartupBackupFile
+            $mutationStartupFileText = Get-Content -Raw -LiteralPath $mutationStartupConfigFile
+            if ($startupBackupFileText -ne $mutationStartupFileText) {
+                throw "Startup config backup file did not match terminal.json exactly."
+            }
+            if ($startupBackupFileText -notmatch "release-check-value") {
+                throw "Startup config backup file did not preserve the full startup config payload."
             }
             $mutationProfileExportFile = Join-Path $mutationCliConfigDir "work-profile-export.json"
             $profileExport = Invoke-NativeJsonCommandResult "mutation-export-profile-work" @(
