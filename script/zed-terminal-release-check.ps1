@@ -92,6 +92,7 @@ New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $
 Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
 $script:StepResults = New-Object System.Collections.Generic.List[object]
+$script:PackageSmoke = $null
 
 function Write-ReleaseLog {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -223,7 +224,7 @@ function Invoke-Step {
     }
 }
 
-function Invoke-NativeCommand {
+function Invoke-NativeCommandResult {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
@@ -238,6 +239,18 @@ function Invoke-NativeCommand {
     if ($result.ExitCode -ne 0) {
         throw "Command failed with exit code $($result.ExitCode)`: $FilePath $($Arguments -join ' ')"
     }
+
+    return $result
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter()][string]$WorkingDirectory = $repoRoot
+    )
+
+    $null = Invoke-NativeCommandResult -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
 }
 
 function Invoke-NativeJsonCommandResult {
@@ -335,6 +348,122 @@ function Invoke-NativeTextCommand {
     $null = Invoke-NativeTextCommandResult -Name $Name -Arguments $Arguments -RequiredPatterns $RequiredPatterns
 }
 
+function Convert-PackageSmokeOutput {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+
+    $values = @{}
+    foreach ($line in $Output) {
+        if ($null -eq $line) {
+            continue
+        }
+
+        $text = $line.ToString().Trim()
+        if ($text -match '^([a-z0-9_]+):\s*(.*)$') {
+            $values[$Matches[1]] = $Matches[2]
+        }
+    }
+
+    $requiredKeys = @(
+        "status",
+        "package_dir",
+        "manifest_file",
+        "binary",
+        "binary_sha256",
+        "zip_file",
+        "zip_sha256",
+        "zip_checksum_file"
+    )
+    foreach ($key in $requiredKeys) {
+        if (-not $values.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($values[$key])) {
+            throw "package smoke output did not include $key"
+        }
+    }
+
+    if ($values["status"] -ne "ok") {
+        throw "package smoke did not report ok status"
+    }
+
+    $packageDir = [System.IO.Path]::GetFullPath($values["package_dir"])
+    $manifestFile = [System.IO.Path]::GetFullPath($values["manifest_file"])
+    $packageBinary = [System.IO.Path]::GetFullPath($values["binary"])
+    $zipFile = [System.IO.Path]::GetFullPath($values["zip_file"])
+    $zipChecksumFile = [System.IO.Path]::GetFullPath($values["zip_checksum_file"])
+    $binaryHash = $values["binary_sha256"]
+    $zipHash = $values["zip_sha256"]
+
+    if (-not (Test-Path -LiteralPath $packageDir -PathType Container)) {
+        throw "package smoke package directory does not exist: $packageDir"
+    }
+    foreach ($file in @($manifestFile, $packageBinary, $zipFile, $zipChecksumFile)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            throw "package smoke output referenced a missing file: $file"
+        }
+    }
+
+    foreach ($hash in @($binaryHash, $zipHash)) {
+        if ($hash -notmatch '^[a-f0-9]{64}$') {
+            throw "package smoke output contained an invalid SHA256: $hash"
+        }
+    }
+
+    $actualBinaryHash = (Get-FileHash -LiteralPath $packageBinary -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualBinaryHash -ne $binaryHash) {
+        throw "package smoke binary SHA256 did not match the packaged binary"
+    }
+
+    $actualZipHash = (Get-FileHash -LiteralPath $zipFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualZipHash -ne $zipHash) {
+        throw "package smoke zip SHA256 did not match the generated archive"
+    }
+
+    $zipFileName = Split-Path -Leaf $zipFile
+    $checksumContent = (Get-Content -LiteralPath $zipChecksumFile -Raw).Trim()
+    if ($checksumContent -ne "$zipHash *$zipFileName") {
+        throw "package smoke checksum sidecar did not match the generated archive"
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
+    if (
+        $manifest.status -ne "ok" -or
+        $manifest.binary -ne (Split-Path -Leaf $packageBinary) -or
+        $manifest.binary_sha256 -ne $binaryHash -or
+        $manifest.validation.manifest -ne "ok" -or
+        $manifest.validation.readme -ne "ok"
+    ) {
+        throw "package smoke manifest did not match the validated package output"
+    }
+
+    $readmeFile = Join-Path $packageDir "README.md"
+    $configTemplateDir = Join-Path $packageDir ([string]$manifest.config_template_dir)
+    if (-not (Test-Path -LiteralPath $readmeFile -PathType Leaf)) {
+        throw "package smoke README was missing from the validated package"
+    }
+    if (-not (Test-Path -LiteralPath $configTemplateDir -PathType Container)) {
+        throw "package smoke config template directory was missing from the validated package"
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        package_dir = $packageDir
+        package_name = Split-Path -Leaf $packageDir
+        version = $manifest.version
+        build_profile = $manifest.build_profile
+        platform = $manifest.platform
+        architecture = $manifest.architecture
+        git_commit = $manifest.git_commit
+        manifest_file = $manifestFile
+        readme_file = $readmeFile
+        config_template_dir = $configTemplateDir
+        binary = $packageBinary
+        binary_sha256 = $binaryHash
+        zip_file = $zipFile
+        zip_sha256 = $zipHash
+        zip_checksum_file = $zipChecksumFile
+        content_count = @($manifest.contents).Count
+        validation = $manifest.validation
+    }
+}
+
 function Assert-PowerShellSyntax {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -358,6 +487,7 @@ function Write-ReleaseSummary {
         visual_baseline_image = $VisualBaselineImage
         split_visual_baseline_image = $SplitVisualBaselineImage
         package_smoke_skipped = [bool]$SkipPackage
+        package_smoke = $script:PackageSmoke
         visual_baseline_skipped = [bool]$SkipVisualBaseline
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
@@ -433,7 +563,7 @@ try {
 
     if (-not $SkipPackage) {
         Invoke-Step "package smoke" {
-            Invoke-NativeCommand -FilePath "powershell" -Arguments @(
+            $packageResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments @(
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
                 "-File", (Join-Path $repoRoot "script\zed-terminal-package.ps1"),
@@ -443,6 +573,7 @@ try {
                 "-Zip",
                 "-OutputDir", $packageSmokeDir
             )
+            $script:PackageSmoke = Convert-PackageSmokeOutput -Output (($packageResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
         }
     }
 
