@@ -12725,12 +12725,49 @@ fn ensure_keymap_file() -> bool {
 }
 
 fn initial_terminal_startup_config_content() -> &'static str {
-    r#"// Zed Terminal startup layout.
-// Command strings use the same shell-like quoting rules as --new-tab-command.
-// Environment variables apply to command-backed startup tabs only.
-// tabs[].split may be "right", "down", "left", or "up" to open that tab as a startup split pane.
-// tabs[].profile may reference a named profile and may be combined with title and split only.
-// Profiles may include display_name, description, icon, color, and hidden metadata.
+    r##"// Zed Terminal startup layout.
+// This file controls standalone startup tabs, splits, and profile picker entries only.
+// Visual terminal settings such as theme, font, cursor, and scrollback still live in settings.json.
+//
+// Useful checks after editing:
+//   zed-terminal --validate-startup-config
+//   zed-terminal --describe-startup
+//   zed-terminal --list-profiles
+//   zed-terminal --print-startup-config-schema
+//
+// Startup basics:
+//   - Use absolute paths or ~ for stable launches from shortcuts.
+//   - "command" strings use the same shell-like quoting rules as --new-tab-command.
+//   - "shell" starts a normal shell terminal and accepts either a string program
+//     or an object such as { "program": "pwsh", "args": ["-NoLogo"] }.
+//   - "env" applies to command-backed startup tabs only. Shell terminals inherit
+//     their normal process environment.
+//   - tabs[].split may be "right", "down", "left", or "up" to open that tab
+//     as a startup split pane.
+//   - tabs[].profile may reference a named profile and may be combined with
+//     "title" and "split" only.
+//   - default_profile selects a named profile for normal launches.
+//
+// Example shape, kept commented so the default launch stays unchanged:
+// {
+//   "working_directory": "~/work/project",
+//   "title": "Project",
+//   "shell": { "program": "pwsh", "args": ["-NoLogo"] },
+//   "tabs": [
+//     { "title": "Dev Server", "command": "npm run dev", "split": "right" },
+//     { "title": "Logs", "command": "npm run logs", "split": "down" }
+//   ],
+//   "default_profile": "work",
+//   "profiles": {
+//     "work": {
+//       "display_name": "Work",
+//       "description": "Project shell",
+//       "icon": "terminal",
+//       "color": "#0f766e",
+//       "shell": "pwsh"
+//     }
+//   }
+// }
 {
   "working_directory": null,
   "command": null,
@@ -12741,7 +12778,7 @@ fn initial_terminal_startup_config_content() -> &'static str {
   "default_profile": null,
   "profiles": {}
 }
-"#
+"##
 }
 
 #[cfg(test)]
@@ -13609,6 +13646,21 @@ mod tests {
                 .expect("initial terminal startup config should parse");
 
         assert_eq!(config, TerminalStartupConfig::default());
+    }
+
+    #[test]
+    fn initial_terminal_startup_config_content_includes_first_run_guidance() {
+        let content = initial_terminal_startup_config_content();
+
+        assert!(content.contains("settings.json"));
+        assert!(content.contains("zed-terminal --validate-startup-config"));
+        assert!(content.contains("zed-terminal --describe-startup"));
+        assert!(content.contains("zed-terminal --list-profiles"));
+        assert!(content.contains("zed-terminal --print-startup-config-schema"));
+        assert!(content.contains("\"shell\": { \"program\": \"pwsh\", \"args\": [\"-NoLogo\"] }"));
+        assert!(content.contains("\"split\": \"right\""));
+        assert!(content.contains("\"default_profile\": \"work\""));
+        assert!(content.contains("\"color\": \"#0f766e\""));
     }
 
     #[test]
