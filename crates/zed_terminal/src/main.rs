@@ -271,6 +271,8 @@ Version metadata options:
           Print resolved standalone terminal paths without opening a terminal window
       --paths-format <text|json>
           Set the output format for --paths
+      --portable
+          Use config and data directories next to the zed-terminal binary
 
 Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined with --user-data-dir and --config-dir only."
 )]
@@ -398,6 +400,13 @@ struct Cli {
         value_hint = ValueHint::DirPath
     )]
     config_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "portable",
+        conflicts_with_all = ["user_data_dir", "config_dir"],
+        help = "Use config and data directories next to the zed-terminal binary"
+    )]
+    portable: bool,
 
     #[arg(long = "paths", hide = true)]
     print_paths: bool,
@@ -3015,12 +3024,14 @@ struct LaunchOptions {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalPathOptions {
+    mode: TerminalPathMode,
     data_dir: PathBuf,
     config_dir: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalPathReport {
+    mode: TerminalPathMode,
     config_dir: PathBuf,
     data_dir: PathBuf,
     logs_dir: PathBuf,
@@ -3033,6 +3044,40 @@ struct TerminalPathReport {
     default_keymap_reference_file: PathBuf,
     themes_dir: PathBuf,
     log_file: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalPathMode {
+    Default,
+    Custom,
+    Portable,
+}
+
+impl TerminalPathMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Custom => "custom",
+            Self::Portable => "portable",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalPathCliOptions {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    portable: bool,
+}
+
+impl TerminalPathCliOptions {
+    fn from_cli(cli: &Cli) -> Self {
+        Self {
+            user_data_dir: cli.user_data_dir.clone(),
+            config_dir: cli.config_dir.clone(),
+            portable: cli.portable,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4436,9 +4481,8 @@ enum TerminalDoctorOutputFormat {
 
 impl TerminalCliCommand {
     fn from_cli_and_config_file(cli: Cli) -> Result<Self> {
-        let path_options =
-            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
-                .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(TerminalPathCliOptions::from_cli(&cli))
+            .context("failed to resolve terminal paths")?;
         let startup_config = if cli.no_startup_config
             || cli.set_default_profile.is_some()
             || cli.clear_default_profile
@@ -4481,9 +4525,8 @@ impl TerminalCliCommand {
         cli: Cli,
         startup_config: TerminalStartupConfig,
     ) -> Result<Self> {
-        let path_options =
-            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
-                .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(TerminalPathCliOptions::from_cli(&cli))
+            .context("failed to resolve terminal paths")?;
 
         Self::from_cli_parts(cli, startup_config, path_options)
     }
@@ -4968,15 +5011,11 @@ impl TerminalVersionInfoCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--version-info" => {
                     if inline_value.is_some() {
                         bail!("--version-info does not accept a value");
@@ -5022,15 +5061,11 @@ impl TerminalPathCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--paths" => {
                     if inline_value.is_some() {
                         bail!("--paths does not accept a value");
@@ -5052,8 +5087,7 @@ impl TerminalPathCommand {
 
 #[derive(Default)]
 struct TerminalVersionInfoParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     seen_version_info_option: bool,
     pre_version_info_arg: Option<String>,
     version_info: bool,
@@ -5062,8 +5096,7 @@ struct TerminalVersionInfoParser {
 
 #[derive(Default)]
 struct TerminalPathCommandParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     seen_path_option: bool,
     pre_path_arg: Option<String>,
     paths: bool,
@@ -5092,11 +5125,8 @@ impl TerminalPathCommandParser {
             bail!("--paths-format requires --paths");
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         Ok(Some(TerminalPathCommand {
             path_options,
@@ -5127,11 +5157,8 @@ impl TerminalVersionInfoParser {
             bail!("--version-info-format requires --version-info");
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         Ok(Some(TerminalVersionInfoCommand {
             path_options,
@@ -5165,15 +5192,11 @@ impl TerminalProfileTransferCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--export-profile" => {
                     parser.export_profile = Some(cli_string_value(&mut args, flag, inline_value)?);
                     parser.mode = Some(parser.mode_name("--export-profile")?);
@@ -5258,15 +5281,11 @@ impl TerminalStartupConfigFileCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--backup-startup-config" => {
                     if inline_value.is_some() {
                         bail!("--backup-startup-config does not accept a value");
@@ -5404,15 +5423,11 @@ impl TerminalKeymapDiscoveryCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--print-keymap-schema" => {
                     if inline_value.is_some() {
                         bail!("--print-keymap-schema does not accept a value");
@@ -5506,8 +5521,7 @@ impl TerminalKeymapDiscoveryCommand {
 
 #[derive(Default)]
 struct TerminalKeymapDiscoveryParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     mode: Option<&'static str>,
     seen_keymap_discovery_option: bool,
     pre_keymap_discovery_arg: Option<String>,
@@ -5555,11 +5569,8 @@ impl TerminalKeymapDiscoveryParser {
             return Ok(None);
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         match self.mode {
             Some("--print-keymap-schema") => {
@@ -5965,15 +5976,11 @@ impl TerminalKeymapFileCommand {
                 continue;
             };
 
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
             match flag {
-                "--user-data-dir" => {
-                    parser.user_data_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
-                "--config-dir" => {
-                    parser.config_dir =
-                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
-                }
                 "--backup-keymap" => {
                     if inline_value.is_some() {
                         bail!("--backup-keymap does not accept a value");
@@ -6055,8 +6062,7 @@ impl TerminalKeymapFileCommand {
 
 #[derive(Default)]
 struct TerminalKeymapFileParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     mode: Option<&'static str>,
     seen_keymap_file_option: bool,
     pre_keymap_file_arg: Option<String>,
@@ -6100,11 +6106,8 @@ impl TerminalKeymapFileParser {
             return Ok(None);
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         match self.mode {
             Some("--backup-keymap") => {
@@ -6229,8 +6232,7 @@ impl TerminalKeymapFileParser {
 
 #[derive(Default)]
 struct TerminalStartupConfigFileParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     mode: Option<&'static str>,
     seen_startup_config_file_option: bool,
     pre_startup_config_file_arg: Option<String>,
@@ -6274,11 +6276,8 @@ impl TerminalStartupConfigFileParser {
             return Ok(None);
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         match self.mode {
             Some("--backup-startup-config") => {
@@ -6423,8 +6422,7 @@ impl TerminalStartupConfigFileParser {
 
 #[derive(Default)]
 struct TerminalProfileTransferParser {
-    user_data_dir: Option<PathBuf>,
-    config_dir: Option<PathBuf>,
+    path_options: TerminalPathCliOptions,
     mode: Option<&'static str>,
     seen_profile_transfer_option: bool,
     pre_transfer_arg: Option<String>,
@@ -6467,11 +6465,8 @@ impl TerminalProfileTransferParser {
             return Ok(None);
         }
 
-        let path_options = TerminalPathOptions::from_cli(
-            self.user_data_dir.as_deref(),
-            self.config_dir.as_deref(),
-        )
-        .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
 
         match self.mode {
             Some("--export-profile") => {
@@ -6587,6 +6582,36 @@ where
         .map_err(|value| anyhow::anyhow!("{flag} value must be valid UTF-8: {value:?}"))
 }
 
+fn parse_terminal_path_flag<I>(
+    path_options: &mut TerminalPathCliOptions,
+    args: &mut I,
+    flag: &str,
+    inline_value: Option<&str>,
+) -> Result<bool>
+where
+    I: Iterator<Item = OsString>,
+{
+    match flag {
+        "--user-data-dir" => {
+            path_options.user_data_dir =
+                Some(PathBuf::from(cli_os_value(args, flag, inline_value)?));
+            Ok(true)
+        }
+        "--config-dir" => {
+            path_options.config_dir = Some(PathBuf::from(cli_os_value(args, flag, inline_value)?));
+            Ok(true)
+        }
+        "--portable" => {
+            if inline_value.is_some() {
+                bail!("--portable does not accept a value");
+            }
+            path_options.portable = true;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 impl LaunchOptions {
     #[cfg(test)]
     fn from_cli(cli: Cli) -> Result<Self> {
@@ -6598,9 +6623,8 @@ impl LaunchOptions {
         cli: Cli,
         startup_config: TerminalStartupConfig,
     ) -> Result<Self> {
-        let path_options =
-            TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
-                .context("failed to resolve terminal paths")?;
+        let path_options = TerminalPathOptions::from_cli(TerminalPathCliOptions::from_cli(&cli))
+            .context("failed to resolve terminal paths")?;
 
         Self::from_cli_parts(cli, startup_config, path_options)
     }
@@ -6721,19 +6745,40 @@ impl LaunchOptions {
 }
 
 impl TerminalPathOptions {
-    fn from_cli(user_data_dir: Option<&Path>, config_dir: Option<&Path>) -> Result<Self> {
-        let data_dir = user_data_dir
+    fn from_cli(options: TerminalPathCliOptions) -> Result<Self> {
+        if options.portable && (options.user_data_dir.is_some() || options.config_dir.is_some()) {
+            bail!("--portable cannot be used with --user-data-dir or --config-dir");
+        }
+
+        if options.portable {
+            let root = terminal_portable_root_dir()?;
+            return Ok(Self {
+                mode: TerminalPathMode::Portable,
+                data_dir: root.join("data"),
+                config_dir: root.join("config"),
+            });
+        }
+
+        let data_dir = options
+            .user_data_dir
+            .as_deref()
             .map(expand_tilde)
             .transpose()?
             .unwrap_or(default_terminal_data_dir()?);
 
-        let config_dir = match config_dir {
+        let config_dir = match options.config_dir.as_deref() {
             Some(config_dir) => expand_tilde(config_dir)?,
-            None if user_data_dir.is_some() => data_dir.join("config"),
+            None if options.user_data_dir.is_some() => data_dir.join("config"),
             None => default_terminal_config_dir()?,
+        };
+        let mode = if options.user_data_dir.is_some() || options.config_dir.is_some() {
+            TerminalPathMode::Custom
+        } else {
+            TerminalPathMode::Default
         };
 
         Ok(Self {
+            mode,
             data_dir,
             config_dir,
         })
@@ -7397,7 +7442,7 @@ fn main() {
                 eprintln!("failed to run zed terminal: {error:#}");
                 process::exit(2);
             }
-            if let Err(error) = print_terminal_paths(command.format) {
+            if let Err(error) = print_terminal_paths(&command.path_options, command.format) {
                 eprintln!("failed to print terminal paths: {error:#}");
                 process::exit(2);
             }
@@ -8206,8 +8251,11 @@ fn init_terminal_logging() {
     }
 }
 
-fn print_terminal_paths(format: TerminalPathsOutputFormat) -> Result<()> {
-    let report = active_terminal_path_report();
+fn print_terminal_paths(
+    path_options: &TerminalPathOptions,
+    format: TerminalPathsOutputFormat,
+) -> Result<()> {
+    let report = terminal_path_report(path_options);
     match format {
         TerminalPathsOutputFormat::Text => print!("{}", format_terminal_paths(&report)),
         TerminalPathsOutputFormat::Json => print!("{}", format_terminal_paths_json(&report)?),
@@ -8221,6 +8269,7 @@ fn active_terminal_path_report() -> TerminalPathReport {
 
 fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathReport {
     TerminalPathReport {
+        mode: path_options.mode,
         config_dir: path_options.config_dir.clone(),
         data_dir: path_options.data_dir.clone(),
         logs_dir: path_options.data_dir.join("logs"),
@@ -8910,6 +8959,7 @@ fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
 
 fn active_terminal_config_file_paths() -> TerminalConfigFilePaths {
     TerminalConfigFilePaths::from_path_options(&TerminalPathOptions {
+        mode: TerminalPathMode::Custom,
         data_dir: paths::data_dir().clone(),
         config_dir: paths::config_dir().clone(),
     })
@@ -15620,6 +15670,8 @@ fn format_config_initialization_json(
 
 fn format_terminal_paths(report: &TerminalPathReport) -> String {
     let mut output = String::new();
+    writeln!(&mut output, "mode: {}", report.mode.as_str())
+        .expect("writing to string should not fail");
     writeln!(&mut output, "config_dir: {}", report.config_dir.display())
         .expect("writing to string should not fail");
     writeln!(&mut output, "data_dir: {}", report.data_dir.display())
@@ -15706,6 +15758,7 @@ fn write_prefixed_lines(output: &mut String, text: &str, prefix: &str) {
 
 fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
     let value = serde_json::json!({
+        "mode": report.mode.as_str(),
         "config_dir": report.config_dir.display().to_string(),
         "data_dir": report.data_dir.display().to_string(),
         "logs_dir": report.logs_dir.display().to_string(),
@@ -17256,6 +17309,7 @@ fn launch_options_for_profile_window(profile: &str) -> Result<LaunchOptions> {
 
 fn active_terminal_path_options() -> TerminalPathOptions {
     TerminalPathOptions {
+        mode: TerminalPathMode::Custom,
         data_dir: paths::data_dir().clone(),
         config_dir: paths::config_dir().clone(),
     }
@@ -19003,6 +19057,13 @@ fn default_terminal_data_dir() -> Result<PathBuf> {
     }
 }
 
+fn terminal_portable_root_dir() -> Result<PathBuf> {
+    let exe = env::current_exe().context("failed to resolve zed-terminal executable path")?;
+    exe.parent()
+        .map(Path::to_path_buf)
+        .context("failed to resolve zed-terminal executable directory")
+}
+
 fn resolve_working_directory(input: &Path) -> Result<PathBuf> {
     let expanded = expand_tilde(input)?;
     let absolute = if expanded.is_absolute() {
@@ -19870,6 +19931,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_portable_path_options() {
+        let command = TerminalPathCommand::from_args([
+            "zed-terminal",
+            "--portable",
+            "--paths",
+            "--paths-format",
+            "json",
+        ])
+        .expect("failed to parse portable paths args")
+        .expect("expected portable paths command");
+        let root = terminal_portable_root_dir().expect("portable root should resolve");
+
+        assert_eq!(command.format, TerminalPathsOutputFormat::Json);
+        assert_eq!(command.path_options.mode, TerminalPathMode::Portable);
+        assert_eq!(command.path_options.data_dir, root.join("data"));
+        assert_eq!(command.path_options.config_dir, root.join("config"));
+    }
+
+    #[test]
+    fn portable_path_options_conflict_with_explicit_roots() {
+        let data_dir = temp_test_dir();
+        let paths_error = TerminalPathCommand::from_args([
+            "zed-terminal",
+            "--portable",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--paths",
+        ])
+        .expect_err("portable paths should reject explicit data dir");
+        assert!(
+            format!("{paths_error:#}")
+                .contains("--portable cannot be used with --user-data-dir or --config-dir")
+        );
+
+        let cli_error = Cli::try_parse_from([
+            "zed-terminal",
+            "--portable",
+            "--config-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .expect_err("clap should reject portable with explicit config dir");
+        assert!(cli_error.to_string().contains("--portable"));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn parses_version_info_command() {
         let data_dir = temp_test_dir();
         let command = TerminalVersionInfoCommand::from_args([
@@ -19885,11 +19993,31 @@ mod tests {
 
         assert_eq!(command.format, TerminalVersionInfoOutputFormat::Json);
         assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.mode, TerminalPathMode::Custom);
         assert_eq!(
             command.path_options.config_dir,
             command.path_options.data_dir.join("config")
         );
         std_fs::remove_dir_all(command.path_options.data_dir).ok();
+    }
+
+    #[test]
+    fn parses_portable_version_info_command() {
+        let command = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--portable",
+            "--version-info",
+            "--version-info-format",
+            "json",
+        ])
+        .expect("failed to parse portable version info args")
+        .expect("expected portable version info command");
+        let root = terminal_portable_root_dir().expect("portable root should resolve");
+
+        assert_eq!(command.format, TerminalVersionInfoOutputFormat::Json);
+        assert_eq!(command.path_options.mode, TerminalPathMode::Portable);
+        assert_eq!(command.path_options.data_dir, root.join("data"));
+        assert_eq!(command.path_options.config_dir, root.join("config"));
     }
 
     #[test]
@@ -19959,6 +20087,19 @@ mod tests {
         assert_eq!(options.path_options.config_dir, config_dir);
         std_fs::remove_dir_all(options.path_options.data_dir).ok();
         std_fs::remove_dir_all(options.path_options.config_dir).ok();
+    }
+
+    #[test]
+    fn parses_portable_launch_options() {
+        let cli = Cli::try_parse_from(["zed-terminal", "--portable"])
+            .expect("failed to parse portable launch args");
+        let options =
+            LaunchOptions::from_cli(cli).expect("failed to build portable launch options");
+        let root = terminal_portable_root_dir().expect("portable root should resolve");
+
+        assert_eq!(options.path_options.mode, TerminalPathMode::Portable);
+        assert_eq!(options.path_options.data_dir, root.join("data"));
+        assert_eq!(options.path_options.config_dir, root.join("config"));
     }
 
     #[test]
@@ -24995,6 +25136,7 @@ mod tests {
         assert_eq!(
             output,
             concat!(
+                "mode: custom\n",
                 "config_dir: config\n",
                 "data_dir: data\n",
                 "logs_dir: logs\n",
@@ -25018,6 +25160,7 @@ mod tests {
         let json: serde_json::Value =
             serde_json::from_str(&output).expect("paths json should parse");
 
+        assert_eq!(json["mode"], "custom");
         assert_eq!(json["config_dir"], "config");
         assert_eq!(json["data_dir"], "data");
         assert_eq!(json["logs_dir"], "logs");
@@ -25036,12 +25179,14 @@ mod tests {
     #[test]
     fn terminal_path_report_resolves_from_path_options_without_global_paths() {
         let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
             data_dir: PathBuf::from("data-root"),
             config_dir: PathBuf::from("config-root"),
         };
 
         let report = terminal_path_report(&path_options);
 
+        assert_eq!(report.mode, TerminalPathMode::Custom);
         assert_eq!(report.config_dir, PathBuf::from("config-root"));
         assert_eq!(report.data_dir, PathBuf::from("data-root"));
         assert_eq!(report.logs_dir, PathBuf::from("data-root").join("logs"));
@@ -25100,6 +25245,7 @@ mod tests {
                 "status: error\n",
                 "\n",
                 "paths:\n",
+                "  mode: custom\n",
                 "  config_dir: config\n",
                 "  data_dir: data\n",
                 "  logs_dir: logs\n",
@@ -26919,6 +27065,7 @@ mod tests {
 
     fn sample_path_report() -> TerminalPathReport {
         TerminalPathReport {
+            mode: TerminalPathMode::Custom,
             config_dir: PathBuf::from("config"),
             data_dir: PathBuf::from("data"),
             logs_dir: PathBuf::from("logs"),
@@ -27026,6 +27173,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
             data_dir: root_dir.join("data"),
             config_dir: root_dir.join("config"),
         };
@@ -27056,6 +27204,7 @@ mod tests {
         let root_dir = temp_test_dir();
         let config_dir = root_dir.join("config");
         let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
             data_dir: root_dir.join("data"),
             config_dir: config_dir.clone(),
         };
@@ -36194,6 +36343,8 @@ mod tests {
         assert!(help.contains("--version-info-format <text|json>"));
         assert!(help.contains("--paths"));
         assert!(help.contains("--paths-format <text|json>"));
+        assert!(help.contains("--portable"));
+        assert!(help.contains("Use config and data directories next to the zed-terminal binary"));
         let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(normalized_help.contains(
             "Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined"
@@ -43401,6 +43552,7 @@ mod tests {
         let additional_dir = temp_test_dir();
         let options = LaunchOptions {
             path_options: TerminalPathOptions {
+                mode: TerminalPathMode::Custom,
                 data_dir: PathBuf::from("data"),
                 config_dir: PathBuf::from("config"),
             },
@@ -43508,6 +43660,7 @@ mod tests {
         let initial_dir = temp_test_dir();
         let additional_dir = temp_test_dir();
         let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
             data_dir: PathBuf::from("profile-window-data"),
             config_dir: PathBuf::from("profile-window-config"),
         };

@@ -306,7 +306,14 @@ Start with the default standalone config and data roots:
 .\{{BINARY}}
 ```
 
-Run with explicit portable roots:
+Run in portable mode with package-local `data/` and `config/` directories:
+
+```powershell
+.\{{BINARY}} --portable
+.\{{BINARY}} --portable --paths --paths-format json
+```
+
+Run with explicit custom roots when you want the data and config directories elsewhere:
 
 ```powershell
 .\{{BINARY}} --user-data-dir .\portable\data --config-dir .\portable\config
@@ -386,6 +393,8 @@ function Assert-PackageReadme {
         "## Included Files",
         ".\$BinaryFileName",
         ".\$BinaryFileName --paths --paths-format json",
+        ".\$BinaryFileName --portable",
+        ".\$BinaryFileName --portable --paths --paths-format json",
         ".\$BinaryFileName --init-config",
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --support-info",
@@ -437,6 +446,29 @@ function Assert-VersionInfoJson {
     }
 }
 
+function Assert-PortablePathsJson {
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)][string]$ExpectedPackageDir
+    )
+
+    $expectedDataDir = Join-Path $ExpectedPackageDir "data"
+    $expectedConfigDir = Join-Path $ExpectedPackageDir "config"
+
+    if (
+        $Paths.mode -ne "portable" -or
+        $Paths.data_dir -ne $expectedDataDir -or
+        $Paths.config_dir -ne $expectedConfigDir -or
+        $Paths.logs_dir -ne (Join-Path $expectedDataDir "logs") -or
+        $Paths.settings_file -ne (Join-Path $expectedConfigDir "settings.json") -or
+        $Paths.startup_config_file -ne (Join-Path $expectedConfigDir "terminal.json") -or
+        $Paths.keymap_file -ne (Join-Path $expectedConfigDir "keymap.json") -or
+        $Paths.log_file -ne (Join-Path (Join-Path $expectedDataDir "logs") "Zed Terminal.log")
+    ) {
+        throw "zed-terminal --portable --paths did not report expected package-local paths"
+    }
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -481,6 +513,7 @@ function Assert-PackageManifest {
         "help",
         "version_info",
         "paths",
+        "portable_paths",
         "init_config",
         "startup_schema",
         "keymap_schema",
@@ -641,6 +674,15 @@ function Assert-PackageZipArchive {
         throw "extracted package zed-terminal --paths did not report the expected standalone paths"
     }
 
+    $portablePaths = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--portable",
+        "--paths",
+        "--paths-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    Assert-PortablePathsJson `
+        -Paths ($portablePaths.Stdout | ConvertFrom-Json) `
+        -ExpectedPackageDir $extractedPackageDir
+
     $doctor = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
         "--config-dir", $extractedConfigDir,
@@ -771,6 +813,15 @@ if ($pathsJson.config_dir -ne $validationConfigDir -or $pathsJson.data_dir -ne $
     throw "packaged zed-terminal --paths did not report the expected standalone paths"
 }
 
+$portablePaths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--portable",
+    "--paths",
+    "--paths-format", "json"
+)
+Assert-PortablePathsJson `
+    -Paths ($portablePaths.Stdout | ConvertFrom-Json) `
+    -ExpectedPackageDir $packageDir
+
 Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -870,6 +921,7 @@ $manifest = [pscustomobject]@{
         help = "ok"
         version_info = "ok"
         paths = "ok"
+        portable_paths = "ok"
         init_config = "ok"
         startup_schema = "ok"
         keymap_schema = "ok"

@@ -496,10 +496,19 @@ function Read-PackageSmokeSummary {
         $manifest.binary -ne (Split-Path -Leaf $packageBinary) -or
         $manifest.binary_sha256 -ne $binaryHash -or
         $manifest.validation.version_info -ne "ok" -or
+        $manifest.validation.paths -ne "ok" -or
+        $manifest.validation.portable_paths -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
         throw "package smoke manifest did not match the validated package output"
+    }
+    if (
+        $summary.validation.version_info -ne "ok" -or
+        $summary.validation.paths -ne "ok" -or
+        $summary.validation.portable_paths -ne "ok"
+    ) {
+        throw "package smoke summary did not report expected path/version validation status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
@@ -1070,6 +1079,8 @@ try {
                 "--version-info",
                 "--paths",
                 "--paths-format <text\|json>",
+                "--portable",
+                "Use config and data directories next to the zed-terminal binary",
                 "Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -1100,6 +1111,21 @@ try {
                 "--paths",
                 "--paths-format", "json"
             )
+            $portablePaths = Invoke-NativeJsonCommandResult "portable-paths" @(
+                "--portable",
+                "--paths",
+                "--paths-format", "json"
+            )
+            $expectedPortableDataDir = Join-Path (Split-Path -Parent $Binary) "data"
+            $expectedPortableConfigDir = Join-Path (Split-Path -Parent $Binary) "config"
+            if (
+                $portablePaths.mode -ne "portable" -or
+                $portablePaths.data_dir -ne $expectedPortableDataDir -or
+                $portablePaths.config_dir -ne $expectedPortableConfigDir -or
+                $portablePaths.logs_dir -ne (Join-Path $expectedPortableDataDir "logs")
+            ) {
+                throw "zed-terminal --portable --paths did not report expected binary-local paths"
+            }
             Invoke-NativeJsonCommand "doctor" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
