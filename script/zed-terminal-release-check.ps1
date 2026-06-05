@@ -425,10 +425,12 @@ try {
                 "--import-profile <NAME> --import-profile-file <FILE>",
                 "--replace-profile",
                 "--import-profile-format <text\|json>",
-                "Startup config backup options:",
+                "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
-                "Profile transfer and startup config backup options may be combined with --user-data-dir and",
+                "--restore-startup-config --restore-startup-config-file <FILE>",
+                "--restore-startup-config-format <text\|json>",
+                "Profile transfer and startup config file options may be combined with --user-data-dir and",
                 "--config-dir only."
             )
             Invoke-NativeJsonCommand "init-config" @(
@@ -641,6 +643,25 @@ try {
             }
             if ($startupBackupFileText -notmatch "release-check-value") {
                 throw "Startup config backup file did not preserve the full startup config payload."
+            }
+            Set-Content -LiteralPath $mutationStartupConfigFile -Value "{ broken terminal config" -NoNewline
+            $startupRestore = Invoke-NativeJsonCommandResult "mutation-restore-startup-config" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--restore-startup-config",
+                "--restore-startup-config-file", $mutationStartupBackupFile,
+                "--restore-startup-config-format", "json"
+            )
+            if ($startupRestore.startup_config_file -ne $mutationStartupConfigFile -or $startupRestore.restore_file -ne $mutationStartupBackupFile -or $startupRestore.layout_count -ne 2 -or $startupRestore.tab_count -ne 3 -or $startupRestore.profile_count -ne 1 -or $startupRestore.byte_count -ne $startupBackup.byte_count) {
+                throw "Startup config restore did not report the expected restored startup config summary."
+            }
+            $startupRestoreText = $startupRestore | ConvertTo-Json -Depth 10
+            if ($startupRestoreText -match "release-check-value") {
+                throw "Startup config restore output leaked an environment variable value."
+            }
+            $restoredStartupFileText = Get-Content -Raw -LiteralPath $mutationStartupConfigFile
+            if ($restoredStartupFileText -ne $startupBackupFileText) {
+                throw "Startup config restore did not restore terminal.json exactly from the backup file."
             }
             $mutationProfileExportFile = Join-Path $mutationCliConfigDir "work-profile-export.json"
             $profileExport = Invoke-NativeJsonCommandResult "mutation-export-profile-work" @(
