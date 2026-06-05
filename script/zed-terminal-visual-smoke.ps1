@@ -9,6 +9,7 @@ Param(
     [Parameter()][double]$MaxBaselineDifferentPixelRatio = 0.02,
     [Parameter()][double]$MaxBaselineAverageChannelDelta = 2.0,
     [Parameter()][int]$BaselinePixelTolerance = 4,
+    [Parameter()][switch]$VerifySplitPane,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -56,11 +57,13 @@ if ($BaselineImage -and -not (Test-Path -LiteralPath $BaselineImage -PathType Le
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$runDir = Join-Path $OutputDir "run-$timestamp"
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss-fff"
+$runId = [guid]::NewGuid().ToString("N").Substring(0, 8)
+$runDir = Join-Path $OutputDir "run-$timestamp-$runId"
 $dataDir = Join-Path $runDir "data"
 $configDir = Join-Path $runDir "config"
 $probeReadyFile = Join-Path $runDir "probe-ready.txt"
+$splitReadyFile = Join-Path $runDir "split-ready.txt"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
 function Quote-ProcessArgument {
@@ -427,6 +430,51 @@ function Compare-ImageToBaseline {
     }
 }
 
+function Write-SplitPaneStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$ReadyFile
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $splitProbeScript = @'
+$Host.UI.RawUI.WindowTitle = "zed-terminal-split-smoke"
+Set-Content -LiteralPath __SPLIT_READY_FILE__ -Value "ready"
+Write-Host "ZED TERMINAL SPLIT SMOKE"
+Write-Host "split: startup right"
+while ($true) {
+    Start-Sleep -Seconds 60
+}
+'@
+    $splitProbeScript = $splitProbeScript.Replace(
+        "__SPLIT_READY_FILE__",
+        (Quote-PowerShellSingleQuotedString $ReadyFile)
+    )
+    $encodedSplitProbeScript = [Convert]::ToBase64String(
+        [System.Text.Encoding]::Unicode.GetBytes($splitProbeScript)
+    )
+    $splitCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $encodedSplitProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $splitCommand = $splitCommand -join " "
+    $startupConfig = [ordered]@{
+        tabs = @(
+            [ordered]@{
+                title = "Split Smoke"
+                command = $splitCommand
+                split = "right"
+            }
+        )
+    } | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
 $probeScript = @'
 $Host.UI.RawUI.WindowTitle = "zed-terminal-visual-smoke"
 Set-Content -LiteralPath __PROBE_READY_FILE__ -Value "ready"
@@ -445,10 +493,14 @@ $probeScript = $probeScript.Replace(
 )
 
 $encodedProbeScript = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($probeScript))
+$startupConfigFile = $null
+if ($VerifySplitPane) {
+    $startupConfigFile = Write-SplitPaneStartupConfig -ConfigDir $configDir -ReadyFile $splitReadyFile
+}
+
 $arguments = @(
     "--user-data-dir", $dataDir,
     "--config-dir", $configDir,
-    "--no-startup-config",
     "--title", "Visual Smoke",
     "--",
     "powershell.exe",
@@ -457,6 +509,13 @@ $arguments = @(
     "-ExecutionPolicy", "Bypass",
     "-EncodedCommand", $encodedProbeScript
 )
+if (-not $VerifySplitPane) {
+    $arguments = @(
+        "--user-data-dir", $dataDir,
+        "--config-dir", $configDir,
+        "--no-startup-config"
+    ) + $arguments[4..($arguments.Length - 1)]
+}
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 
@@ -464,6 +523,12 @@ try {
     $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -PassThru
     $window = Get-ProcessWindow -Process $process -TimeoutSeconds $StartupTimeoutSeconds
     Wait-ProbeReadyFile -Process $process -Path $probeReadyFile -TimeoutSeconds $StartupTimeoutSeconds
+
+    $splitPaneVerified = $false
+    if ($VerifySplitPane) {
+        Wait-ProbeReadyFile -Process $process -Path $splitReadyFile -TimeoutSeconds $StartupTimeoutSeconds
+        $splitPaneVerified = $true
+    }
 
     Start-Sleep -Seconds $CaptureDelaySeconds
 
@@ -510,6 +575,15 @@ try {
     Write-Output "window_title: $($window.Title)"
     Write-Output "window_bounds: $($window.Left),$($window.Top),$($window.Width),$($window.Height)"
     Write-Output "probe_ready_file: $probeReadyFile"
+    if ($startupConfigFile) {
+        Write-Output "startup_config_file: $startupConfigFile"
+    }
+    if ($VerifySplitPane) {
+        Write-Output "split_mode: startup"
+        Write-Output "split_direction: right"
+        Write-Output "split_ready_file: $splitReadyFile"
+        Write-Output "split_pane_verified: $splitPaneVerified"
+    }
     Write-Output "capture_method: PrintWindow(PW_RENDERFULLCONTENT)"
     Write-Output "screenshot_file: $screenshotPath"
     Write-Output "screenshot_bytes: $($stats.FileBytes)"
