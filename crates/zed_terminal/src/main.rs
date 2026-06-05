@@ -3004,6 +3004,7 @@ struct TerminalStartupProfileSummary {
     hidden: bool,
     is_default: bool,
     tab_count: usize,
+    reference_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5159,6 +5160,7 @@ impl TerminalStartupConfig {
                     hidden: profile.hidden,
                     is_default: self.default_profile.as_deref() == Some(name.as_str()),
                     tab_count: 1 + profile.tabs.len(),
+                    reference_count: startup_profile_references(self, name).len(),
                 })
             })
             .collect()
@@ -10080,6 +10082,8 @@ fn format_startup_profiles_report(report: &TerminalStartupProfileListReport) -> 
         }
         writeln!(&mut output, "  tabs: {}", profile.tab_count)
             .expect("writing to string should not fail");
+        writeln!(&mut output, "  references: {}", profile.reference_count)
+            .expect("writing to string should not fail");
     }
 
     output
@@ -10114,6 +10118,7 @@ fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serd
         "hidden": profile.hidden,
         "is_default": profile.is_default,
         "tab_count": profile.tab_count,
+        "reference_count": profile.reference_count,
     })
 }
 
@@ -15438,6 +15443,7 @@ mod tests {
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
+                reference_count: 0,
             }],
         );
 
@@ -15557,6 +15563,7 @@ mod tests {
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
+                reference_count: 0,
             },
             TerminalStartupProfileSummary {
                 name: "logs".into(),
@@ -15567,6 +15574,7 @@ mod tests {
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
+                reference_count: 0,
             },
         ];
 
@@ -15592,6 +15600,7 @@ mod tests {
             hidden: false,
             is_default: false,
             tab_count: 1,
+            reference_count: 0,
         }];
 
         let description_result =
@@ -15638,6 +15647,7 @@ mod tests {
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
+                reference_count: 0,
             }],
         );
 
@@ -15665,6 +15675,7 @@ mod tests {
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
+                reference_count: 0,
             }],
         );
 
@@ -16036,6 +16047,7 @@ mod tests {
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
+                reference_count: 1,
             }]
         );
         assert_eq!(
@@ -17326,12 +17338,14 @@ mod tests {
         assert!(visible.contains("  icon: terminal"));
         assert!(visible.contains("  color: #0f766e"));
         assert!(visible.contains("  tabs: 2"));
+        assert!(visible.contains("  references: 1"));
         assert!(!visible.contains("- secret"));
 
         let all = format_startup_profiles(&config, Path::new("terminal.json"), true);
 
         assert!(all.contains("- secret (hidden)"));
         assert!(all.contains("  display_name: Secret"));
+        assert!(all.contains("  references: 0"));
     }
 
     #[test]
@@ -17353,6 +17367,7 @@ mod tests {
         assert_eq!(json["profiles"][0]["hidden"], true);
         assert_eq!(json["profiles"][0]["is_default"], false);
         assert_eq!(json["profiles"][0]["tab_count"], 1);
+        assert_eq!(json["profiles"][0]["reference_count"], 0);
         assert_eq!(json["profiles"][1]["name"], "work");
         assert_eq!(json["profiles"][1]["display_name"], "Work Shell");
         assert_eq!(json["profiles"][1]["description"], "Project startup shell");
@@ -17361,6 +17376,7 @@ mod tests {
         assert_eq!(json["profiles"][1]["hidden"], false);
         assert_eq!(json["profiles"][1]["is_default"], true);
         assert_eq!(json["profiles"][1]["tab_count"], 2);
+        assert_eq!(json["profiles"][1]["reference_count"], 1);
         assert!(output.ends_with('\n'));
     }
 
@@ -33120,6 +33136,7 @@ mod tests {
                 hidden: true,
                 is_default: false,
                 tab_count: 1,
+                reference_count: 0,
             }]
         );
     }

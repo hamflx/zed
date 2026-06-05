@@ -747,8 +747,8 @@ try {
                 throw "Visible profile list reported unexpected counts."
             }
             $visibleProfileEntries = @($visibleProfiles.profiles)
-            if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default) {
-                throw "Visible profile list did not report only the default work profile."
+            if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default -or $visibleProfileEntries[0].reference_count -ne 1) {
+                throw "Visible profile list did not report only the referenced default work profile."
             }
             $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
                 "--user-data-dir", $cliDataDir,
@@ -758,8 +758,8 @@ try {
                 "--list-profiles-format", "json"
             )
             $hiddenProfileEntries = @($allProfiles.profiles | Where-Object { $_.name -eq "secret" })
-            if ($hiddenProfileEntries.Count -ne 1 -or -not $hiddenProfileEntries[0].hidden) {
-                throw "All-profile list did not include the hidden secret profile."
+            if ($hiddenProfileEntries.Count -ne 1 -or -not $hiddenProfileEntries[0].hidden -or $hiddenProfileEntries[0].reference_count -ne 0) {
+                throw "All-profile list did not include the unreferenced hidden secret profile."
             }
             $profileDescription = Invoke-NativeJsonCommandResult "describe-profile-work" @(
                 "--user-data-dir", $cliDataDir,
