@@ -11863,6 +11863,8 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
         TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
         TypeId::of::<workspace::pane::CloseOtherItems>(),
+        TypeId::of::<workspace::pane::GoBack>(),
+        TypeId::of::<workspace::pane::GoForward>(),
         TypeId::of::<workspace::pane::JoinAll>(),
         TypeId::of::<workspace::pane::JoinIntoNext>(),
         TypeId::of::<workspace::pane::ReopenClosedItem>(),
@@ -12298,6 +12300,9 @@ fn shell_menu_items_with_visibility(
                 save_intent: None,
             },
         ),
+        MenuItem::separator(),
+        MenuItem::action("Go Back", workspace::pane::GoBack),
+        MenuItem::action("Go Forward", workspace::pane::GoForward),
         MenuItem::separator(),
         MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
         MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
@@ -14176,6 +14181,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &workspace::SwapPaneUp);
         assert_command_palette_action_visible(&filter, &workspace::SwapPaneDown);
         assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
+        assert_command_palette_action_visible(&filter, &workspace::pane::GoBack);
+        assert_command_palette_action_visible(&filter, &workspace::pane::GoForward);
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinAll);
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinIntoNext);
         assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
@@ -14911,6 +14918,14 @@ mod tests {
         let items = shell_menu_items(Vec::new());
 
         assert_menu_action(&items, "Reopen Closed Tab", "pane::ReopenClosedItem");
+    }
+
+    #[test]
+    fn shell_menu_exposes_tab_navigation_history_actions() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Go Back", "pane::GoBack");
+        assert_menu_action(&items, "Go Forward", "pane::GoForward");
     }
 
     #[test]
