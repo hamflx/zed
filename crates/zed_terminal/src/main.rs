@@ -66,6 +66,10 @@ actions!(
         NewTerminalTab,
         DuplicateTerminalTab,
         DuplicateTerminalSplitAuto,
+        DuplicateTerminalSplitRight,
+        DuplicateTerminalSplitDown,
+        DuplicateTerminalSplitLeft,
+        DuplicateTerminalSplitUp,
         NewTerminalSplitAuto,
         NewTerminalSplitRight,
         NewTerminalSplitDown,
@@ -11738,6 +11742,10 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<CloseTerminalWindow>(),
         TypeId::of::<CopySupportInfoToClipboard>(),
         TypeId::of::<DuplicateTerminalSplitAuto>(),
+        TypeId::of::<DuplicateTerminalSplitDown>(),
+        TypeId::of::<DuplicateTerminalSplitLeft>(),
+        TypeId::of::<DuplicateTerminalSplitRight>(),
+        TypeId::of::<DuplicateTerminalSplitUp>(),
         TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
@@ -12079,6 +12087,10 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
         MenuItem::separator(),
         MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
+        MenuItem::action("Duplicate Split Right", DuplicateTerminalSplitRight),
+        MenuItem::action("Duplicate Split Down", DuplicateTerminalSplitDown),
+        MenuItem::action("Duplicate Split Left", DuplicateTerminalSplitLeft),
+        MenuItem::action("Duplicate Split Up", DuplicateTerminalSplitUp),
         MenuItem::action("Split Auto", NewTerminalSplitAuto),
         MenuItem::action("Split Right", NewTerminalSplitRight),
         MenuItem::action("Split Down", NewTerminalSplitDown),
@@ -12235,6 +12247,10 @@ fn set_app_menus(cx: &mut App) {
 fn pane_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
+        MenuItem::action("Duplicate Split Right", DuplicateTerminalSplitRight),
+        MenuItem::action("Duplicate Split Down", DuplicateTerminalSplitDown),
+        MenuItem::action("Duplicate Split Left", DuplicateTerminalSplitLeft),
+        MenuItem::action("Duplicate Split Up", DuplicateTerminalSplitUp),
         MenuItem::action("Split Auto", NewTerminalSplitAuto),
         MenuItem::action("Split Right", NewTerminalSplitRight),
         MenuItem::action("Split Down", NewTerminalSplitDown),
@@ -12394,6 +12410,10 @@ fn open_terminal_window(
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
     let duplicate_terminal_tab_fallback = new_terminal_tab.clone();
     let duplicate_terminal_split_auto_fallback = new_terminal_tab.clone();
+    let duplicate_terminal_split_right_fallback = new_terminal_tab.clone();
+    let duplicate_terminal_split_down_fallback = new_terminal_tab.clone();
+    let duplicate_terminal_split_left_fallback = new_terminal_tab.clone();
+    let duplicate_terminal_split_up_fallback = new_terminal_tab.clone();
     let new_terminal_split_auto = new_terminal_tab.clone();
     let new_terminal_split_right = new_terminal_tab.clone();
     let new_terminal_split_down = new_terminal_tab.clone();
@@ -12561,6 +12581,54 @@ fn open_terminal_window(
                             cx,
                             duplicate_terminal_split_auto_fallback.clone(),
                             Some(split),
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalSplitRight, window, cx| {
+                        duplicate_terminal(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_split_right_fallback.clone(),
+                            Some(TerminalStartupSplitDirection::Right),
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalSplitDown, window, cx| {
+                        duplicate_terminal(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_split_down_fallback.clone(),
+                            Some(TerminalStartupSplitDirection::Down),
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalSplitLeft, window, cx| {
+                        duplicate_terminal(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_split_left_fallback.clone(),
+                            Some(TerminalStartupSplitDirection::Left),
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalSplitUp, window, cx| {
+                        duplicate_terminal(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_split_up_fallback.clone(),
+                            Some(TerminalStartupSplitDirection::Up),
                         )
                         .detach_and_log_err(cx);
                     },
@@ -13815,6 +13883,10 @@ mod tests {
 
         assert_command_palette_action_visible(&filter, &CloseTerminalWindow);
         assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitAuto);
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitRight);
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitDown);
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitLeft);
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitUp);
         assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
         assert_command_palette_action_visible(&filter, &MinimizeTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
@@ -14568,6 +14640,26 @@ mod tests {
             "Duplicate Split Auto",
             "zed_terminal::DuplicateTerminalSplitAuto",
         );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Right",
+            "zed_terminal::DuplicateTerminalSplitRight",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Down",
+            "zed_terminal::DuplicateTerminalSplitDown",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Left",
+            "zed_terminal::DuplicateTerminalSplitLeft",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Up",
+            "zed_terminal::DuplicateTerminalSplitUp",
+        );
         assert_menu_action(&items, "Split Auto", "zed_terminal::NewTerminalSplitAuto");
         assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
@@ -14610,6 +14702,26 @@ mod tests {
             &items,
             "Duplicate Split Auto",
             "zed_terminal::DuplicateTerminalSplitAuto",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Right",
+            "zed_terminal::DuplicateTerminalSplitRight",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Down",
+            "zed_terminal::DuplicateTerminalSplitDown",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Left",
+            "zed_terminal::DuplicateTerminalSplitLeft",
+        );
+        assert_menu_action(
+            &items,
+            "Duplicate Split Up",
+            "zed_terminal::DuplicateTerminalSplitUp",
         );
         assert_menu_action(&items, "Split Auto", "zed_terminal::NewTerminalSplitAuto");
         assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
@@ -15220,6 +15332,26 @@ mod tests {
                 .expect("duplicate split auto action input should parse");
 
         assert_eq!(action.name(), "zed_terminal::DuplicateTerminalSplitAuto");
+    }
+
+    #[test]
+    fn parses_duplicate_terminal_split_direction_action_inputs() {
+        for action in [
+            <DuplicateTerminalSplitRight as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("duplicate split right action input should parse"),
+            <DuplicateTerminalSplitDown as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("duplicate split down action input should parse"),
+            <DuplicateTerminalSplitLeft as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("duplicate split left action input should parse"),
+            <DuplicateTerminalSplitUp as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("duplicate split up action input should parse"),
+        ] {
+            assert!(
+                action
+                    .name()
+                    .starts_with("zed_terminal::DuplicateTerminalSplit")
+            );
+        }
     }
 
     #[test]
