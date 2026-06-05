@@ -11855,6 +11855,10 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::JoinAll>(),
         TypeId::of::<workspace::pane::JoinIntoNext>(),
         TypeId::of::<workspace::pane::ReopenClosedItem>(),
+        TypeId::of::<workspace::pane::SplitAndMoveDown>(),
+        TypeId::of::<workspace::pane::SplitAndMoveLeft>(),
+        TypeId::of::<workspace::pane::SplitAndMoveRight>(),
+        TypeId::of::<workspace::pane::SplitAndMoveUp>(),
         TypeId::of::<workspace::pane::SwapItemLeft>(),
         TypeId::of::<workspace::pane::SwapItemRight>(),
         TypeId::of::<workspace::pane::TogglePinTab>(),
@@ -12357,6 +12361,13 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Split Down", NewTerminalSplitDown),
         MenuItem::action("Split Left", NewTerminalSplitLeft),
         MenuItem::action("Split Up", NewTerminalSplitUp),
+        MenuItem::action(
+            "Move Tab to Split Right",
+            workspace::pane::SplitAndMoveRight,
+        ),
+        MenuItem::action("Move Tab to Split Down", workspace::pane::SplitAndMoveDown),
+        MenuItem::action("Move Tab to Split Left", workspace::pane::SplitAndMoveLeft),
+        MenuItem::action("Move Tab to Split Up", workspace::pane::SplitAndMoveUp),
         MenuItem::separator(),
         MenuItem::action(
             "Close Active Tab",
@@ -14123,6 +14134,10 @@ mod tests {
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinAll);
         assert_command_palette_action_visible(&filter, &workspace::pane::JoinIntoNext);
         assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
+        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveDown);
+        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveLeft);
+        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveRight);
+        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveUp);
         assert_command_palette_action_visible(&filter, &workspace::pane::TogglePinTab);
         assert_command_palette_action_visible(&filter, &workspace::pane::UnpinAllTabs);
         assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
@@ -14958,6 +14973,16 @@ mod tests {
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
         assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
         assert_menu_action(&items, "Split Up", "zed_terminal::NewTerminalSplitUp");
+    }
+
+    #[test]
+    fn pane_menu_exposes_move_tab_to_split_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Move Tab to Split Right", "pane::SplitAndMoveRight");
+        assert_menu_action(&items, "Move Tab to Split Down", "pane::SplitAndMoveDown");
+        assert_menu_action(&items, "Move Tab to Split Left", "pane::SplitAndMoveLeft");
+        assert_menu_action(&items, "Move Tab to Split Up", "pane::SplitAndMoveUp");
     }
 
     #[test]
