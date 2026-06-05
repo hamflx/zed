@@ -60,6 +60,10 @@ actions!(
         ZoomTerminalWindow,
         NewTerminalTab,
         DuplicateTerminalTab,
+        NewTerminalSplitRight,
+        NewTerminalSplitDown,
+        NewTerminalSplitLeft,
+        NewTerminalSplitUp,
         ToggleFullScreen,
         ResizePaneLeft,
         ResizePaneRight,
@@ -11389,6 +11393,10 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalTab>(),
+        TypeId::of::<NewTerminalSplitDown>(),
+        TypeId::of::<NewTerminalSplitLeft>(),
+        TypeId::of::<NewTerminalSplitRight>(),
+        TypeId::of::<NewTerminalSplitUp>(),
         TypeId::of::<NewTerminalSplitWithProfile>(),
         TypeId::of::<NewTerminalTabWithProfile>(),
         TypeId::of::<OpenConfigDirectory>(),
@@ -11438,10 +11446,6 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
         TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
         TypeId::of::<workspace::pane::CloseOtherItems>(),
-        TypeId::of::<workspace::pane::SplitDown>(),
-        TypeId::of::<workspace::pane::SplitLeft>(),
-        TypeId::of::<workspace::pane::SplitRight>(),
-        TypeId::of::<workspace::pane::SplitUp>(),
         TypeId::of::<workspace::pane::SwapItemLeft>(),
         TypeId::of::<workspace::pane::SwapItemRight>(),
         TypeId::of::<zed_actions::buffer_search::Deploy>(),
@@ -11696,6 +11700,11 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
     let mut shell_items = vec![
         MenuItem::action("New Tab", NewTerminalTab),
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
+        MenuItem::separator(),
+        MenuItem::action("Split Right", NewTerminalSplitRight),
+        MenuItem::action("Split Down", NewTerminalSplitDown),
+        MenuItem::action("Split Left", NewTerminalSplitLeft),
+        MenuItem::action("Split Up", NewTerminalSplitUp),
     ];
     if !profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
@@ -11827,29 +11836,33 @@ fn set_app_menus(cx: &mut App) {
         Menu::new("Zed Terminal").items(app_menu_items()),
         Menu::new("Shell").items(shell_items),
         Menu::new("Terminal").items(terminal_menu_items()),
-        Menu::new("Pane").items(vec![
-            MenuItem::action("Split Right", workspace::SplitRight::default()),
-            MenuItem::action("Split Down", workspace::SplitDown::default()),
-            MenuItem::action("Split Left", workspace::SplitLeft::default()),
-            MenuItem::action("Split Up", workspace::SplitUp::default()),
-            MenuItem::separator(),
-            MenuItem::action("Focus Left", workspace::ActivatePaneLeft),
-            MenuItem::action("Focus Right", workspace::ActivatePaneRight),
-            MenuItem::action("Focus Up", workspace::ActivatePaneUp),
-            MenuItem::action("Focus Down", workspace::ActivatePaneDown),
-            MenuItem::separator(),
-            MenuItem::action("Next Pane", workspace::ActivateNextPane),
-            MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
-            MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
-            MenuItem::separator(),
-            MenuItem::action("Resize Pane Left", ResizePaneLeft),
-            MenuItem::action("Resize Pane Right", ResizePaneRight),
-            MenuItem::action("Resize Pane Up", ResizePaneUp),
-            MenuItem::action("Resize Pane Down", ResizePaneDown),
-            MenuItem::action("Reset Pane Sizes", ResetPaneSizes),
-        ]),
+        Menu::new("Pane").items(pane_menu_items()),
         Menu::new("Window").items(window_menu_items()),
     ]);
+}
+
+fn pane_menu_items() -> Vec<MenuItem> {
+    vec![
+        MenuItem::action("Split Right", NewTerminalSplitRight),
+        MenuItem::action("Split Down", NewTerminalSplitDown),
+        MenuItem::action("Split Left", NewTerminalSplitLeft),
+        MenuItem::action("Split Up", NewTerminalSplitUp),
+        MenuItem::separator(),
+        MenuItem::action("Focus Left", workspace::ActivatePaneLeft),
+        MenuItem::action("Focus Right", workspace::ActivatePaneRight),
+        MenuItem::action("Focus Up", workspace::ActivatePaneUp),
+        MenuItem::action("Focus Down", workspace::ActivatePaneDown),
+        MenuItem::separator(),
+        MenuItem::action("Next Pane", workspace::ActivateNextPane),
+        MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
+        MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
+        MenuItem::separator(),
+        MenuItem::action("Resize Pane Left", ResizePaneLeft),
+        MenuItem::action("Resize Pane Right", ResizePaneRight),
+        MenuItem::action("Resize Pane Up", ResizePaneUp),
+        MenuItem::action("Resize Pane Down", ResizePaneDown),
+        MenuItem::action("Reset Pane Sizes", ResetPaneSizes),
+    ]
 }
 
 fn app_menu_items() -> Vec<MenuItem> {
@@ -11919,6 +11932,10 @@ fn open_terminal_window(
     let new_terminal_window = launch_options.runtime_new_window_options();
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
     let duplicate_terminal_tab_fallback = new_terminal_tab.clone();
+    let new_terminal_split_right = new_terminal_tab.clone();
+    let new_terminal_split_down = new_terminal_tab.clone();
+    let new_terminal_split_left = new_terminal_tab.clone();
+    let new_terminal_split_up = new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
 
@@ -11974,6 +11991,52 @@ fn open_terminal_window(
                 workspace.register_action(move |workspace, _: &NewTerminalTab, window, cx| {
                     add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
                         .detach_and_log_err(cx);
+                });
+                workspace.register_action(
+                    move |workspace, _: &NewTerminalSplitRight, window, cx| {
+                        add_new_terminal_split(
+                            workspace,
+                            window,
+                            cx,
+                            new_terminal_split_right.clone(),
+                            TerminalStartupSplitDirection::Right,
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &NewTerminalSplitDown, window, cx| {
+                        add_new_terminal_split(
+                            workspace,
+                            window,
+                            cx,
+                            new_terminal_split_down.clone(),
+                            TerminalStartupSplitDirection::Down,
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &NewTerminalSplitLeft, window, cx| {
+                        add_new_terminal_split(
+                            workspace,
+                            window,
+                            cx,
+                            new_terminal_split_left.clone(),
+                            TerminalStartupSplitDirection::Left,
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(move |workspace, _: &NewTerminalSplitUp, window, cx| {
+                    add_new_terminal_split(
+                        workspace,
+                        window,
+                        cx,
+                        new_terminal_split_up.clone(),
+                        TerminalStartupSplitDirection::Up,
+                    )
+                    .detach_and_log_err(cx);
                 });
                 workspace.register_action(
                     move |workspace, _: &DuplicateTerminalTab, window, cx| {
@@ -12127,6 +12190,20 @@ fn add_new_terminal_tab(
     if tab.working_directory.is_none() {
         tab.working_directory = default_working_directory(workspace, cx);
     }
+    add_launch_tab(workspace, window, cx, tab)
+}
+
+fn add_new_terminal_split(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    mut tab: LaunchTab,
+    split: TerminalStartupSplitDirection,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    if tab.working_directory.is_none() {
+        tab.working_directory = default_working_directory(workspace, cx);
+    }
+    tab.split = Some(split);
     add_launch_tab(workspace, window, cx, tab)
 }
 
@@ -12817,6 +12894,30 @@ mod tests {
             "ctrl-shift-d",
             "zed_terminal::DuplicateTerminalTab",
         );
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-shift-5",
+            "zed_terminal::NewTerminalSplitRight",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
+            "alt-shift-d",
+            "zed_terminal::NewTerminalSplitRight",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
+            "alt-shift-plus",
+            "zed_terminal::NewTerminalSplitDown",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
+            "alt-shift-minus",
+            "zed_terminal::NewTerminalSplitDown",
+        );
         assert_key_binding(&keymap, None, "f11", "zed_terminal::ToggleFullScreen");
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
         for tab_number in 1..=8 {
@@ -12966,6 +13067,10 @@ mod tests {
         assert_command_palette_action_visible(&filter, &MinimizeTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
+        assert_command_palette_action_visible(&filter, &NewTerminalSplitRight);
+        assert_command_palette_action_visible(&filter, &NewTerminalSplitDown);
+        assert_command_palette_action_visible(&filter, &NewTerminalSplitLeft);
+        assert_command_palette_action_visible(&filter, &NewTerminalSplitUp);
         assert_command_palette_action_visible(
             &filter,
             &NewTerminalTabWithProfile {
@@ -13008,7 +13113,6 @@ mod tests {
             &zed_actions::IncreaseBufferFontSize { persist: false },
         );
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
-        assert_command_palette_action_visible(&filter, &workspace::SplitRight::default());
         assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
     }
 
@@ -13025,6 +13129,7 @@ mod tests {
         assert_command_palette_action_hidden(&filter, &zed_actions::theme::ToggleMode);
         assert_command_palette_action_hidden(&filter, &terminal::SearchTest);
         assert_command_palette_action_hidden(&filter, &terminal::ScrollHalfPageUp);
+        assert_command_palette_action_hidden(&filter, &workspace::SplitRight::default());
     }
 
     #[test]
@@ -13533,6 +13638,16 @@ mod tests {
     }
 
     #[test]
+    fn shell_menu_exposes_terminal_split_actions() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
+        assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
+        assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
+        assert_menu_action(&items, "Split Up", "zed_terminal::NewTerminalSplitUp");
+    }
+
+    #[test]
     fn shell_menu_exposes_bulk_tab_close_actions() {
         let items = shell_menu_items(Vec::new());
 
@@ -13557,6 +13672,16 @@ mod tests {
 
         assert_menu_action(&items, "Move Tab Left", "pane::SwapItemLeft");
         assert_menu_action(&items, "Move Tab Right", "pane::SwapItemRight");
+    }
+
+    #[test]
+    fn pane_menu_exposes_terminal_split_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
+        assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
+        assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
+        assert_menu_action(&items, "Split Up", "zed_terminal::NewTerminalSplitUp");
     }
 
     #[test]
@@ -14026,6 +14151,22 @@ mod tests {
             }))
             .expect_err("unknown profile split action fields should be rejected");
         assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_split_action_inputs() {
+        for action in [
+            <NewTerminalSplitRight as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("split right action input should parse"),
+            <NewTerminalSplitDown as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("split down action input should parse"),
+            <NewTerminalSplitLeft as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("split left action input should parse"),
+            <NewTerminalSplitUp as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("split up action input should parse"),
+        ] {
+            assert!(action.name().starts_with("zed_terminal::NewTerminalSplit"));
+        }
     }
 
     #[test]
