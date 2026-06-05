@@ -11104,6 +11104,28 @@ fn profile_menu_label(profile: &TerminalStartupProfileSummary) -> String {
     label
 }
 
+fn profile_command_palette_label(profile: &TerminalStartupProfileSummary) -> String {
+    let mut label = profile_menu_label(profile);
+    let mut details = Vec::new();
+
+    if let Some(description) = &profile.description {
+        details.push(description.clone());
+    }
+    if let Some(icon) = &profile.icon {
+        details.push(format!("icon {icon}"));
+    }
+    if let Some(color) = &profile.color {
+        details.push(format!("color {color}"));
+    }
+
+    if !details.is_empty() {
+        write!(&mut label, " - {}", details.join(" - "))
+            .expect("writing to string should not fail");
+    }
+
+    label
+}
+
 fn startup_profile_menu_entries() -> Vec<TerminalStartupProfileMenuEntry> {
     match TerminalStartupConfig::load(&active_terminal_startup_config_file()) {
         Ok(startup_config) => startup_config.profile_menu_entries(),
@@ -11495,7 +11517,7 @@ fn terminal_profile_command_palette_items(
     let mut items = Vec::new();
 
     for profile in profiles {
-        let label = profile_menu_label(&profile);
+        let label = profile_command_palette_label(&profile);
         let profile_name = profile.name.clone();
         items.push(terminal_profile_command_palette_item(
             query,
@@ -13180,12 +13202,12 @@ mod tests {
                 .map(|item| item.string.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "New Tab With Profile: Work Shell (work) - Default",
-                "Split Right With Profile: Work Shell (work) - Default",
-                "Split Down With Profile: Work Shell (work) - Default",
-                "Split Left With Profile: Work Shell (work) - Default",
-                "Split Up With Profile: Work Shell (work) - Default",
-                "Set Default Profile: Work Shell (work) - Default",
+                "New Tab With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Split Right With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Split Down With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Split Left With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Split Up With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
 
@@ -13290,6 +13312,50 @@ mod tests {
                 .results
                 .iter()
                 .all(|item| item.string.contains("Log Tail"))
+        );
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_matches_profile_metadata() {
+        let profiles = vec![TerminalStartupProfileSummary {
+            name: "ops".into(),
+            display_name: "Ops Shell".into(),
+            description: Some("Production deploy".into()),
+            icon: Some("rocket".into()),
+            color: Some("#dc2626".into()),
+            hidden: false,
+            is_default: false,
+            tab_count: 1,
+        }];
+
+        let description_result =
+            terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
+        assert_eq!(description_result.results.len(), 6);
+        assert!(
+            description_result
+                .results
+                .iter()
+                .all(|item| item.string.contains("Production deploy"))
+        );
+
+        let icon_result =
+            terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
+        assert_eq!(icon_result.results.len(), 6);
+        assert!(
+            icon_result
+                .results
+                .iter()
+                .all(|item| item.string.contains("icon rocket"))
+        );
+
+        let color_result =
+            terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
+        assert_eq!(color_result.results.len(), 6);
+        assert!(
+            color_result
+                .results
+                .iter()
+                .all(|item| item.string.contains("color #dc2626"))
         );
     }
 
