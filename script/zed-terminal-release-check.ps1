@@ -12,6 +12,7 @@ Param(
     [Parameter()][switch]$SkipCargo,
     [Parameter()][switch]$SkipRustTests,
     [Parameter()][switch]$SkipCliDiagnostics,
+    [Parameter()][switch]$SkipPackage,
     [Parameter()][switch]$SkipVisualSmoke,
     [Parameter()][switch]$SkipVisualBaseline,
     [Parameter()][switch]$SkipSplitVisualSmoke
@@ -81,6 +82,7 @@ $brokenCliDataDir = Join-Path $runDir "broken-cli-data"
 $brokenCliConfigDir = Join-Path $runDir "broken-cli-config"
 $mutationCliDataDir = Join-Path $runDir "mutation-cli-data"
 $mutationCliConfigDir = Join-Path $runDir "mutation-cli-config"
+$packageSmokeDir = Join-Path $runDir "package-smoke"
 $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
@@ -355,6 +357,7 @@ function Write-ReleaseSummary {
         log_file = $releaseLog
         visual_baseline_image = $VisualBaselineImage
         split_visual_baseline_image = $SplitVisualBaselineImage
+        package_smoke_skipped = [bool]$SkipPackage
         visual_baseline_skipped = [bool]$SkipVisualBaseline
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
@@ -384,6 +387,10 @@ try {
         Assert-PowerShellSyntax (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1")
     }
 
+    Invoke-Step "PowerShell syntax: package" {
+        Assert-PowerShellSyntax (Join-Path $repoRoot "script\zed-terminal-package.ps1")
+    }
+
     Invoke-Step "PowerShell syntax: release check" {
         Assert-PowerShellSyntax $PSCommandPath
     }
@@ -411,6 +418,20 @@ try {
     Invoke-Step "binary exists" {
         if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
             throw "zed-terminal binary not found: $Binary"
+        }
+    }
+
+    if (-not $SkipPackage) {
+        Invoke-Step "package smoke" {
+            Invoke-NativeCommand -FilePath "powershell" -Arguments @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-package.ps1"),
+                "-Binary", $Binary,
+                "-BuildProfile", "debug",
+                "-SkipBuild",
+                "-OutputDir", $packageSmokeDir
+            )
         }
     }
 
