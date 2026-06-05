@@ -353,6 +353,27 @@ function Invoke-NativeTextCommand {
     $null = Invoke-NativeTextCommandResult -Name $Name -Arguments $Arguments -RequiredPatterns $RequiredPatterns
 }
 
+function Assert-SettingsValidationJson {
+    param([Parameter(Mandatory = $true)]$Report)
+
+    $files = @($Report.files)
+    $labels = @($files | ForEach-Object { $_.label })
+    if (
+        $Report.status -ne "ok" -or
+        $files.Count -ne 2 -or
+        $labels -notcontains "settings_file" -or
+        $labels -notcontains "global_settings_file"
+    ) {
+        throw "zed-terminal --validate-settings did not report expected settings validation status"
+    }
+
+    foreach ($file in $files) {
+        if ($file.status -eq "error" -or -not $file.parse_status -or -not $file.migration_status) {
+            throw "zed-terminal --validate-settings reported an invalid settings file entry"
+        }
+    }
+}
+
 function Convert-KeyValueOutput {
     param([Parameter(Mandatory = $true)][object[]]$Output)
 
@@ -498,6 +519,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.version_info -ne "ok" -or
         $manifest.validation.paths -ne "ok" -or
         $manifest.validation.portable_paths -ne "ok" -or
+        $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
@@ -506,9 +528,10 @@ function Read-PackageSmokeSummary {
     if (
         $summary.validation.version_info -ne "ok" -or
         $summary.validation.paths -ne "ok" -or
-        $summary.validation.portable_paths -ne "ok"
+        $summary.validation.portable_paths -ne "ok" -or
+        $summary.validation.settings_validation -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version validation status"
+        throw "package smoke summary did not report expected path/version/settings validation status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
@@ -1054,6 +1077,8 @@ try {
                 "--diff-startup-config-backup-format <text\|json>",
                 "--restore-startup-config --restore-startup-config-file <FILE>",
                 "--restore-startup-config-format <text\|json>",
+                "--validate-settings",
+                "--validate-settings-format <text\|json>",
                 "Keymap backup and restore options:",
                 "--backup-keymap --backup-keymap-file <FILE>",
                 "--backup-keymap-format <text\|json>",
@@ -1126,12 +1151,15 @@ try {
             ) {
                 throw "zed-terminal --portable --paths did not report expected binary-local paths"
             }
-            Invoke-NativeJsonCommand "doctor" @(
+            $doctorJson = Invoke-NativeJsonCommandResult "doctor" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
                 "--doctor",
                 "--doctor-format", "json"
             )
+            if ($doctorJson.settings.status -ne "ok" -or @($doctorJson.settings.files).Count -ne 2) {
+                throw "zed-terminal --doctor did not include expected settings validation diagnostics"
+            }
             Invoke-NativeTextCommand "support-info" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -1159,6 +1187,13 @@ try {
                 "--validate-keymap",
                 "--validate-keymap-format", "json"
             )
+            $settingsValidation = Invoke-NativeJsonCommandResult "validate-settings" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--validate-settings",
+                "--validate-settings-format", "json"
+            )
+            Assert-SettingsValidationJson $settingsValidation
             Invoke-NativeJsonCommand "validate-startup-config" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,

@@ -350,6 +350,13 @@ Run a script-friendly health check:
 .\{{BINARY}} --doctor --doctor-format json
 ```
 
+Validate settings without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --validate-settings
+.\{{BINARY}} --validate-settings --validate-settings-format json
+```
+
 Generate support information without opening a terminal window:
 
 ```powershell
@@ -364,7 +371,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -397,6 +404,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --portable --paths --paths-format json",
         ".\$BinaryFileName --init-config",
         ".\$BinaryFileName --doctor",
+        ".\$BinaryFileName --validate-settings",
+        ".\$BinaryFileName --validate-settings --validate-settings-format json",
         ".\$BinaryFileName --support-info",
         "$PackageName.zip.sha256",
         "config-template/",
@@ -469,6 +478,27 @@ function Assert-PortablePathsJson {
     }
 }
 
+function Assert-SettingsValidationJson {
+    param([Parameter(Mandatory = $true)]$Report)
+
+    $files = @($Report.files)
+    $labels = @($files | ForEach-Object { $_.label })
+    if (
+        $Report.status -ne "ok" -or
+        $files.Count -ne 2 -or
+        $labels -notcontains "settings_file" -or
+        $labels -notcontains "global_settings_file"
+    ) {
+        throw "zed-terminal --validate-settings did not report expected settings validation status"
+    }
+
+    foreach ($file in $files) {
+        if ($file.status -eq "error" -or -not $file.parse_status -or -not $file.migration_status) {
+            throw "zed-terminal --validate-settings reported an invalid settings file entry"
+        }
+    }
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -518,6 +548,7 @@ function Assert-PackageManifest {
         "startup_schema",
         "keymap_schema",
         "default_keymap",
+        "settings_validation",
         "doctor",
         "support_info",
         "readme",
@@ -694,11 +725,20 @@ function Assert-PackageZipArchive {
         $doctorJson.status -ne "ok" -or
         -not $doctorJson.directories -or
         -not $doctorJson.config_files -or
+        $doctorJson.settings.status -ne "ok" -or
         $doctorJson.startup_config.status -ne "ok" -or
         $doctorJson.keymap.status -ne "ok"
     ) {
         throw "extracted package zed-terminal --doctor did not pass against the extracted config template"
     }
+
+    $settingsValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--validate-settings",
+        "--validate-settings-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
     $supportInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
@@ -850,7 +890,7 @@ $defaultKeymap = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
 )
 Set-Content -LiteralPath (Join-Path $configTemplateDir "default-keymap.json") -Value $defaultKeymap.Stdout -Encoding utf8
 
-foreach ($templateFile in @("settings.json", "keymap.json", "default-keymap.json", "terminal.json", "terminal.schema.json", "keymap.schema.json")) {
+foreach ($templateFile in @("settings.json", "global_settings.json", "keymap.json", "default-keymap.json", "terminal.json", "terminal.schema.json", "keymap.schema.json")) {
     $path = Join-Path $configTemplateDir $templateFile
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "package config template is missing $templateFile"
@@ -868,11 +908,20 @@ if (
     $doctorJson.status -ne "ok" -or
     -not $doctorJson.directories -or
     -not $doctorJson.config_files -or
+    $doctorJson.settings.status -ne "ok" -or
     $doctorJson.startup_config.status -ne "ok" -or
     $doctorJson.keymap.status -ne "ok"
 ) {
     throw "packaged zed-terminal --doctor did not pass against the generated config template"
 }
+
+$settingsValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--validate-settings",
+    "--validate-settings-format", "json"
+) -WorkingDirectory $packageDir
+Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
 $supportInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
@@ -926,6 +975,7 @@ $manifest = [pscustomobject]@{
         startup_schema = "ok"
         keymap_schema = "ok"
         default_keymap = "ok"
+        settings_validation = "ok"
         doctor = "ok"
         support_info = "ok"
         readme = "ok"

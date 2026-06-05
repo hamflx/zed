@@ -64,6 +64,7 @@ actions!(
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
         OpenStartupProfilesReport,
+        OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
         CopySupportInfoToClipboard,
@@ -167,6 +168,7 @@ const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
+const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
 const TERMINAL_KEYMAP_ACTION_CATALOG_REPORT_FILE: &str = "zed-terminal-keymap-actions.json";
@@ -217,6 +219,10 @@ Startup config backup and restore options:
           Restore terminal.json from a verified backup file without opening a terminal window
       --restore-startup-config-format <text|json>
           Set the output format for --restore-startup-config
+      --validate-settings
+          Validate settings.json and global_settings.json without opening a terminal window
+      --validate-settings-format <text|json>
+          Set the output format for --validate-settings
 
 Keymap backup and restore options:
       --backup-keymap --backup-keymap-file <FILE>
@@ -364,6 +370,7 @@ Profile transfer, startup config file, keymap file, version metadata, and path i
             "rename_profile",
             "hide_profile",
             "show_profile",
+            "validate_settings",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -503,6 +510,7 @@ struct Cli {
             "rename_profile",
             "hide_profile",
             "show_profile",
+            "validate_settings",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -561,6 +569,7 @@ struct Cli {
             "rename_profile",
             "hide_profile",
             "show_profile",
+            "validate_settings",
             "validate_startup_config",
             "validate_keymap",
             "print_startup_config_schema",
@@ -2283,6 +2292,70 @@ struct Cli {
     profile_visibility_format: Option<TerminalStartupProfileVisibilityOutputFormat>,
 
     #[arg(
+        long = "validate-settings",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "support_info",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Validate settings.json and global_settings.json without opening a terminal window"
+    )]
+    validate_settings: bool,
+
+    #[arg(
+        long = "validate-settings-format",
+        value_enum,
+        requires = "validate_settings",
+        help = "Set the output format for --validate-settings"
+    )]
+    validate_settings_format: Option<TerminalSettingsValidationOutputFormat>,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "list_profiles",
@@ -2845,6 +2918,10 @@ enum TerminalCliCommand {
         old_profile: String,
         new_profile: String,
         format: TerminalStartupProfileRenameOutputFormat,
+    },
+    ValidateSettings {
+        path_options: TerminalPathOptions,
+        format: TerminalSettingsValidationOutputFormat,
     },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
@@ -3951,6 +4028,44 @@ struct TerminalConfigInitialization {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsValidationReport {
+    settings_file: TerminalSettingsFileValidation,
+    global_settings_file: TerminalSettingsFileValidation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsFileValidation {
+    label: &'static str,
+    path: PathBuf,
+    status: TerminalDoctorCheckStatus,
+    source: Option<TerminalDoctorConfigSource>,
+    byte_count: Option<u64>,
+    parse_status: Option<TerminalSettingsParseStatus>,
+    migration_status: Option<TerminalSettingsMigrationStatus>,
+    message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSettingsFileKind {
+    User,
+    Global,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalSettingsParseStatus {
+    Success,
+    Unchanged,
+    Failed { error: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalSettingsMigrationStatus {
+    NotNeeded,
+    Succeeded,
+    Failed { error: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalConfigFileInitialization {
     label: &'static str,
     path: PathBuf,
@@ -3967,6 +4082,7 @@ enum TerminalConfigFileInitializationStatus {
 struct TerminalDoctorReport {
     directories: Vec<TerminalDoctorPathCheck>,
     config_files: Vec<TerminalDoctorPathCheck>,
+    settings: TerminalSettingsValidationReport,
     startup_config: TerminalDoctorStartupConfigCheck,
     keymap: TerminalDoctorKeymapCheck,
 }
@@ -4459,6 +4575,13 @@ enum TerminalStartupLayoutOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSettingsValidationOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigValidationOutputFormat {
     #[default]
     Text,
@@ -4505,6 +4628,7 @@ impl TerminalCliCommand {
             || !cli.rename_profile.is_empty()
             || cli.hide_profile.is_some()
             || cli.show_profile.is_some()
+            || cli.validate_settings
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.print_default_keymap
@@ -4900,6 +5024,13 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.validate_settings {
+            return Ok(Self::ValidateSettings {
+                path_options,
+                format: cli.validate_settings_format.unwrap_or_default(),
+            });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -4973,6 +5104,7 @@ impl TerminalCliCommand {
             Self::RemoveProfile { path_options, .. } => path_options,
             Self::SetProfileVisibility { path_options, .. } => path_options,
             Self::RenameProfile { path_options, .. } => path_options,
+            Self::ValidateSettings { path_options, .. } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -7589,6 +7721,7 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::ValidateSettings { format, .. } => run_settings_validation(format),
         TerminalCliCommand::PrintStartupLayout { .. } => {
             unreachable!("startup layout printing is handled before path install")
         }
@@ -8026,6 +8159,36 @@ fn run_keymap_validation(format: TerminalKeymapValidationOutputFormat) {
                     io::stderr().flush().ok();
                     process::exit(2);
                 }
+            }
+            cx.quit();
+        });
+}
+
+fn run_settings_validation(format: TerminalSettingsValidationOutputFormat) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let report = validate_terminal_settings_files(
+                paths::settings_file().clone(),
+                paths::global_settings_file().clone(),
+                cx,
+            );
+            match format_settings_validation_report(&report, format) {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush settings validation output");
+                }
+                Err(error) => {
+                    eprintln!("failed to format terminal settings validation: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            if report.has_errors() {
+                cx.quit();
+                process::exit(2);
             }
             cx.quit();
         });
@@ -12921,12 +13084,15 @@ fn paths_refer_to_same_file(left: &Path, right: &Path) -> Result<bool> {
 
 fn diagnose_terminal(path_options: &TerminalPathOptions, cx: &mut App) -> TerminalDoctorReport {
     let file_paths = TerminalConfigFilePaths::from_path_options(path_options);
+    let settings_file = file_paths.settings_file.clone();
+    let global_settings_file = file_paths.global_settings_file.clone();
     let startup_config_file = file_paths.startup_config_file.clone();
     let keymap_file = file_paths.keymap_file.clone();
 
     TerminalDoctorReport {
         directories: diagnose_terminal_directories(path_options),
         config_files: diagnose_terminal_config_files(file_paths),
+        settings: validate_terminal_settings_files(settings_file, global_settings_file, cx),
         startup_config: diagnose_startup_config_file(startup_config_file),
         keymap: diagnose_keymap(keymap_file, cx),
     }
@@ -13046,6 +13212,147 @@ fn matches_expected_path_kind(
     match expected_kind {
         TerminalDoctorPathKind::Directory => metadata.is_dir(),
         TerminalDoctorPathKind::File => metadata.is_file(),
+    }
+}
+
+fn validate_terminal_settings_files(
+    settings_file: PathBuf,
+    global_settings_file: PathBuf,
+    cx: &mut App,
+) -> TerminalSettingsValidationReport {
+    let mut store = settings::SettingsStore::new(cx, &settings::default_settings());
+    let settings_file = validate_terminal_settings_file(
+        "settings_file",
+        settings_file,
+        TerminalSettingsFileKind::User,
+        &mut store,
+        cx,
+    );
+    let global_settings_file = validate_terminal_settings_file(
+        "global_settings_file",
+        global_settings_file,
+        TerminalSettingsFileKind::Global,
+        &mut store,
+        cx,
+    );
+
+    TerminalSettingsValidationReport {
+        settings_file,
+        global_settings_file,
+    }
+}
+
+fn validate_terminal_settings_file(
+    label: &'static str,
+    path: PathBuf,
+    kind: TerminalSettingsFileKind,
+    store: &mut settings::SettingsStore,
+    cx: &mut App,
+) -> TerminalSettingsFileValidation {
+    let (content, source, byte_count, status) = match std_fs::metadata(&path) {
+        Ok(metadata) if !metadata.is_file() => {
+            return TerminalSettingsFileValidation {
+                label,
+                path,
+                status: TerminalDoctorCheckStatus::Error,
+                source: None,
+                byte_count: None,
+                parse_status: None,
+                migration_status: None,
+                message: Some("expected a file".into()),
+            };
+        }
+        Ok(metadata) => match std_fs::read_to_string(&path) {
+            Ok(content) => (
+                content,
+                TerminalDoctorConfigSource::File,
+                Some(metadata.len()),
+                TerminalDoctorCheckStatus::Ok,
+            ),
+            Err(error) => {
+                return TerminalSettingsFileValidation {
+                    label,
+                    path,
+                    status: TerminalDoctorCheckStatus::Error,
+                    source: Some(TerminalDoctorConfigSource::File),
+                    byte_count: Some(metadata.len()),
+                    parse_status: None,
+                    migration_status: None,
+                    message: Some(format!("failed to read settings file: {error}")),
+                };
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (
+            terminal_initial_settings_content(kind),
+            TerminalDoctorConfigSource::Initial,
+            None,
+            TerminalDoctorCheckStatus::Missing,
+        ),
+        Err(error) => {
+            return TerminalSettingsFileValidation {
+                label,
+                path,
+                status: TerminalDoctorCheckStatus::Error,
+                source: None,
+                byte_count: None,
+                parse_status: None,
+                migration_status: None,
+                message: Some(format!("failed to inspect settings file: {error}")),
+            };
+        }
+    };
+
+    let parse_result = match kind {
+        TerminalSettingsFileKind::User => store.set_user_settings(&content, cx),
+        TerminalSettingsFileKind::Global => store.set_global_settings(&content, cx),
+    };
+    let status = if parse_result.requires_user_action() {
+        TerminalDoctorCheckStatus::Error
+    } else {
+        status
+    };
+    let message = settings_parse_result_message(&parse_result);
+
+    TerminalSettingsFileValidation {
+        label,
+        path,
+        status,
+        source: Some(source),
+        byte_count,
+        parse_status: Some(parse_result.parse_status.into()),
+        migration_status: Some(parse_result.migration_status.into()),
+        message,
+    }
+}
+
+fn terminal_initial_settings_content(kind: TerminalSettingsFileKind) -> String {
+    match kind {
+        TerminalSettingsFileKind::User => settings::initial_user_settings_content().into_owned(),
+        TerminalSettingsFileKind::Global => "{}\n".into(),
+    }
+}
+
+fn settings_parse_result_message(parse_result: &settings::SettingsParseResult) -> Option<String> {
+    let mut messages = Vec::new();
+    if let Some(error) = parse_result.parse_error() {
+        messages.push(format!("failed to parse settings: {error}"));
+    }
+    if let settings::MigrationStatus::Failed { error } = &parse_result.migration_status {
+        messages.push(format!("failed to migrate settings: {error}"));
+    }
+    if parse_result.requires_user_action()
+        && matches!(
+            parse_result.migration_status,
+            settings::MigrationStatus::Succeeded
+        )
+    {
+        messages.push("settings use deprecated keys and should be saved after migration".into());
+    }
+
+    if messages.is_empty() {
+        None
+    } else {
+        Some(messages.join("; "))
     }
 }
 
@@ -15512,6 +15819,28 @@ fn write_keymap_validation_report_file(
     })
 }
 
+fn write_settings_validation_report_file(
+    path: &Path,
+    report: &TerminalSettingsValidationReport,
+) -> Result<()> {
+    let report = format_settings_validation_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create settings validation report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write settings validation report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_keymap_action_catalog_report_file(
     path: &Path,
     report: &TerminalKeymapActionListReport,
@@ -15754,6 +16083,91 @@ fn write_prefixed_lines(output: &mut String, text: &str, prefix: &str) {
     for line in text.lines() {
         writeln!(output, "{prefix}{line}").expect("writing to string should not fail");
     }
+}
+
+fn format_settings_validation_report(
+    report: &TerminalSettingsValidationReport,
+    format: TerminalSettingsValidationOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalSettingsValidationOutputFormat::Text => Ok(format_settings_validation(report)),
+        TerminalSettingsValidationOutputFormat::Json => format_settings_validation_json(report),
+    }
+}
+
+fn format_settings_validation(report: &TerminalSettingsValidationReport) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "status: {}",
+        if report.has_errors() { "error" } else { "ok" }
+    )
+    .expect("writing to string should not fail");
+    format_settings_file_validation(&mut output, &report.settings_file);
+    format_settings_file_validation(&mut output, &report.global_settings_file);
+    output
+}
+
+fn format_settings_file_validation(
+    output: &mut String,
+    validation: &TerminalSettingsFileValidation,
+) {
+    writeln!(
+        output,
+        "{}: {} {}",
+        validation.label,
+        validation.status.as_str(),
+        validation.path.display()
+    )
+    .expect("writing to string should not fail");
+    if let Some(source) = validation.source {
+        writeln!(output, "  source: {}", source.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(byte_count) = validation.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+    if let Some(parse_status) = &validation.parse_status {
+        writeln!(output, "  parse_status: {}", parse_status.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(migration_status) = &validation.migration_status {
+        writeln!(output, "  migration_status: {}", migration_status.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(message) = &validation.message {
+        writeln!(output, "  message: {message}").expect("writing to string should not fail");
+    }
+}
+
+fn format_settings_validation_json(report: &TerminalSettingsValidationReport) -> Result<String> {
+    let value = serde_json::json!({
+        "status": if report.has_errors() { "error" } else { "ok" },
+        "files": [
+            settings_file_validation_json(&report.settings_file),
+            settings_file_validation_json(&report.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal settings validation as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn settings_file_validation_json(validation: &TerminalSettingsFileValidation) -> serde_json::Value {
+    serde_json::json!({
+        "label": validation.label,
+        "path": validation.path.display().to_string(),
+        "status": validation.status.as_str(),
+        "source": validation.source.map(TerminalDoctorConfigSource::as_str),
+        "byte_count": validation.byte_count,
+        "parse_status": validation.parse_status.as_ref().map(TerminalSettingsParseStatus::as_str),
+        "migration_status": validation
+            .migration_status
+            .as_ref()
+            .map(TerminalSettingsMigrationStatus::as_str),
+        "message": validation.message.as_deref(),
+    })
 }
 
 fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
@@ -16985,6 +17399,13 @@ fn format_doctor_report(report: &TerminalDoctorReport) -> String {
         format_doctor_path_check(&mut output, file);
     }
 
+    writeln!(&mut output, "settings:").expect("writing to string should not fail");
+    write_prefixed_lines(
+        &mut output,
+        &format_settings_validation(&report.settings),
+        "  ",
+    );
+
     writeln!(&mut output, "startup_config:").expect("writing to string should not fail");
     writeln!(
         &mut output,
@@ -17053,6 +17474,13 @@ fn format_doctor_report_json(report: &TerminalDoctorReport) -> Result<String> {
             .iter()
             .map(doctor_path_check_json)
             .collect::<Vec<_>>(),
+        "settings": {
+            "status": if report.settings.has_errors() { "error" } else { "ok" },
+            "files": [
+                settings_file_validation_json(&report.settings.settings_file),
+                settings_file_validation_json(&report.settings.global_settings_file),
+            ],
+        },
         "startup_config": {
             "path": report.startup_config.path.display().to_string(),
             "status": report.startup_config.status.as_str(),
@@ -17121,8 +17549,21 @@ impl TerminalDoctorReport {
             .iter()
             .chain(self.config_files.iter())
             .any(TerminalDoctorPathCheck::has_error)
+            || self.settings.has_errors()
             || self.startup_config.status == TerminalDoctorCheckStatus::Error
             || self.keymap.status == TerminalDoctorCheckStatus::Error
+    }
+}
+
+impl TerminalSettingsValidationReport {
+    fn has_errors(&self) -> bool {
+        self.settings_file.has_error() || self.global_settings_file.has_error()
+    }
+}
+
+impl TerminalSettingsFileValidation {
+    fn has_error(&self) -> bool {
+        self.status == TerminalDoctorCheckStatus::Error
     }
 }
 
@@ -17147,6 +17588,46 @@ impl TerminalDoctorConfigSource {
         match self {
             Self::File => "file",
             Self::Initial => "initial",
+        }
+    }
+}
+
+impl TerminalSettingsParseStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Unchanged => "unchanged",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+impl TerminalSettingsMigrationStatus {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotNeeded => "not_needed",
+            Self::Succeeded => "succeeded",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+impl From<settings::ParseStatus> for TerminalSettingsParseStatus {
+    fn from(status: settings::ParseStatus) -> Self {
+        match status {
+            settings::ParseStatus::Success => Self::Success,
+            settings::ParseStatus::Unchanged => Self::Unchanged,
+            settings::ParseStatus::Failed { error } => Self::Failed { error },
+        }
+    }
+}
+
+impl From<settings::MigrationStatus> for TerminalSettingsMigrationStatus {
+    fn from(status: settings::MigrationStatus) -> Self {
+        match status {
+            settings::MigrationStatus::NotNeeded => Self::NotNeeded,
+            settings::MigrationStatus::Succeeded => Self::Succeeded,
+            settings::MigrationStatus::Failed { error } => Self::Failed { error },
         }
     }
 }
@@ -17372,6 +17853,10 @@ fn active_terminal_startup_profiles_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILES_REPORT_FILE)
 }
 
+fn active_terminal_settings_validation_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_SETTINGS_VALIDATION_REPORT_FILE)
+}
+
 fn active_terminal_startup_config_validation_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE)
 }
@@ -17480,6 +17965,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_support_info_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
+    cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
     cx.on_action(open_keymap_action_catalog_report);
@@ -17721,6 +18207,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenLogsDirectory>(),
         TerminalActionSurface::new::<OpenProfileDescriptionReport>(),
         TerminalActionSurface::new::<OpenSupportInfoReport>(),
+        TerminalActionSurface::new::<OpenSettingsValidationReport>(),
         TerminalActionSurface::new::<OpenStartupConfigFile>(),
         TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
         TerminalActionSurface::new::<OpenStartupConfigValidationReport>(),
@@ -18400,6 +18887,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupDescriptionReport,
         ),
         MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
+        MenuItem::action(
+            "Open Settings Validation Report",
+            OpenSettingsValidationReport,
+        ),
         MenuItem::action(
             "Open Startup Config Validation Report",
             OpenStartupConfigValidationReport,
@@ -19474,6 +19965,21 @@ fn open_startup_profiles_report(_: &OpenStartupProfilesReport, cx: &mut App) {
     cx.open_with_system(&startup_profiles_report_file);
 }
 
+fn open_settings_validation_report(_: &OpenSettingsValidationReport, cx: &mut App) {
+    let validation_report_file = active_terminal_settings_validation_report_file();
+    let report = validate_terminal_settings_files(
+        paths::settings_file().clone(),
+        paths::global_settings_file().clone(),
+        cx,
+    );
+    if let Err(error) = write_settings_validation_report_file(&validation_report_file, &report) {
+        log::warn!("failed to write settings validation report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&validation_report_file);
+}
+
 fn open_profile_description_report(action: &OpenProfileDescriptionReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let profile_description_report_file =
@@ -20375,6 +20881,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
         assert_command_palette_action_visible(&filter, &OpenSupportInfoReport);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
+        assert_command_palette_action_visible(&filter, &OpenSettingsValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapActionCatalogReport);
@@ -21533,6 +22040,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Settings Validation Report",
+            "zed_terminal::OpenSettingsValidationReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Validation Report",
             "zed_terminal::OpenStartupConfigValidationReport",
         );
@@ -22356,6 +22868,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupConfigValidationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_settings_validation_report_action_input() {
+        let action =
+            <OpenSettingsValidationReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open settings validation report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSettingsValidationReport>()
                 .is_some()
         );
     }
@@ -24152,6 +24678,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn validates_settings_files_with_zed_settings_store(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let settings_file = root_dir.join("settings.json");
+        let global_settings_file = root_dir.join("global_settings.json");
+        std_fs::write(&settings_file, "{}\n").expect("failed to write settings file");
+
+        let report = validate_terminal_settings_files(
+            settings_file.clone(),
+            global_settings_file.clone(),
+            cx,
+        );
+
+        assert_eq!(report.settings_file.status, TerminalDoctorCheckStatus::Ok);
+        assert_eq!(
+            report.settings_file.source,
+            Some(TerminalDoctorConfigSource::File)
+        );
+        assert_eq!(
+            report.settings_file.parse_status,
+            Some(TerminalSettingsParseStatus::Success)
+        );
+        assert_eq!(
+            report.settings_file.migration_status,
+            Some(TerminalSettingsMigrationStatus::NotNeeded)
+        );
+        assert_eq!(
+            report.global_settings_file.status,
+            TerminalDoctorCheckStatus::Missing
+        );
+        assert_eq!(
+            report.global_settings_file.source,
+            Some(TerminalDoctorConfigSource::Initial)
+        );
+        assert!(!report.has_errors());
+
+        std_fs::write(&settings_file, "{ broken settings")
+            .expect("failed to write broken settings file");
+        let report = validate_terminal_settings_files(settings_file, global_settings_file, cx);
+
+        assert_eq!(
+            report.settings_file.status,
+            TerminalDoctorCheckStatus::Error
+        );
+        assert_eq!(
+            report
+                .settings_file
+                .parse_status
+                .as_ref()
+                .map(TerminalSettingsParseStatus::as_str),
+            Some("failed")
+        );
+        assert!(
+            report
+                .settings_file
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("failed to parse settings")
+        );
+        assert!(report.has_errors());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
     fn writes_keymap_schema_file_by_refreshing_existing_content(cx: &mut App) {
         let root_dir = temp_test_dir();
         let schema_file = root_dir.join("config").join("keymap.schema.json");
@@ -24811,6 +25402,8 @@ mod tests {
             serde_json::from_str(&diagnostics_text).expect("diagnostics report should parse");
         assert_eq!(json["status"], "error");
         assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
+        assert_eq!(json["settings"]["files"][0]["label"], "settings_file");
+        assert_eq!(json["settings"]["files"][0]["source"], "file");
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
 
@@ -24835,6 +25428,32 @@ mod tests {
         assert!(report_text.starts_with("Zed Terminal Support Info\n"));
         assert!(report_text.contains("version: 1.2.3\n"));
         assert!(report_text.contains("diagnostics:\n"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_settings_validation_report_file_as_focused_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_SETTINGS_VALIDATION_REPORT_FILE);
+        let report = sample_settings_validation_report();
+
+        write_settings_validation_report_file(&report_file, &report)
+            .expect("settings validation report should write");
+
+        let report_text = std_fs::read_to_string(&report_file)
+            .expect("failed to read settings validation report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("settings validation report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["files"][0]["label"], "settings_file");
+        assert_eq!(json["files"][0]["source"], "file");
+        assert_eq!(json["files"][0]["parse_status"], "success");
+        assert_eq!(json["files"][1]["label"], "global_settings_file");
+        assert_eq!(json["files"][1]["source"], "initial");
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -25267,6 +25886,17 @@ mod tests {
                 "  config_files:\n",
                 "    settings_file: error settings.json\n",
                 "      message: expected a file\n",
+                "  settings:\n",
+                "    status: ok\n",
+                "    settings_file: ok settings.json\n",
+                "      source: file\n",
+                "      bytes: 2\n",
+                "      parse_status: success\n",
+                "      migration_status: not_needed\n",
+                "    global_settings_file: missing global-settings.json\n",
+                "      source: initial\n",
+                "      parse_status: success\n",
+                "      migration_status: not_needed\n",
                 "  startup_config:\n",
                 "    startup_config_file: ok terminal.json\n",
                 "    source: file\n",
@@ -26981,6 +27611,17 @@ mod tests {
                 "config_files:\n",
                 "  settings_file: error settings.json\n",
                 "    message: expected a file\n",
+                "settings:\n",
+                "  status: ok\n",
+                "  settings_file: ok settings.json\n",
+                "    source: file\n",
+                "    bytes: 2\n",
+                "    parse_status: success\n",
+                "    migration_status: not_needed\n",
+                "  global_settings_file: missing global-settings.json\n",
+                "    source: initial\n",
+                "    parse_status: success\n",
+                "    migration_status: not_needed\n",
                 "startup_config:\n",
                 "  startup_config_file: ok terminal.json\n",
                 "  source: file\n",
@@ -27007,6 +27648,14 @@ mod tests {
         assert_eq!(json["directories"][0]["status"], "ok");
         assert_eq!(json["config_files"][0]["status"], "error");
         assert_eq!(json["config_files"][0]["message"], "expected a file");
+        assert_eq!(json["settings"]["status"], "ok");
+        assert_eq!(json["settings"]["files"][0]["label"], "settings_file");
+        assert_eq!(json["settings"]["files"][0]["parse_status"], "success");
+        assert_eq!(
+            json["settings"]["files"][1]["label"],
+            "global_settings_file"
+        );
+        assert_eq!(json["settings"]["files"][1]["source"], "initial");
         assert_eq!(json["startup_config"]["source"], "file");
         assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
         assert_eq!(json["startup_config"]["validation"]["tabs"], 4);
@@ -27036,6 +27685,28 @@ mod tests {
                 status: TerminalDoctorCheckStatus::Missing,
                 message: None,
             }],
+            settings: TerminalSettingsValidationReport {
+                settings_file: TerminalSettingsFileValidation {
+                    label: "settings_file",
+                    path: PathBuf::from("settings.json"),
+                    status: TerminalDoctorCheckStatus::Missing,
+                    source: Some(TerminalDoctorConfigSource::Initial),
+                    byte_count: None,
+                    parse_status: Some(TerminalSettingsParseStatus::Success),
+                    migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                    message: None,
+                },
+                global_settings_file: TerminalSettingsFileValidation {
+                    label: "global_settings_file",
+                    path: PathBuf::from("global-settings.json"),
+                    status: TerminalDoctorCheckStatus::Missing,
+                    source: Some(TerminalDoctorConfigSource::Initial),
+                    byte_count: None,
+                    parse_status: Some(TerminalSettingsParseStatus::Success),
+                    migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                    message: None,
+                },
+            },
             startup_config: TerminalDoctorStartupConfigCheck {
                 path: PathBuf::from("terminal.json"),
                 status: TerminalDoctorCheckStatus::Missing,
@@ -27103,6 +27774,7 @@ mod tests {
                 status: TerminalDoctorCheckStatus::Error,
                 message: Some("expected a file".into()),
             }],
+            settings: sample_settings_validation_report(),
             startup_config: TerminalDoctorStartupConfigCheck {
                 path: PathBuf::from("terminal.json"),
                 status: TerminalDoctorCheckStatus::Ok,
@@ -27122,6 +27794,31 @@ mod tests {
                     user_binding_count: 0,
                     user_keymap_source: TerminalUserKeymapSource::Initial,
                 }),
+                message: None,
+            },
+        }
+    }
+
+    fn sample_settings_validation_report() -> TerminalSettingsValidationReport {
+        TerminalSettingsValidationReport {
+            settings_file: TerminalSettingsFileValidation {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Ok,
+                source: Some(TerminalDoctorConfigSource::File),
+                byte_count: Some(2),
+                parse_status: Some(TerminalSettingsParseStatus::Success),
+                migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                message: None,
+            },
+            global_settings_file: TerminalSettingsFileValidation {
+                label: "global_settings_file",
+                path: PathBuf::from("global-settings.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalDoctorConfigSource::Initial),
+                byte_count: None,
+                parse_status: Some(TerminalSettingsParseStatus::Success),
+                migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
                 message: None,
             },
         }
@@ -34233,6 +34930,107 @@ mod tests {
     }
 
     #[test]
+    fn formats_settings_validation_without_file_contents() {
+        let report = TerminalSettingsValidationReport {
+            settings_file: TerminalSettingsFileValidation {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Error,
+                source: Some(TerminalDoctorConfigSource::File),
+                byte_count: Some(42),
+                parse_status: Some(TerminalSettingsParseStatus::Failed {
+                    error: "expected value at line 1 column 1".into(),
+                }),
+                migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                message: Some("failed to parse settings: expected value at line 1 column 1".into()),
+            },
+            global_settings_file: TerminalSettingsFileValidation {
+                label: "global_settings_file",
+                path: PathBuf::from("global_settings.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalDoctorConfigSource::Initial),
+                byte_count: None,
+                parse_status: Some(TerminalSettingsParseStatus::Success),
+                migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                message: None,
+            },
+        };
+
+        let output = format_settings_validation(&report);
+
+        assert_eq!(
+            output,
+            concat!(
+                "status: error\n",
+                "settings_file: error settings.json\n",
+                "  source: file\n",
+                "  bytes: 42\n",
+                "  parse_status: failed\n",
+                "  migration_status: not_needed\n",
+                "  message: failed to parse settings: expected value at line 1 column 1\n",
+                "global_settings_file: missing global_settings.json\n",
+                "  source: initial\n",
+                "  parse_status: success\n",
+                "  migration_status: not_needed\n",
+            )
+        );
+        assert!(!output.contains("SECRET_VALUE"));
+        assert!(!output.contains("\"theme\""));
+    }
+
+    #[test]
+    fn formats_settings_validation_json_without_file_contents() {
+        let report = TerminalSettingsValidationReport {
+            settings_file: TerminalSettingsFileValidation {
+                label: "settings_file",
+                path: PathBuf::from("settings.json"),
+                status: TerminalDoctorCheckStatus::Error,
+                source: Some(TerminalDoctorConfigSource::File),
+                byte_count: Some(42),
+                parse_status: Some(TerminalSettingsParseStatus::Failed {
+                    error: "do-not-serialize-parse-error-field".into(),
+                }),
+                migration_status: Some(TerminalSettingsMigrationStatus::Failed {
+                    error: "do-not-serialize-migration-error-field".into(),
+                }),
+                message: Some("failed to parse settings: expected value".into()),
+            },
+            global_settings_file: TerminalSettingsFileValidation {
+                label: "global_settings_file",
+                path: PathBuf::from("global_settings.json"),
+                status: TerminalDoctorCheckStatus::Missing,
+                source: Some(TerminalDoctorConfigSource::Initial),
+                byte_count: None,
+                parse_status: Some(TerminalSettingsParseStatus::Unchanged),
+                migration_status: Some(TerminalSettingsMigrationStatus::NotNeeded),
+                message: None,
+            },
+        };
+
+        let output = format_settings_validation_json(&report).expect("json output should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("settings validation json should parse");
+
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["files"][0]["label"], "settings_file");
+        assert_eq!(json["files"][0]["status"], "error");
+        assert_eq!(json["files"][0]["source"], "file");
+        assert_eq!(json["files"][0]["byte_count"], 42);
+        assert_eq!(json["files"][0]["parse_status"], "failed");
+        assert_eq!(json["files"][0]["migration_status"], "failed");
+        assert_eq!(
+            json["files"][0]["message"],
+            "failed to parse settings: expected value"
+        );
+        assert_eq!(json["files"][1]["source"], "initial");
+        assert_eq!(json["files"][1]["parse_status"], "unchanged");
+        assert!(output.ends_with('\n'));
+        assert!(!output.contains("SECRET_VALUE"));
+        assert!(!output.contains("do-not-serialize-parse-error-field"));
+        assert!(!output.contains("do-not-serialize-migration-error-field"));
+    }
+
+    #[test]
     fn formats_keymap_validation_check_json_for_success() {
         let report = TerminalDoctorKeymapCheck {
             path: PathBuf::from("keymap.json"),
@@ -34844,6 +35642,41 @@ mod tests {
     }
 
     #[test]
+    fn validate_settings_mode_does_not_load_startup_config_file_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--validate-settings",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("settings validation mode should not load terminal.json during cli resolution");
+
+        let TerminalCliCommand::ValidateSettings {
+            path_options,
+            format,
+        } = command
+        else {
+            panic!("expected settings validation mode");
+        };
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalSettingsValidationOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn doctor_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from(["zed-terminal", "--doctor", "--doctor-format", "json"])
             .expect("failed to parse doctor json args");
@@ -35009,6 +35842,25 @@ mod tests {
             panic!("expected startup config validation mode");
         };
         assert_eq!(format, TerminalStartupConfigValidationOutputFormat::Json);
+    }
+
+    #[test]
+    fn validate_settings_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-settings",
+            "--validate-settings-format",
+            "json",
+        ])
+        .expect("failed to parse settings validation json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("settings validation json mode should resolve");
+
+        let TerminalCliCommand::ValidateSettings { format, .. } = command else {
+            panic!("expected settings validation mode");
+        };
+        assert_eq!(format, TerminalSettingsValidationOutputFormat::Json);
     }
 
     #[test]
@@ -36316,6 +37168,8 @@ mod tests {
         assert!(help.contains("--diff-startup-config-backup-format <text|json>"));
         assert!(help.contains("--restore-startup-config --restore-startup-config-file <FILE>"));
         assert!(help.contains("--restore-startup-config-format <text|json>"));
+        assert!(help.contains("--validate-settings"));
+        assert!(help.contains("--validate-settings-format <text|json>"));
         assert!(help.contains("Keymap backup and restore options:"));
         assert!(help.contains("--backup-keymap --backup-keymap-file <FILE>"));
         assert!(help.contains("--backup-keymap-format <text|json>"));
@@ -40246,6 +41100,64 @@ mod tests {
         let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--init-config"])
             .expect_err("config initialization should conflict with support info");
         assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn validate_settings_rejects_startup_only_and_other_diagnostic_arguments() {
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--validate-settings", "--profile", "work"])
+                .expect_err("profile selection should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-settings",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-settings",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-settings", "--", "cmd"])
+            .expect_err("startup command should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--paths", "--validate-settings"])
+            .expect_err("path inspection should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-settings", "--doctor"])
+            .expect_err("doctor should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--validate-settings", "--validate-keymap"])
+                .expect_err("keymap validation should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--validate-settings",
+            "--validate-startup-config",
+        ])
+        .expect_err("startup config validation should conflict with settings validation");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--validate-settings-format", "json"])
+            .expect_err("settings validation format should require settings validation mode");
+        assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
     }
