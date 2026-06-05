@@ -249,7 +249,7 @@ function Invoke-NativeJsonCommand {
         $stderr = Get-Content -LiteralPath $stderrFile
     }
 
-    Write-StepOutput $stdout
+    Write-StepOutput (($stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
     Write-StepOutput $stderr
     if ($exitCode -ne 0) {
         throw "Command failed with exit code $exitCode`: $Binary $($Arguments -join ' ')"
@@ -269,6 +269,40 @@ function Invoke-NativeJsonCommand {
     $statusProperty = $json.PSObject.Properties["status"]
     if ($statusProperty -and $statusProperty.Value -ne "ok") {
         throw "Command reported status '$($statusProperty.Value)' for $Name`: $Binary $($Arguments -join ' ')"
+    }
+}
+
+function Invoke-NativeTextCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string[]]$RequiredPatterns
+    )
+
+    $stderrFile = Join-Path $runDir "$Name.stderr.log"
+    Write-ReleaseLog ("RUN {0} {1}" -f $Binary, ($Arguments -join " "))
+    $stdout = & $Binary @Arguments 2> $stderrFile
+    $exitCode = $LASTEXITCODE
+    $stderr = @()
+    if (Test-Path -LiteralPath $stderrFile -PathType Leaf) {
+        $stderr = Get-Content -LiteralPath $stderrFile
+    }
+
+    Write-StepOutput (($stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    Write-StepOutput $stderr
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code $exitCode`: $Binary $($Arguments -join ' ')"
+    }
+
+    $text = ($stdout | Out-String)
+    if (-not $text.Trim()) {
+        throw "Command did not produce text output: $Binary $($Arguments -join ' ')"
+    }
+
+    foreach ($pattern in $RequiredPatterns) {
+        if ($text -notmatch $pattern) {
+            throw "Command output for $Name did not match required pattern '$pattern'"
+        }
     }
 }
 
@@ -372,6 +406,16 @@ try {
                 "--config-dir", $cliConfigDir,
                 "--doctor",
                 "--doctor-format", "json"
+            )
+            Invoke-NativeTextCommand "support-info" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--support-info"
+            ) @(
+                "^Zed Terminal Support Info",
+                "app_name: Zed Terminal",
+                "paths:",
+                "diagnostics:"
             )
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,

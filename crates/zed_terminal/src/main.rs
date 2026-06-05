@@ -252,6 +252,7 @@ struct Cli {
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
+            "support_info",
             "doctor"
         ]
     )]
@@ -280,6 +281,7 @@ struct Cli {
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
+            "support_info",
             "doctor",
             "no_startup_config",
             "profile",
@@ -316,6 +318,7 @@ struct Cli {
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
+            "support_info",
             "doctor"
         ],
         help = "Include hidden startup profiles when listing profiles"
@@ -353,6 +356,7 @@ struct Cli {
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
+            "support_info",
             "doctor",
             "no_startup_config",
             "profile",
@@ -2300,6 +2304,61 @@ struct Cli {
     doctor_format: Option<TerminalDoctorOutputFormat>,
 
     #[arg(
+        long = "support-info",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "doctor",
+            "validate_keymap",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Print plain-text support info without opening a terminal window"
+    )]
+    support_info: bool,
+
+    #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
             "print_paths",
@@ -2683,6 +2742,9 @@ enum TerminalCliCommand {
     Doctor {
         path_options: TerminalPathOptions,
         format: TerminalDoctorOutputFormat,
+    },
+    SupportInfo {
+        path_options: TerminalPathOptions,
     },
     ValidateKeymap {
         path_options: TerminalPathOptions,
@@ -3574,6 +3636,7 @@ impl TerminalCliCommand {
             || cli.print_startup_config_schema
             || cli.print_default_keymap
             || cli.init_config
+            || cli.support_info
             || cli.doctor
         {
             TerminalStartupConfig::default()
@@ -4001,6 +4064,10 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.support_info {
+            return Ok(Self::SupportInfo { path_options });
+        }
+
         if cli.validate_keymap {
             return Ok(Self::ValidateKeymap {
                 path_options,
@@ -4047,6 +4114,7 @@ impl TerminalCliCommand {
             Self::PrintDefaultKeymap { path_options } => path_options,
             Self::InitConfig { path_options, .. } => path_options,
             Self::Doctor { path_options, .. } => path_options,
+            Self::SupportInfo { path_options } => path_options,
             Self::ValidateKeymap { path_options, .. } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
@@ -4789,6 +4857,10 @@ fn main() {
             run_terminal_doctor(path_options.clone(), *format);
             return;
         }
+        TerminalCliCommand::SupportInfo { path_options } => {
+            run_terminal_support_info(path_options.clone());
+            return;
+        }
         TerminalCliCommand::PrintStartupLayout {
             launch_options,
             format,
@@ -5073,9 +5145,37 @@ fn main() {
             }
         }
         TerminalCliCommand::Doctor { .. } => unreachable!("doctor is handled before path install"),
+        TerminalCliCommand::SupportInfo { .. } => {
+            unreachable!("support info is handled before path install")
+        }
         TerminalCliCommand::ValidateKeymap { format, .. } => run_keymap_validation(format),
         TerminalCliCommand::Launch(launch_options) => launch_terminal(launch_options),
     }
+}
+
+fn run_terminal_support_info(path_options: TerminalPathOptions) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let path_report = terminal_path_report(&path_options);
+            let doctor_report = diagnose_terminal(&path_options, cx);
+            print!(
+                "{}",
+                format_terminal_support_info(
+                    env!("CARGO_PKG_VERSION"),
+                    &path_report,
+                    &doctor_report
+                )
+            );
+            io::stdout()
+                .flush()
+                .expect("failed to flush terminal support info output");
+            if doctor_report.has_errors() {
+                cx.quit();
+                process::exit(2);
+            }
+            cx.quit();
+        });
 }
 
 fn run_terminal_doctor(path_options: TerminalPathOptions, format: TerminalDoctorOutputFormat) {
@@ -5205,18 +5305,27 @@ fn print_terminal_paths(format: TerminalPathsOutputFormat) -> Result<()> {
 }
 
 fn active_terminal_path_report() -> TerminalPathReport {
+    terminal_path_report(&active_terminal_path_options())
+}
+
+fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathReport {
     TerminalPathReport {
-        config_dir: paths::config_dir().clone(),
-        data_dir: paths::data_dir().clone(),
-        logs_dir: paths::logs_dir().clone(),
-        settings_file: paths::settings_file().clone(),
-        startup_config_file: active_terminal_startup_config_file(),
-        startup_config_schema_file: active_terminal_startup_config_schema_file(),
-        global_settings_file: paths::global_settings_file().clone(),
-        keymap_file: paths::keymap_file().clone(),
-        default_keymap_reference_file: active_terminal_default_keymap_reference_file(),
-        themes_dir: paths::themes_dir().clone(),
-        log_file: terminal_log_file().clone(),
+        config_dir: path_options.config_dir.clone(),
+        data_dir: path_options.data_dir.clone(),
+        logs_dir: path_options.data_dir.join("logs"),
+        settings_file: path_options.config_dir.join("settings.json"),
+        startup_config_file: terminal_startup_config_file(&path_options.config_dir),
+        startup_config_schema_file: terminal_startup_config_schema_file(&path_options.config_dir),
+        global_settings_file: path_options.config_dir.join("global_settings.json"),
+        keymap_file: path_options.config_dir.join("keymap.json"),
+        default_keymap_reference_file: terminal_default_keymap_reference_file(
+            &path_options.config_dir,
+        ),
+        themes_dir: path_options.config_dir.join("themes"),
+        log_file: path_options
+            .data_dir
+            .join("logs")
+            .join(format!("{TERMINAL_APP_NAME}.log")),
     }
 }
 
@@ -17662,6 +17771,54 @@ mod tests {
     }
 
     #[test]
+    fn terminal_path_report_resolves_from_path_options_without_global_paths() {
+        let path_options = TerminalPathOptions {
+            data_dir: PathBuf::from("data-root"),
+            config_dir: PathBuf::from("config-root"),
+        };
+
+        let report = terminal_path_report(&path_options);
+
+        assert_eq!(report.config_dir, PathBuf::from("config-root"));
+        assert_eq!(report.data_dir, PathBuf::from("data-root"));
+        assert_eq!(report.logs_dir, PathBuf::from("data-root").join("logs"));
+        assert_eq!(
+            report.settings_file,
+            PathBuf::from("config-root").join("settings.json")
+        );
+        assert_eq!(
+            report.startup_config_file,
+            PathBuf::from("config-root").join(TERMINAL_STARTUP_CONFIG_FILE)
+        );
+        assert_eq!(
+            report.startup_config_schema_file,
+            PathBuf::from("config-root").join(TERMINAL_STARTUP_CONFIG_SCHEMA_FILE)
+        );
+        assert_eq!(
+            report.global_settings_file,
+            PathBuf::from("config-root").join("global_settings.json")
+        );
+        assert_eq!(
+            report.keymap_file,
+            PathBuf::from("config-root").join("keymap.json")
+        );
+        assert_eq!(
+            report.default_keymap_reference_file,
+            PathBuf::from("config-root").join(TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE)
+        );
+        assert_eq!(
+            report.themes_dir,
+            PathBuf::from("config-root").join("themes")
+        );
+        assert_eq!(
+            report.log_file,
+            PathBuf::from("data-root")
+                .join("logs")
+                .join(format!("{TERMINAL_APP_NAME}.log"))
+        );
+    }
+
+    #[test]
     fn formats_terminal_support_info_for_clipboard() {
         let output =
             format_terminal_support_info("1.2.3", &sample_path_report(), &sample_doctor_report());
@@ -25761,6 +25918,32 @@ mod tests {
     }
 
     #[test]
+    fn support_info_mode_does_not_load_startup_config_file_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--support-info",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("support info mode should not load terminal.json during cli resolution");
+
+        assert!(matches!(command, TerminalCliCommand::SupportInfo { .. }));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn doctor_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from(["zed-terminal", "--doctor", "--doctor-format", "json"])
             .expect("failed to parse doctor json args");
@@ -30240,6 +30423,54 @@ mod tests {
         let error = Cli::try_parse_from(["zed-terminal", "--default-profile-format", "json"])
             .expect_err("default profile format should require a default profile command");
         assert!(error.to_string().contains("required"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn support_info_rejects_startup_only_and_other_diagnostic_arguments() {
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--profile", "work"])
+            .expect_err("profile selection should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--support-info",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--support-info",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--", "cmd"])
+            .expect_err("startup command should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--paths"])
+            .expect_err("path inspection should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--doctor"])
+            .expect_err("doctor should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--validate-keymap"])
+            .expect_err("keymap validation should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--support-info", "--init-config"])
+            .expect_err("config initialization should conflict with support info");
+        assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();
     }
