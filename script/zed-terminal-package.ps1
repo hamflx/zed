@@ -4,6 +4,7 @@ Param(
     [Parameter()][string]$OutputDir,
     [Parameter()][ValidateSet("debug", "release")][string]$BuildProfile = "release",
     [Parameter()][string]$Version,
+    [Parameter()][string]$SummaryFile,
     [Parameter()][switch]$SkipBuild,
     [Parameter()][switch]$Zip
 )
@@ -667,6 +668,11 @@ $packageDir = Join-Path $runDir $packageName
 $configTemplateDir = Join-Path $packageDir "config-template"
 $validationDataDir = Join-Path $runDir "validation-data"
 $validationConfigDir = Join-Path $runDir "validation-config"
+$packageSummaryFile = if ($SummaryFile) {
+    [System.IO.Path]::GetFullPath($SummaryFile)
+} else {
+    Join-Path $runDir "zed-terminal-package-summary.json"
+}
 New-Item -ItemType Directory -Force -Path $packageDir, $configTemplateDir, $validationDataDir, $validationConfigDir | Out-Null
 
 $binaryFileName = Split-Path -Leaf $binaryPath
@@ -845,9 +851,36 @@ if ($Zip) {
         -ExpectedFileName $zipFileName
 }
 
+$summaryParent = Split-Path -Parent $packageSummaryFile
+if ($summaryParent) {
+    New-Item -ItemType Directory -Force -Path $summaryParent | Out-Null
+}
+$packageSummary = [pscustomobject]@{
+    status = "ok"
+    package_dir = $packageDir
+    package_name = $packageName
+    version = $version
+    build_profile = $BuildProfile
+    platform = $platform
+    architecture = $architecture
+    git_commit = $gitCommit
+    manifest_file = $manifestFile
+    readme_file = Join-Path $packageDir "README.md"
+    config_template_dir = $configTemplateDir
+    binary = $packagedBinary
+    binary_sha256 = $binaryHash
+    zip_file = $zipFile
+    zip_sha256 = $zipHash
+    zip_checksum_file = $zipChecksumFile
+    content_count = @($contents).Count
+    validation = $manifest.validation
+}
+$packageSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $packageSummaryFile -Encoding utf8
+
 Write-Host "status: ok"
 Write-Host "package_dir: $packageDir"
 Write-Host "manifest_file: $manifestFile"
+Write-Host "summary_file: $packageSummaryFile"
 Write-Host "binary: $packagedBinary"
 Write-Host "binary_sha256: $binaryHash"
 if ($zipFile) {

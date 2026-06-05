@@ -430,49 +430,43 @@ function Assert-VisualSmokeFile {
     }
 }
 
-function Convert-PackageSmokeOutput {
-    param([Parameter(Mandatory = $true)][object[]]$Output)
+function Read-PackageSmokeSummary {
+    param([Parameter(Mandatory = $true)][string]$SummaryFile)
 
-    $values = Convert-KeyValueOutput -Output $Output
-
-    $requiredKeys = @(
-        "status",
-        "package_dir",
-        "manifest_file",
-        "binary",
-        "binary_sha256",
-        "zip_file",
-        "zip_sha256",
-        "zip_checksum_file"
-    )
-    foreach ($key in $requiredKeys) {
-        $null = Get-RequiredOutputValue -Values $values -Key $key -Context "package smoke"
+    if (-not (Test-Path -LiteralPath $SummaryFile -PathType Leaf)) {
+        throw "package smoke summary was not written: $SummaryFile"
     }
 
-    if ($values["status"] -ne "ok") {
+    $summary = Get-Content -LiteralPath $SummaryFile -Raw | ConvertFrom-Json
+    if ($summary.status -ne "ok") {
         throw "package smoke did not report ok status"
     }
 
-    $packageDir = [System.IO.Path]::GetFullPath($values["package_dir"])
-    $manifestFile = [System.IO.Path]::GetFullPath($values["manifest_file"])
-    $packageBinary = [System.IO.Path]::GetFullPath($values["binary"])
-    $zipFile = [System.IO.Path]::GetFullPath($values["zip_file"])
-    $zipChecksumFile = [System.IO.Path]::GetFullPath($values["zip_checksum_file"])
-    $binaryHash = $values["binary_sha256"]
-    $zipHash = $values["zip_sha256"]
+    $packageDir = [System.IO.Path]::GetFullPath([string]$summary.package_dir)
+    $manifestFile = [System.IO.Path]::GetFullPath([string]$summary.manifest_file)
+    $readmeFile = [System.IO.Path]::GetFullPath([string]$summary.readme_file)
+    $configTemplateDir = [System.IO.Path]::GetFullPath([string]$summary.config_template_dir)
+    $packageBinary = [System.IO.Path]::GetFullPath([string]$summary.binary)
+    $zipFile = [System.IO.Path]::GetFullPath([string]$summary.zip_file)
+    $zipChecksumFile = [System.IO.Path]::GetFullPath([string]$summary.zip_checksum_file)
+    $binaryHash = [string]$summary.binary_sha256
+    $zipHash = [string]$summary.zip_sha256
 
     if (-not (Test-Path -LiteralPath $packageDir -PathType Container)) {
         throw "package smoke package directory does not exist: $packageDir"
     }
-    foreach ($file in @($manifestFile, $packageBinary, $zipFile, $zipChecksumFile)) {
+    foreach ($file in @($manifestFile, $readmeFile, $packageBinary, $zipFile, $zipChecksumFile)) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-            throw "package smoke output referenced a missing file: $file"
+            throw "package smoke summary referenced a missing file: $file"
         }
+    }
+    if (-not (Test-Path -LiteralPath $configTemplateDir -PathType Container)) {
+        throw "package smoke summary referenced a missing config template directory: $configTemplateDir"
     }
 
     foreach ($hash in @($binaryHash, $zipHash)) {
         if ($hash -notmatch '^[a-f0-9]{64}$') {
-            throw "package smoke output contained an invalid SHA256: $hash"
+            throw "package smoke summary contained an invalid SHA256: $hash"
         }
     }
 
@@ -503,24 +497,22 @@ function Convert-PackageSmokeOutput {
         throw "package smoke manifest did not match the validated package output"
     }
 
-    $readmeFile = Join-Path $packageDir "README.md"
-    $configTemplateDir = Join-Path $packageDir ([string]$manifest.config_template_dir)
-    if (-not (Test-Path -LiteralPath $readmeFile -PathType Leaf)) {
-        throw "package smoke README was missing from the validated package"
+    if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
+        throw "package smoke summary metadata did not match the validated manifest"
     }
-    if (-not (Test-Path -LiteralPath $configTemplateDir -PathType Container)) {
-        throw "package smoke config template directory was missing from the validated package"
+    if ([int64]$summary.content_count -ne @($manifest.contents).Count) {
+        throw "package smoke summary content count did not match the validated manifest"
     }
 
     return [pscustomobject]@{
         status = "ok"
         package_dir = $packageDir
-        package_name = Split-Path -Leaf $packageDir
-        version = $manifest.version
-        build_profile = $manifest.build_profile
-        platform = $manifest.platform
-        architecture = $manifest.architecture
-        git_commit = $manifest.git_commit
+        package_name = [string]$summary.package_name
+        version = [string]$summary.version
+        build_profile = [string]$summary.build_profile
+        platform = [string]$summary.platform
+        architecture = [string]$summary.architecture
+        git_commit = [string]$summary.git_commit
         manifest_file = $manifestFile
         readme_file = $readmeFile
         config_template_dir = $configTemplateDir
@@ -529,8 +521,9 @@ function Convert-PackageSmokeOutput {
         zip_file = $zipFile
         zip_sha256 = $zipHash
         zip_checksum_file = $zipChecksumFile
-        content_count = @($manifest.contents).Count
-        validation = $manifest.validation
+        summary_file = [System.IO.Path]::GetFullPath($SummaryFile)
+        content_count = [int64]$summary.content_count
+        validation = $summary.validation
     }
 }
 
@@ -881,7 +874,8 @@ try {
 
     if (-not $SkipPackage) {
         Invoke-Step "package smoke" {
-            $packageResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments @(
+            $packageSummaryFile = Join-Path $packageSmokeDir "zed-terminal-package-summary.json"
+            Invoke-NativeCommand -FilePath "powershell" -Arguments @(
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
                 "-File", (Join-Path $repoRoot "script\zed-terminal-package.ps1"),
@@ -889,9 +883,10 @@ try {
                 "-BuildProfile", "debug",
                 "-SkipBuild",
                 "-Zip",
-                "-OutputDir", $packageSmokeDir
+                "-OutputDir", $packageSmokeDir,
+                "-SummaryFile", $packageSummaryFile
             )
-            $script:PackageSmoke = Convert-PackageSmokeOutput -Output (($packageResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+            $script:PackageSmoke = Read-PackageSmokeSummary -SummaryFile $packageSummaryFile
         }
     }
 
