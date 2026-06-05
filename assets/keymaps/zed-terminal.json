@@ -19,6 +19,7 @@
       "ctrl-alt-6": ["pane::ActivateItem", 5],
       "ctrl-alt-7": ["pane::ActivateItem", 6],
       "ctrl-alt-8": ["pane::ActivateItem", 7],
+      "ctrl-alt-9": "pane::ActivateLastItem",
       "ctrl-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
       "ctrl-shift-=": ["zed::IncreaseBufferFontSize", { "persist": false }],
       "ctrl--": ["zed::DecreaseBufferFontSize", { "persist": false }],

@@ -11844,6 +11844,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::FocusCenterPane>(),
         TypeId::of::<workspace::ToggleZoom>(),
         TypeId::of::<workspace::pane::ActivateItem>(),
+        TypeId::of::<workspace::pane::ActivateLastItem>(),
         TypeId::of::<workspace::pane::ActivateNextItem>(),
         TypeId::of::<workspace::pane::ActivatePreviousItem>(),
         TypeId::of::<workspace::pane::CloseActiveItem>(),
@@ -13872,6 +13873,7 @@ mod tests {
                 tab_number - 1,
             );
         }
+        assert_key_binding(&keymap, None, "ctrl-alt-9", "pane::ActivateLastItem");
         assert_key_binding(
             &keymap,
             Some("os == windows && Terminal"),
@@ -14107,6 +14109,7 @@ mod tests {
             &zed_actions::IncreaseBufferFontSize { persist: false },
         );
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
+        assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
         assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
     }
 
