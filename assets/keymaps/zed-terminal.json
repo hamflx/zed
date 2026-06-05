@@ -24,7 +24,7 @@
       "ctrl--": ["zed::DecreaseBufferFontSize", { "persist": false }],
       "ctrl-0": ["zed::ResetBufferFontSize", { "persist": false }],
       "ctrl-shift-5": "zed_terminal::NewTerminalSplitRight",
-      "alt-shift-d": "zed_terminal::NewTerminalSplitRight",
+      "alt-shift-d": "zed_terminal::DuplicateTerminalSplitAuto",
       "alt-shift-plus": "zed_terminal::NewTerminalSplitDown",
       "alt-shift-minus": "zed_terminal::NewTerminalSplitDown",
       "shift-escape": "workspace::ToggleZoom",

@@ -65,6 +65,8 @@ actions!(
         ZoomTerminalWindow,
         NewTerminalTab,
         DuplicateTerminalTab,
+        DuplicateTerminalSplitAuto,
+        NewTerminalSplitAuto,
         NewTerminalSplitRight,
         NewTerminalSplitDown,
         NewTerminalSplitLeft,
@@ -11735,11 +11737,13 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ClearDefaultStartupProfile>(),
         TypeId::of::<CloseTerminalWindow>(),
         TypeId::of::<CopySupportInfoToClipboard>(),
+        TypeId::of::<DuplicateTerminalSplitAuto>(),
         TypeId::of::<DuplicateTerminalTab>(),
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalWindowWithProfile>(),
         TypeId::of::<NewTerminalTab>(),
+        TypeId::of::<NewTerminalSplitAuto>(),
         TypeId::of::<NewTerminalSplitDown>(),
         TypeId::of::<NewTerminalSplitLeft>(),
         TypeId::of::<NewTerminalSplitRight>(),
@@ -12074,6 +12078,8 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
         MenuItem::action("New Tab", NewTerminalTab),
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
         MenuItem::separator(),
+        MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
+        MenuItem::action("Split Auto", NewTerminalSplitAuto),
         MenuItem::action("Split Right", NewTerminalSplitRight),
         MenuItem::action("Split Down", NewTerminalSplitDown),
         MenuItem::action("Split Left", NewTerminalSplitLeft),
@@ -12228,6 +12234,8 @@ fn set_app_menus(cx: &mut App) {
 
 fn pane_menu_items() -> Vec<MenuItem> {
     vec![
+        MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
+        MenuItem::action("Split Auto", NewTerminalSplitAuto),
         MenuItem::action("Split Right", NewTerminalSplitRight),
         MenuItem::action("Split Down", NewTerminalSplitDown),
         MenuItem::action("Split Left", NewTerminalSplitLeft),
@@ -12351,6 +12359,29 @@ fn terminal_pane_resize_height(cx: &App) -> Pixels {
     theme.buffer_font_size(cx) * theme.buffer_line_height.value()
 }
 
+fn terminal_auto_split_direction(
+    workspace: &Workspace,
+    window: &Window,
+) -> TerminalStartupSplitDirection {
+    let size = workspace
+        .bounding_box_for_pane(workspace.active_pane())
+        .map(|bounds| bounds.size)
+        .unwrap_or_else(|| window.viewport_size());
+
+    terminal_auto_split_direction_for_size(size.width, size.height)
+}
+
+fn terminal_auto_split_direction_for_size(
+    width: Pixels,
+    height: Pixels,
+) -> TerminalStartupSplitDirection {
+    if width >= height {
+        TerminalStartupSplitDirection::Right
+    } else {
+        TerminalStartupSplitDirection::Down
+    }
+}
+
 fn open_terminal_window(
     app_state: Arc<AppState>,
     launch_options: LaunchOptions,
@@ -12362,6 +12393,8 @@ fn open_terminal_window(
     let new_terminal_window = launch_options.runtime_new_window_options();
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
     let duplicate_terminal_tab_fallback = new_terminal_tab.clone();
+    let duplicate_terminal_split_auto_fallback = new_terminal_tab.clone();
+    let new_terminal_split_auto = new_terminal_tab.clone();
     let new_terminal_split_right = new_terminal_tab.clone();
     let new_terminal_split_down = new_terminal_tab.clone();
     let new_terminal_split_left = new_terminal_tab.clone();
@@ -12449,6 +12482,19 @@ fn open_terminal_window(
                         .detach_and_log_err(cx);
                 });
                 workspace.register_action(
+                    move |workspace, _: &NewTerminalSplitAuto, window, cx| {
+                        let split = terminal_auto_split_direction(workspace, window);
+                        add_new_terminal_split(
+                            workspace,
+                            window,
+                            cx,
+                            new_terminal_split_auto.clone(),
+                            split,
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
                     move |workspace, _: &NewTerminalSplitRight, window, cx| {
                         add_new_terminal_split(
                             workspace,
@@ -12496,11 +12542,25 @@ fn open_terminal_window(
                 });
                 workspace.register_action(
                     move |workspace, _: &DuplicateTerminalTab, window, cx| {
-                        duplicate_terminal_tab(
+                        duplicate_terminal(
                             workspace,
                             window,
                             cx,
                             duplicate_terminal_tab_fallback.clone(),
+                            None,
+                        )
+                        .detach_and_log_err(cx);
+                    },
+                );
+                workspace.register_action(
+                    move |workspace, _: &DuplicateTerminalSplitAuto, window, cx| {
+                        let split = terminal_auto_split_direction(workspace, window);
+                        duplicate_terminal(
+                            workspace,
+                            window,
+                            cx,
+                            duplicate_terminal_split_auto_fallback.clone(),
+                            Some(split),
                         )
                         .detach_and_log_err(cx);
                     },
@@ -12663,11 +12723,12 @@ fn add_new_terminal_split(
     add_launch_tab(workspace, window, cx, tab)
 }
 
-fn duplicate_terminal_tab(
+fn duplicate_terminal(
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
     fallback_tab: LaunchTab,
+    split: Option<TerminalStartupSplitDirection>,
 ) -> Task<Result<WeakEntity<Terminal>>> {
     let active_terminal_view = workspace
         .active_pane()
@@ -12676,7 +12737,11 @@ fn duplicate_terminal_tab(
         .and_then(|item| item.downcast::<TerminalView>());
 
     let Some(active_terminal_view) = active_terminal_view else {
-        return add_new_terminal_tab(workspace, window, cx, fallback_tab);
+        return if let Some(split) = split {
+            add_new_terminal_split(workspace, window, cx, fallback_tab, split)
+        } else {
+            add_new_terminal_tab(workspace, window, cx, fallback_tab)
+        };
     };
 
     let (terminal, custom_title) = {
@@ -12691,13 +12756,28 @@ fn duplicate_terminal_tab(
         .working_directory()
         .or_else(|| default_working_directory(workspace, cx));
 
-    TerminalPanel::add_center_terminal_with_custom_title(
-        workspace,
-        window,
-        cx,
-        custom_title,
-        move |project, cx| project.clone_terminal(&terminal, cx, working_directory),
-    )
+    let create_terminal = move |project: &mut Project, cx: &mut Context<Project>| {
+        project.clone_terminal(&terminal, cx, working_directory)
+    };
+
+    if let Some(split) = split {
+        TerminalPanel::split_center_terminal_with_custom_title(
+            workspace,
+            window,
+            cx,
+            split.to_workspace_split_direction(),
+            custom_title,
+            create_terminal,
+        )
+    } else {
+        TerminalPanel::add_center_terminal_with_custom_title(
+            workspace,
+            window,
+            cx,
+            custom_title,
+            create_terminal,
+        )
+    }
 }
 
 fn add_launch_tab(
@@ -13559,7 +13639,7 @@ mod tests {
             &keymap,
             None,
             "alt-shift-d",
-            "zed_terminal::NewTerminalSplitRight",
+            "zed_terminal::DuplicateTerminalSplitAuto",
         );
         assert_key_binding(
             &keymap,
@@ -13647,6 +13727,22 @@ mod tests {
     }
 
     #[test]
+    fn terminal_auto_split_direction_uses_the_longer_side() {
+        assert_eq!(
+            terminal_auto_split_direction_for_size(px(120.), px(80.)),
+            TerminalStartupSplitDirection::Right
+        );
+        assert_eq!(
+            terminal_auto_split_direction_for_size(px(80.), px(120.)),
+            TerminalStartupSplitDirection::Down
+        );
+        assert_eq!(
+            terminal_auto_split_direction_for_size(px(100.), px(100.)),
+            TerminalStartupSplitDirection::Right
+        );
+    }
+
+    #[test]
     fn terminal_keymap_includes_terminal_search_binding() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
             include_str!("../../../assets/keymaps/zed-terminal.json"),
@@ -13718,10 +13814,12 @@ mod tests {
         let filter = terminal_command_palette_filter_for_test();
 
         assert_command_palette_action_visible(&filter, &CloseTerminalWindow);
+        assert_command_palette_action_visible(&filter, &DuplicateTerminalSplitAuto);
         assert_command_palette_action_visible(&filter, &DuplicateTerminalTab);
         assert_command_palette_action_visible(&filter, &MinimizeTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
+        assert_command_palette_action_visible(&filter, &NewTerminalSplitAuto);
         assert_command_palette_action_visible(&filter, &NewTerminalSplitRight);
         assert_command_palette_action_visible(&filter, &NewTerminalSplitDown);
         assert_command_palette_action_visible(&filter, &NewTerminalSplitLeft);
@@ -14465,6 +14563,12 @@ mod tests {
     fn shell_menu_exposes_terminal_split_actions() {
         let items = shell_menu_items(Vec::new());
 
+        assert_menu_action(
+            &items,
+            "Duplicate Split Auto",
+            "zed_terminal::DuplicateTerminalSplitAuto",
+        );
+        assert_menu_action(&items, "Split Auto", "zed_terminal::NewTerminalSplitAuto");
         assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
         assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
@@ -14502,6 +14606,12 @@ mod tests {
     fn pane_menu_exposes_terminal_split_actions() {
         let items = pane_menu_items();
 
+        assert_menu_action(
+            &items,
+            "Duplicate Split Auto",
+            "zed_terminal::DuplicateTerminalSplitAuto",
+        );
+        assert_menu_action(&items, "Split Auto", "zed_terminal::NewTerminalSplitAuto");
         assert_menu_action(&items, "Split Right", "zed_terminal::NewTerminalSplitRight");
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
         assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
@@ -15088,6 +15198,8 @@ mod tests {
     #[test]
     fn parses_new_terminal_split_action_inputs() {
         for action in [
+            <NewTerminalSplitAuto as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("split auto action input should parse"),
             <NewTerminalSplitRight as Action>::build(gpui::private::serde_json::json!({}))
                 .expect("split right action input should parse"),
             <NewTerminalSplitDown as Action>::build(gpui::private::serde_json::json!({}))
@@ -15099,6 +15211,15 @@ mod tests {
         ] {
             assert!(action.name().starts_with("zed_terminal::NewTerminalSplit"));
         }
+    }
+
+    #[test]
+    fn parses_duplicate_terminal_split_auto_action_input() {
+        let action =
+            <DuplicateTerminalSplitAuto as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("duplicate split auto action input should parse");
+
+        assert_eq!(action.name(), "zed_terminal::DuplicateTerminalSplitAuto");
     }
 
     #[test]
