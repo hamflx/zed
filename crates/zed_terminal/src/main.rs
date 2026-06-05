@@ -60,6 +60,7 @@ actions!(
         OpenConfigDirectory,
         OpenDataDirectory,
         OpenDiagnosticsReport,
+        OpenVersionInfoReport,
         OpenSupportInfoReport,
         OpenSupportBundleDirectory,
         OpenStartupDescriptionReport,
@@ -166,6 +167,7 @@ const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_KEYMAP_SCHEMA_FILE: &str = "keymap.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
+const TERMINAL_VERSION_INFO_REPORT_FILE: &str = "zed-terminal-version-info.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
 const TERMINAL_SUPPORT_BUNDLE_DIR: &str = "zed-terminal-support-bundle";
 const TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE: &str = "zed-terminal-support-bundle.json";
@@ -19584,6 +19586,21 @@ fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> 
         .with_context(|| format!("failed to write diagnostics report {}", path.display()))
 }
 
+fn write_version_info_report_file(path: &Path, report: &TerminalVersionInfo) -> Result<()> {
+    let report = format_terminal_version_info_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create version info report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write version info report {}", path.display()))
+}
+
 fn write_support_info_report_file(path: &Path, report: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std_fs::create_dir_all(parent).with_context(|| {
@@ -21900,6 +21917,10 @@ fn active_terminal_diagnostics_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
 }
 
+fn active_terminal_version_info_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_VERSION_INFO_REPORT_FILE)
+}
+
 fn active_terminal_support_info_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SUPPORT_INFO_REPORT_FILE)
 }
@@ -22025,6 +22046,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
     cx.on_action(open_diagnostics_report);
+    cx.on_action(open_version_info_report);
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
     cx.on_action(open_startup_description_report);
@@ -22262,6 +22284,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
+        TerminalActionSurface::new::<OpenVersionInfoReport>(),
         TerminalActionSurface::new::<OpenActiveKeymapBindingsReport>(),
         TerminalActionSurface::new::<OpenKeymapActionCatalogReport>(),
         TerminalActionSurface::new::<OpenKeymapSchemaFile>(),
@@ -22979,6 +23002,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
+        MenuItem::action("Open Version Info Report", OpenVersionInfoReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
         MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
         MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
@@ -23901,6 +23925,17 @@ fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
     }
 
     cx.open_with_system(&diagnostics_report_file);
+}
+
+fn open_version_info_report(_: &OpenVersionInfoReport, cx: &mut App) {
+    let version_info_report_file = active_terminal_version_info_report_file();
+    let report = terminal_version_info();
+    if let Err(error) = write_version_info_report_file(&version_info_report_file, &report) {
+        log::warn!("failed to write version info report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&version_info_report_file);
 }
 
 fn open_support_info_report(_: &OpenSupportInfoReport, cx: &mut App) {
@@ -24960,6 +24995,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
+        assert_command_palette_action_visible(&filter, &OpenVersionInfoReport);
         assert_command_palette_action_visible(&filter, &OpenSupportInfoReport);
         assert_command_palette_action_visible(&filter, &OpenSupportBundleDirectory);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
@@ -26172,6 +26208,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Version Info Report",
+            "zed_terminal::OpenVersionInfoReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Support Info Report",
             "zed_terminal::OpenSupportInfoReport",
         );
@@ -27051,6 +27092,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenSupportInfoReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_version_info_report_action_input() {
+        let action = <OpenVersionInfoReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open version info report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenVersionInfoReport>()
                 .is_some()
         );
     }
@@ -29991,6 +30045,41 @@ mod tests {
         assert_eq!(json["settings"]["files"][0]["source"], "file");
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_version_info_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let version_info_file = root_dir
+            .join("logs")
+            .join(TERMINAL_VERSION_INFO_REPORT_FILE);
+        let report = TerminalVersionInfo {
+            app_name: "Zed Terminal",
+            binary_name: "zed-terminal",
+            package_name: "zed_terminal",
+            version: "1.2.3",
+            target_os: "windows",
+            target_arch: "x86_64",
+            debug_assertions: false,
+        };
+
+        write_version_info_report_file(&version_info_file, &report)
+            .expect("version info report should write");
+
+        let report_text =
+            std_fs::read_to_string(&version_info_file).expect("failed to read version info report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("version info report should parse");
+        assert_eq!(json["app_name"], "Zed Terminal");
+        assert_eq!(json["binary_name"], "zed-terminal");
+        assert_eq!(json["package_name"], "zed_terminal");
+        assert_eq!(json["version"], "1.2.3");
+        assert_eq!(json["target_os"], "windows");
+        assert_eq!(json["target_arch"], "x86_64");
+        assert_eq!(json["debug_assertions"], false);
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
