@@ -11855,6 +11855,8 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::ReopenClosedItem>(),
         TypeId::of::<workspace::pane::SwapItemLeft>(),
         TypeId::of::<workspace::pane::SwapItemRight>(),
+        TypeId::of::<workspace::pane::TogglePinTab>(),
+        TypeId::of::<workspace::pane::UnpinAllTabs>(),
         TypeId::of::<zed_actions::buffer_search::Deploy>(),
         TypeId::of::<zed_actions::command_palette::Toggle>(),
         TypeId::of::<zed_actions::DecreaseBufferFontSize>(),
@@ -12284,6 +12286,8 @@ fn shell_menu_items_with_visibility(
         MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
         MenuItem::action("Move Tab Left", workspace::pane::SwapItemLeft),
         MenuItem::action("Move Tab Right", workspace::pane::SwapItemRight),
+        MenuItem::action("Toggle Pin Tab", workspace::pane::TogglePinTab),
+        MenuItem::action("Unpin All Tabs", workspace::pane::UnpinAllTabs),
     ]);
 
     shell_items
@@ -14113,6 +14117,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
         assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
         assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
+        assert_command_palette_action_visible(&filter, &workspace::pane::TogglePinTab);
+        assert_command_palette_action_visible(&filter, &workspace::pane::UnpinAllTabs);
         assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
     }
 
@@ -14902,6 +14908,14 @@ mod tests {
 
         assert_menu_action(&items, "Move Tab Left", "pane::SwapItemLeft");
         assert_menu_action(&items, "Move Tab Right", "pane::SwapItemRight");
+    }
+
+    #[test]
+    fn shell_menu_exposes_tab_pin_actions() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(&items, "Toggle Pin Tab", "pane::TogglePinTab");
+        assert_menu_action(&items, "Unpin All Tabs", "pane::UnpinAllTabs");
     }
 
     #[test]
