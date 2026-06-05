@@ -11542,9 +11542,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Set Default Profile: {label}"),
             SetDefaultStartupProfile {
-                profile: profile_name,
+                profile: profile_name.clone(),
             }
             .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Open Config For Profile: {label}"),
+            OpenStartupConfigFile.boxed_clone(),
         ));
     }
 
@@ -13245,6 +13250,7 @@ mod tests {
                 "Split Left With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Split Up With Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
 
@@ -13270,6 +13276,7 @@ mod tests {
             TerminalStartupSplitDirection::Up,
         );
         assert_set_default_profile_action(&result.results[5], "work");
+        assert_open_profile_config_action(&result.results[6]);
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -13301,7 +13308,7 @@ mod tests {
             config.profile_summaries(false),
         );
 
-        assert_eq!(result.results.len(), 6);
+        assert_eq!(result.results.len(), 7);
         assert!(
             result
                 .results
@@ -13343,7 +13350,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 6);
+        assert_eq!(result.results.len(), 7);
         assert!(
             result
                 .results
@@ -13367,7 +13374,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 6);
+        assert_eq!(description_result.results.len(), 7);
         assert!(
             description_result
                 .results
@@ -13377,7 +13384,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 6);
+        assert_eq!(icon_result.results.len(), 7);
         assert!(
             icon_result
                 .results
@@ -13387,13 +13394,40 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 6);
+        assert_eq!(color_result.results.len(), 7);
         assert!(
             color_result
                 .results
                 .iter()
                 .all(|item| item.string.contains("color #dc2626"))
         );
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_searches_profile_config_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "config",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Open Config For Profile: Work Shell (work) - Project shell - icon terminal"]
+        );
+        assert_open_profile_config_action(&result.results[0]);
     }
 
     #[test]
@@ -13487,6 +13521,13 @@ mod tests {
             .downcast_ref::<SetDefaultStartupProfile>()
             .expect("expected set default profile action");
         assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_open_profile_config_action(item: &command_palette_hooks::CommandInterceptItem) {
+        item.action
+            .as_any()
+            .downcast_ref::<OpenStartupConfigFile>()
+            .expect("expected open startup config action");
     }
 
     fn terminal_command_palette_filter_for_test() -> command_palette_hooks::CommandPaletteFilter {
