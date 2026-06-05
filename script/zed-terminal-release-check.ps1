@@ -333,8 +333,9 @@ function Invoke-NativeTextCommandResult {
         throw "Command did not produce text output: $Binary $($Arguments -join ' ')"
     }
 
+    $normalizedText = (($text -split "\s+") -join " ")
     foreach ($pattern in $RequiredPatterns) {
-        if ($text -notmatch $pattern) {
+        if ($text -notmatch $pattern -and $normalizedText -notmatch $pattern) {
             throw "Command output for $Name did not match required pattern '$pattern'"
         }
     }
@@ -453,6 +454,7 @@ function Read-PackageSmokeSummary {
     $zipChecksumFile = [System.IO.Path]::GetFullPath([string]$summary.zip_checksum_file)
     $binaryHash = [string]$summary.binary_sha256
     $zipHash = [string]$summary.zip_sha256
+    $versionInfo = $summary.version_info
 
     if (-not (Test-Path -LiteralPath $packageDir -PathType Container)) {
         throw "package smoke package directory does not exist: $packageDir"
@@ -493,6 +495,7 @@ function Read-PackageSmokeSummary {
         $manifest.status -ne "ok" -or
         $manifest.binary -ne (Split-Path -Leaf $packageBinary) -or
         $manifest.binary_sha256 -ne $binaryHash -or
+        $manifest.validation.version_info -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
@@ -501,6 +504,22 @@ function Read-PackageSmokeSummary {
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
         throw "package smoke summary metadata did not match the validated manifest"
+    }
+    if (
+        -not $versionInfo -or
+        -not $manifest.version_info -or
+        $versionInfo.app_name -ne "Zed Terminal" -or
+        $versionInfo.binary_name -ne "zed-terminal" -or
+        $versionInfo.package_name -ne "zed_terminal" -or
+        $versionInfo.version -ne $summary.version -or
+        $manifest.version_info.version -ne $summary.version -or
+        $manifest.version_info.app_name -ne $versionInfo.app_name -or
+        $manifest.version_info.binary_name -ne $versionInfo.binary_name -or
+        $manifest.version_info.package_name -ne $versionInfo.package_name -or
+        $manifest.version_info.target_os -ne $versionInfo.target_os -or
+        $manifest.version_info.target_arch -ne $versionInfo.target_arch
+    ) {
+        throw "package smoke version-info metadata did not match the validated manifest"
     }
     if ([int64]$summary.content_count -ne @($manifest.contents).Count) {
         throw "package smoke summary content count did not match the validated manifest"
@@ -520,6 +539,7 @@ function Read-PackageSmokeSummary {
         config_template_dir = $configTemplateDir
         binary = $packageBinary
         binary_sha256 = $binaryHash
+        version_info = $versionInfo
         zip_file = $zipFile
         zip_sha256 = $zipHash
         zip_checksum_file = $zipChecksumFile
@@ -821,6 +841,10 @@ function New-ReleaseReportMarkdown {
         $lines += "| Package | $(Format-MarkdownValue $package.package_name) |"
         $lines += "| Version | $(Format-MarkdownValue $package.version) |"
         $lines += "| Build profile | $(Format-MarkdownValue $package.build_profile) |"
+        if ($package.version_info) {
+            $lines += "| Target | $(Format-MarkdownValue "$($package.version_info.target_os)-$($package.version_info.target_arch)") |"
+            $lines += "| Debug assertions | $(Format-MarkdownValue $package.version_info.debug_assertions) |"
+        }
         $lines += "| Manifest | $(Format-MarkdownValue $package.manifest_file) |"
         $lines += "| Package summary | $(Format-MarkdownValue $package.summary_file) |"
         $lines += "| Zip | $(Format-MarkdownValue $package.zip_file) |"
@@ -1043,9 +1067,27 @@ try {
                 "--list-active-keymap-bindings",
                 "--list-active-keymap-bindings-context <CONTEXT>",
                 "--list-active-keymap-bindings-format <text\|json>",
-                "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
+                "--version-info",
+                "--paths",
+                "--paths-format <text\|json>",
+                "Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
+            $versionInfoJson = Invoke-NativeJsonCommandResult "version-info" @(
+                "--version-info",
+                "--version-info-format", "json"
+            )
+            if (
+                $versionInfoJson.app_name -ne "Zed Terminal" -or
+                $versionInfoJson.binary_name -ne "zed-terminal" -or
+                $versionInfoJson.package_name -ne "zed_terminal" -or
+                -not $versionInfoJson.version -or
+                -not $versionInfoJson.target_os -or
+                -not $versionInfoJson.target_arch -or
+                $null -eq $versionInfoJson.debug_assertions
+            ) {
+                throw "zed-terminal --version-info did not report expected metadata"
+            }
             Invoke-NativeJsonCommand "init-config" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,

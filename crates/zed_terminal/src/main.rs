@@ -9,12 +9,13 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{Arc, OnceLock},
+    thread,
     time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
 use assets::Assets;
-use clap::{ArgGroup, Parser, ValueEnum, ValueHint};
+use clap::{ArgGroup, CommandFactory, Error as ClapError, Parser, ValueEnum, ValueHint};
 use client::{Client, UserStore};
 use collections::HashMap;
 use fs::RealFs;
@@ -177,6 +178,7 @@ const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
 const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
+const TERMINAL_CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
 static TERMINAL_OLD_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -260,7 +262,17 @@ Keymap backup and restore options:
       --list-active-keymap-bindings-format <text|json>
           Set the output format for --list-active-keymap-bindings
 
-Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir and --config-dir only."
+Version metadata options:
+      --version-info
+          Print standalone terminal version and build metadata without opening a terminal window
+      --version-info-format <text|json>
+          Set the output format for --version-info
+      --paths
+          Print resolved standalone terminal paths without opening a terminal window
+      --paths-format <text|json>
+          Set the output format for --paths
+
+Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined with --user-data-dir and --config-dir only."
 )]
 #[command(group(
     ArgGroup::new("default_profile_command")
@@ -319,6 +331,59 @@ Profile transfer, startup config file, and keymap file options may be combined w
     ArgGroup::new("profile_visibility_command")
         .args(["hide_profile", "show_profile"])
 ))]
+#[command(group(
+    ArgGroup::new("path_inspection_command")
+        .args(["print_paths"])
+        .conflicts_with_all([
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "no_startup_config",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "support_info",
+            "doctor",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ])
+))]
 struct Cli {
     #[arg(
         long = "user-data-dir",
@@ -334,33 +399,14 @@ struct Cli {
     )]
     config_dir: Option<PathBuf>,
 
-    #[arg(
-        long = "paths",
-        conflicts_with_all = [
-            "list_profiles",
-            "describe_profile",
-            "print_startup_layout",
-            "set_default_profile",
-            "clear_default_profile",
-            "copy_profile",
-            "remove_profile",
-            "rename_profile",
-            "validate_startup_config",
-            "validate_keymap",
-            "print_startup_config_schema",
-            "print_default_keymap",
-            "init_config",
-            "support_info",
-            "doctor"
-        ]
-    )]
+    #[arg(long = "paths", hide = true)]
     print_paths: bool,
 
     #[arg(
         long = "paths-format",
         value_enum,
         requires = "print_paths",
-        help = "Set the output format for --paths"
+        hide = true
     )]
     paths_format: Option<TerminalPathsOutputFormat>,
 
@@ -435,7 +481,6 @@ struct Cli {
         long = "describe-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_startup",
@@ -486,7 +531,6 @@ struct Cli {
     #[arg(
         long = "describe-startup",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -566,7 +610,6 @@ struct Cli {
     #[arg(
         long = "print-startup-layout",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -597,7 +640,6 @@ struct Cli {
     #[arg(
         long = "update-startup",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -727,7 +769,6 @@ struct Cli {
     #[arg(
         long = "update-startup-env",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -803,7 +844,6 @@ struct Cli {
     #[arg(
         long = "add-startup-tab",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -858,7 +898,6 @@ struct Cli {
         long = "add-profile-startup-tab",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -913,7 +952,6 @@ struct Cli {
         long = "update-startup-tab",
         value_name = "TAB",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -969,7 +1007,6 @@ struct Cli {
         value_name = "NAME",
         requires = "profile_startup_tab",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -1209,7 +1246,6 @@ struct Cli {
         long = "remove-startup-tab",
         value_name = "TAB",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -1292,7 +1328,6 @@ struct Cli {
         value_name = "NAME",
         requires = "profile_startup_tab",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -1382,7 +1417,6 @@ struct Cli {
         value_name = "FROM",
         requires = "to_startup_tab",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -1472,7 +1506,6 @@ struct Cli {
         value_name = "NAME",
         requires_all = ["profile_startup_tab", "to_profile_startup_tab"],
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -1560,7 +1593,6 @@ struct Cli {
         long = "set-default-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -1605,7 +1637,6 @@ struct Cli {
     #[arg(
         long = "clear-default-profile",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -1643,7 +1674,6 @@ struct Cli {
         long = "create-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -1732,7 +1762,6 @@ struct Cli {
         long = "update-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -1814,7 +1843,6 @@ struct Cli {
         long = "update-profile-startup",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -1943,7 +1971,6 @@ struct Cli {
         long = "update-profile-env",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2020,7 +2047,6 @@ struct Cli {
         value_names = ["SOURCE_NAME", "TARGET_NAME"],
         num_args = 2,
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2070,7 +2096,6 @@ struct Cli {
         long = "remove-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2123,7 +2148,6 @@ struct Cli {
         value_names = ["OLD_NAME", "NEW_NAME"],
         num_args = 2,
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2169,7 +2193,6 @@ struct Cli {
         long = "hide-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2208,7 +2231,6 @@ struct Cli {
         long = "show-profile",
         value_name = "NAME",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2254,7 +2276,6 @@ struct Cli {
     #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "print_startup_layout",
             "set_default_profile",
@@ -2295,7 +2316,6 @@ struct Cli {
     #[arg(
         long = "print-startup-config-schema",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "print_startup_layout",
             "set_default_profile",
@@ -2328,7 +2348,6 @@ struct Cli {
     #[arg(
         long = "init-config",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "print_startup_layout",
             "set_default_profile",
@@ -2368,7 +2387,6 @@ struct Cli {
     #[arg(
         long = "doctor",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2411,7 +2429,6 @@ struct Cli {
     #[arg(
         long = "support-info",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "describe_profile",
@@ -2466,7 +2483,6 @@ struct Cli {
     #[arg(
         long = "validate-keymap",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "print_startup_layout",
             "set_default_profile",
@@ -2507,7 +2523,6 @@ struct Cli {
     #[arg(
         long = "print-default-keymap",
         conflicts_with_all = [
-            "print_paths",
             "list_profiles",
             "all_profiles",
             "print_startup_layout",
@@ -2690,10 +2705,6 @@ struct Cli {
 
 #[derive(Clone, Debug)]
 enum TerminalCliCommand {
-    PrintPaths {
-        path_options: TerminalPathOptions,
-        format: TerminalPathsOutputFormat,
-    },
     ListProfiles {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
@@ -2982,6 +2993,18 @@ enum TerminalKeymapDiscoveryCommand {
     ActiveBindings(TerminalActiveKeymapBindingListCommand),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalVersionInfoCommand {
+    path_options: TerminalPathOptions,
+    format: TerminalVersionInfoOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalPathCommand {
+    path_options: TerminalPathOptions,
+    format: TerminalPathsOutputFormat,
+}
+
 #[derive(Clone, Debug)]
 struct LaunchOptions {
     path_options: TerminalPathOptions,
@@ -3010,6 +3033,17 @@ struct TerminalPathReport {
     default_keymap_reference_file: PathBuf,
     themes_dir: PathBuf,
     log_file: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalVersionInfo {
+    app_name: &'static str,
+    binary_name: &'static str,
+    package_name: &'static str,
+    version: &'static str,
+    target_os: &'static str,
+    target_arch: &'static str,
+    debug_assertions: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4100,6 +4134,13 @@ enum TerminalConfigInitializationOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalVersionInfoOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalPathsOutputFormat {
     #[default]
     Text,
@@ -4398,8 +4439,7 @@ impl TerminalCliCommand {
         let path_options =
             TerminalPathOptions::from_cli(cli.user_data_dir.as_deref(), cli.config_dir.as_deref())
                 .context("failed to resolve terminal paths")?;
-        let startup_config = if cli.print_paths
-            || cli.no_startup_config
+        let startup_config = if cli.no_startup_config
             || cli.set_default_profile.is_some()
             || cli.clear_default_profile
             || cli.create_profile.is_some()
@@ -4453,13 +4493,6 @@ impl TerminalCliCommand {
         startup_config: TerminalStartupConfig,
         path_options: TerminalPathOptions,
     ) -> Result<Self> {
-        if cli.print_paths {
-            return Ok(Self::PrintPaths {
-                path_options,
-                format: cli.paths_format.unwrap_or_default(),
-            });
-        }
-
         if cli.list_profiles {
             return Ok(Self::ListProfiles {
                 path_options,
@@ -4874,7 +4907,6 @@ impl TerminalCliCommand {
 
     fn path_options(&self) -> &TerminalPathOptions {
         match self {
-            Self::PrintPaths { path_options, .. } => path_options,
             Self::ListProfiles { path_options, .. } => path_options,
             Self::DescribeProfile { path_options, .. } => path_options,
             Self::DescribeStartup { path_options, .. } => path_options,
@@ -4908,6 +4940,203 @@ impl TerminalCliCommand {
             Self::ValidateKeymap { path_options, .. } => path_options,
             Self::Launch(launch_options) => &launch_options.path_options,
         }
+    }
+}
+
+impl TerminalVersionInfoCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalVersionInfoParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            match flag {
+                "--user-data-dir" => {
+                    parser.user_data_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--config-dir" => {
+                    parser.config_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--version-info" => {
+                    if inline_value.is_some() {
+                        bail!("--version-info does not accept a value");
+                    }
+                    parser.seen_version_info_option = true;
+                    parser.version_info = true;
+                }
+                "--version-info-format" => {
+                    parser.version_info_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_version_info_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+}
+
+impl TerminalPathCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalPathCommandParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            match flag {
+                "--user-data-dir" => {
+                    parser.user_data_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--config-dir" => {
+                    parser.config_dir =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                }
+                "--paths" => {
+                    if inline_value.is_some() {
+                        bail!("--paths does not accept a value");
+                    }
+                    parser.seen_path_option = true;
+                    parser.paths = true;
+                }
+                "--paths-format" => {
+                    parser.paths_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_path_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+}
+
+#[derive(Default)]
+struct TerminalVersionInfoParser {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    seen_version_info_option: bool,
+    pre_version_info_arg: Option<String>,
+    version_info: bool,
+    version_info_format: Option<String>,
+}
+
+#[derive(Default)]
+struct TerminalPathCommandParser {
+    user_data_dir: Option<PathBuf>,
+    config_dir: Option<PathBuf>,
+    seen_path_option: bool,
+    pre_path_arg: Option<String>,
+    paths: bool,
+    paths_format: Option<String>,
+}
+
+impl TerminalPathCommandParser {
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_path_option {
+            bail!("--paths cannot be used with {arg}");
+        }
+        if self.pre_path_arg.is_none() {
+            self.pre_path_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalPathCommand>> {
+        if !self.seen_path_option {
+            return Ok(None);
+        }
+        if let Some(arg) = self.pre_path_arg {
+            bail!("--paths cannot be used with {arg}");
+        }
+        if !self.paths {
+            bail!("--paths-format requires --paths");
+        }
+
+        let path_options = TerminalPathOptions::from_cli(
+            self.user_data_dir.as_deref(),
+            self.config_dir.as_deref(),
+        )
+        .context("failed to resolve terminal paths")?;
+
+        Ok(Some(TerminalPathCommand {
+            path_options,
+            format: parse_terminal_paths_output_format(self.paths_format.as_deref())?,
+        }))
+    }
+}
+
+impl TerminalVersionInfoParser {
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_version_info_option {
+            bail!("--version-info cannot be used with {arg}");
+        }
+        if self.pre_version_info_arg.is_none() {
+            self.pre_version_info_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalVersionInfoCommand>> {
+        if !self.seen_version_info_option {
+            return Ok(None);
+        }
+        if let Some(arg) = self.pre_version_info_arg {
+            bail!("--version-info cannot be used with {arg}");
+        }
+        if !self.version_info {
+            bail!("--version-info-format requires --version-info");
+        }
+
+        let path_options = TerminalPathOptions::from_cli(
+            self.user_data_dir.as_deref(),
+            self.config_dir.as_deref(),
+        )
+        .context("failed to resolve terminal paths")?;
+
+        Ok(Some(TerminalVersionInfoCommand {
+            path_options,
+            format: parse_version_info_output_format(self.version_info_format.as_deref())?,
+        }))
     }
 }
 
@@ -7078,7 +7307,109 @@ struct TerminalStartupLayout<'a> {
     label: String,
 }
 
+fn terminal_help_requested_from_env_args() -> bool {
+    terminal_help_requested_from_args(env::args_os())
+}
+
+fn terminal_help_requested_from_args<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+
+    let Some(arg) = args.next() else {
+        return false;
+    };
+    if args.next().is_some() {
+        return false;
+    }
+
+    matches!(arg.to_str(), Some("--help" | "-h"))
+}
+
+fn print_terminal_help() -> Result<()> {
+    let handle = thread::Builder::new()
+        .name("zed-terminal-help".into())
+        .stack_size(TERMINAL_CLI_STACK_SIZE)
+        .spawn(|| -> Result<()> {
+            let mut command = Cli::command();
+            let help = command.render_help().to_string();
+            io::stdout()
+                .write_all(help.as_bytes())
+                .context("failed to write terminal help")?;
+            Ok(())
+        })
+        .context("failed to spawn terminal help thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => bail!("terminal help thread panicked"),
+    }
+}
+
+fn parse_terminal_cli_from_env_args() -> Result<Cli, ClapError> {
+    let args = env::args_os().collect::<Vec<_>>();
+    let handle = thread::Builder::new()
+        .name("zed-terminal-cli".into())
+        .stack_size(TERMINAL_CLI_STACK_SIZE)
+        .spawn(move || Cli::try_parse_from(args))
+        .expect("failed to spawn terminal CLI parser thread");
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => panic!("terminal CLI parser thread panicked"),
+    }
+}
+
 fn main() {
+    if terminal_help_requested_from_env_args() {
+        if let Err(error) = print_terminal_help() {
+            eprintln!("failed to print terminal help: {error:#}");
+            process::exit(2);
+        }
+        return;
+    }
+
+    match TerminalVersionInfoCommand::from_env_args() {
+        Ok(Some(command)) => {
+            if let Err(error) = install_terminal_paths(&command.path_options) {
+                eprintln!("failed to run zed terminal: {error:#}");
+                process::exit(2);
+            }
+            if let Err(error) = print_terminal_version_info(command.format) {
+                eprintln!("failed to print terminal version info: {error:#}");
+                process::exit(2);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
+    match TerminalPathCommand::from_env_args() {
+        Ok(Some(command)) => {
+            if let Err(error) = install_terminal_paths(&command.path_options) {
+                eprintln!("failed to run zed terminal: {error:#}");
+                process::exit(2);
+            }
+            if let Err(error) = print_terminal_paths(command.format) {
+                eprintln!("failed to print terminal paths: {error:#}");
+                process::exit(2);
+            }
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalProfileTransferCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_profile_transfer_command(command);
@@ -7127,7 +7458,7 @@ fn main() {
         }
     }
 
-    let cli = match Cli::try_parse_from(env::args_os()) {
+    let cli = match parse_terminal_cli_from_env_args() {
         Ok(cli) => cli,
         Err(error) => error.exit(),
     };
@@ -7170,12 +7501,6 @@ fn main() {
     }
 
     match command {
-        TerminalCliCommand::PrintPaths { format, .. } => {
-            if let Err(error) = print_terminal_paths(format) {
-                eprintln!("failed to print terminal paths: {error:#}");
-                process::exit(2);
-            }
-        }
         TerminalCliCommand::ListProfiles {
             startup_config,
             include_hidden,
@@ -8898,6 +9223,36 @@ impl TerminalStartupEnvUpdateRequest {
     }
 }
 
+fn terminal_version_info() -> TerminalVersionInfo {
+    TerminalVersionInfo {
+        app_name: TERMINAL_APP_NAME,
+        binary_name: TERMINAL_APP_NAME_LOWERCASE,
+        package_name: env!("CARGO_PKG_NAME"),
+        version: env!("CARGO_PKG_VERSION"),
+        target_os: env::consts::OS,
+        target_arch: env::consts::ARCH,
+        debug_assertions: cfg!(debug_assertions),
+    }
+}
+
+fn parse_version_info_output_format(
+    format: Option<&str>,
+) -> Result<TerminalVersionInfoOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalVersionInfoOutputFormat::Text),
+        "json" => Ok(TerminalVersionInfoOutputFormat::Json),
+        format => bail!("unsupported --version-info-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_terminal_paths_output_format(format: Option<&str>) -> Result<TerminalPathsOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalPathsOutputFormat::Text),
+        "json" => Ok(TerminalPathsOutputFormat::Json),
+        format => bail!("unsupported --paths-format {format:?}; expected text or json"),
+    }
+}
+
 fn parse_profile_export_output_format(
     format: Option<&str>,
 ) -> Result<TerminalStartupProfileExportOutputFormat> {
@@ -9068,6 +9423,19 @@ fn parse_active_keymap_binding_list_output_format(
             "unsupported --list-active-keymap-bindings-format {format:?}; expected text or json"
         ),
     }
+}
+
+fn print_terminal_version_info(format: TerminalVersionInfoOutputFormat) -> Result<()> {
+    let report = terminal_version_info();
+    match format {
+        TerminalVersionInfoOutputFormat::Text => {
+            print!("{}", format_terminal_version_info(&report))
+        }
+        TerminalVersionInfoOutputFormat::Json => {
+            print!("{}", format_terminal_version_info_json(&report)?)
+        }
+    }
+    Ok(())
 }
 
 fn startup_tab_config_from_cli(cli: &Cli, label: &str) -> Result<TerminalStartupTabConfig> {
@@ -15357,6 +15725,41 @@ fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
     Ok(output)
 }
 
+fn format_terminal_version_info(report: &TerminalVersionInfo) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "app_name: {}", report.app_name)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "binary_name: {}", report.binary_name)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "package_name: {}", report.package_name)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "version: {}", report.version)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "target_os: {}", report.target_os)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "target_arch: {}", report.target_arch)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "debug_assertions: {}", report.debug_assertions)
+        .expect("writing to string should not fail");
+    output
+}
+
+fn format_terminal_version_info_json(report: &TerminalVersionInfo) -> Result<String> {
+    let value = serde_json::json!({
+        "app_name": report.app_name,
+        "binary_name": report.binary_name,
+        "package_name": report.package_name,
+        "version": report.version,
+        "target_os": report.target_os,
+        "target_arch": report.target_arch,
+        "debug_assertions": report.debug_assertions,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal version info as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
 fn format_default_profile_update(update: &TerminalDefaultProfileUpdate) -> String {
     let mut output = String::new();
     writeln!(
@@ -19263,7 +19666,6 @@ fn initial_terminal_startup_config_content() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
     use std::collections::BTreeSet;
 
     fn temp_test_dir() -> PathBuf {
@@ -19449,31 +19851,94 @@ mod tests {
     #[test]
     fn parses_path_options() {
         let data_dir = temp_test_dir();
-        let cli = Cli::try_parse_from([
+        let command = TerminalPathCommand::from_args([
             "zed-terminal",
             "--paths",
             "--user-data-dir",
             data_dir.to_str().unwrap(),
         ])
-        .expect("failed to parse cli args");
-        let command =
-            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
-                .expect("failed to build cli command");
-        let TerminalCliCommand::PrintPaths {
-            path_options,
-            format,
-        } = command
-        else {
-            panic!("expected paths mode");
-        };
+        .expect("failed to parse paths args")
+        .expect("expected paths command");
 
-        assert_eq!(format, TerminalPathsOutputFormat::Text);
-        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(command.format, TerminalPathsOutputFormat::Text);
+        assert_eq!(command.path_options.data_dir, data_dir);
         assert_eq!(
-            path_options.config_dir,
-            path_options.data_dir.join("config")
+            command.path_options.config_dir,
+            command.path_options.data_dir.join("config")
         );
-        std_fs::remove_dir_all(path_options.data_dir).ok();
+        std_fs::remove_dir_all(command.path_options.data_dir).ok();
+    }
+
+    #[test]
+    fn parses_version_info_command() {
+        let data_dir = temp_test_dir();
+        let command = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--version-info",
+            "--version-info-format",
+            "json",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+        ])
+        .expect("failed to parse version info args")
+        .expect("expected version info command");
+
+        assert_eq!(command.format, TerminalVersionInfoOutputFormat::Json);
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(
+            command.path_options.config_dir,
+            command.path_options.data_dir.join("config")
+        );
+        std_fs::remove_dir_all(command.path_options.data_dir).ok();
+    }
+
+    #[test]
+    fn detects_standalone_help_request_only() {
+        assert!(terminal_help_requested_from_args([
+            "zed-terminal",
+            "--help"
+        ]));
+        assert!(terminal_help_requested_from_args(["zed-terminal", "-h"]));
+        assert!(!terminal_help_requested_from_args([
+            "zed-terminal",
+            "--help",
+            "--version"
+        ]));
+        assert!(!terminal_help_requested_from_args([
+            "zed-terminal",
+            "--",
+            "--help"
+        ]));
+        assert!(!terminal_help_requested_from_args([
+            "zed-terminal",
+            "--new-tab-command",
+            "--help"
+        ]));
+    }
+
+    #[test]
+    fn parses_cli_on_larger_stack() {
+        let args = vec![
+            OsString::from("zed-terminal"),
+            OsString::from("--init-config"),
+            OsString::from("--init-config-format"),
+            OsString::from("json"),
+        ];
+        let handle = thread::Builder::new()
+            .name("zed-terminal-cli-parser-test".into())
+            .stack_size(TERMINAL_CLI_STACK_SIZE)
+            .spawn(move || Cli::try_parse_from(args))
+            .expect("failed to spawn CLI parser test thread");
+        let cli = handle
+            .join()
+            .expect("CLI parser test thread should not panic")
+            .expect("CLI parser should parse init-config args");
+
+        assert!(cli.init_config);
+        assert_eq!(
+            cli.init_config_format,
+            Some(TerminalConfigInitializationOutputFormat::Json)
+        );
     }
 
     #[test]
@@ -24433,6 +24898,59 @@ mod tests {
             output,
             "status: ok\nsettings_file: created settings.json\nkeymap_file: existing keymap.json\n"
         );
+    }
+
+    #[test]
+    fn formats_terminal_version_info() {
+        let report = TerminalVersionInfo {
+            app_name: "Zed Terminal",
+            binary_name: "zed-terminal",
+            package_name: "zed_terminal",
+            version: "1.2.3",
+            target_os: "windows",
+            target_arch: "x86_64",
+            debug_assertions: false,
+        };
+        let output = format_terminal_version_info(&report);
+
+        assert_eq!(
+            output,
+            concat!(
+                "app_name: Zed Terminal\n",
+                "binary_name: zed-terminal\n",
+                "package_name: zed_terminal\n",
+                "version: 1.2.3\n",
+                "target_os: windows\n",
+                "target_arch: x86_64\n",
+                "debug_assertions: false\n",
+            )
+        );
+    }
+
+    #[test]
+    fn formats_terminal_version_info_json() {
+        let report = TerminalVersionInfo {
+            app_name: "Zed Terminal",
+            binary_name: "zed-terminal",
+            package_name: "zed_terminal",
+            version: "1.2.3",
+            target_os: "windows",
+            target_arch: "x86_64",
+            debug_assertions: true,
+        };
+        let output =
+            format_terminal_version_info_json(&report).expect("version info json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("version info json should parse");
+
+        assert_eq!(json["app_name"], "Zed Terminal");
+        assert_eq!(json["binary_name"], "zed-terminal");
+        assert_eq!(json["package_name"], "zed_terminal");
+        assert_eq!(json["version"], "1.2.3");
+        assert_eq!(json["target_os"], "windows");
+        assert_eq!(json["target_arch"], "x86_64");
+        assert_eq!(json["debug_assertions"], true);
+        assert!(output.ends_with('\n'));
     }
 
     #[test]
@@ -34038,6 +34556,61 @@ mod tests {
     }
 
     #[test]
+    fn version_info_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--version-info",
+        ])
+        .expect("version info should not load terminal.json")
+        .expect("expected version info command");
+
+        assert_eq!(command.format, TerminalVersionInfoOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn version_info_rejects_startup_only_and_other_diagnostic_arguments() {
+        let error = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--version-info-format",
+            "json",
+        ])
+        .expect_err("version info format should require version info mode");
+        assert!(format!("{error:#}").contains("--version-info-format requires --version-info"));
+
+        let error =
+            TerminalVersionInfoCommand::from_args(["zed-terminal", "--version-info", "--paths"])
+                .expect_err("path inspection should conflict with version info");
+        assert!(format!("{error:#}").contains("cannot be used with --paths"));
+
+        let error = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--version-info",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with version info");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error =
+            TerminalVersionInfoCommand::from_args(["zed-terminal", "--version-info", "--", "cmd"])
+                .expect_err("startup command should conflict with version info");
+        assert!(format!("{error:#}").contains("cannot be used with --"));
+    }
+
+    #[test]
     fn init_config_mode_does_not_load_startup_config_file() {
         let data_dir = temp_test_dir();
         let config_dir = data_dir.join("config");
@@ -34148,16 +34721,26 @@ mod tests {
 
     #[test]
     fn paths_format_json_is_carried_through_cli_resolution() {
-        let cli = Cli::try_parse_from(["zed-terminal", "--paths", "--paths-format", "json"])
-            .expect("failed to parse paths json args");
         let command =
-            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
-                .expect("paths json mode should resolve");
+            TerminalPathCommand::from_args(["zed-terminal", "--paths", "--paths-format", "json"])
+                .expect("failed to parse paths json args")
+                .expect("expected paths command");
 
-        let TerminalCliCommand::PrintPaths { format, .. } = command else {
-            panic!("expected paths mode");
-        };
-        assert_eq!(format, TerminalPathsOutputFormat::Json);
+        assert_eq!(command.format, TerminalPathsOutputFormat::Json);
+    }
+
+    #[test]
+    fn version_info_format_json_is_carried_through_cli_resolution() {
+        let command = TerminalVersionInfoCommand::from_args([
+            "zed-terminal",
+            "--version-info",
+            "--version-info-format",
+            "json",
+        ])
+        .expect("failed to parse version info json args")
+        .expect("expected version info command");
+
+        assert_eq!(command.format, TerminalVersionInfoOutputFormat::Json);
     }
 
     #[test]
@@ -35606,10 +36189,16 @@ mod tests {
         assert!(help.contains("--list-active-keymap-bindings"));
         assert!(help.contains("--list-active-keymap-bindings-context <CONTEXT>"));
         assert!(help.contains("--list-active-keymap-bindings-format <text|json>"));
-        assert!(help.contains(
-            "Profile transfer, startup config file, and keymap file options may be combined"
+        assert!(help.contains("Version metadata options:"));
+        assert!(help.contains("--version-info"));
+        assert!(help.contains("--version-info-format <text|json>"));
+        assert!(help.contains("--paths"));
+        assert!(help.contains("--paths-format <text|json>"));
+        let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalized_help.contains(
+            "Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined"
         ));
-        assert!(help.contains("combined with --user-data-dir"));
+        assert!(help.contains("--user-data-dir"));
         assert!(help.contains("and --config-dir only."));
     }
 
@@ -42200,17 +42789,12 @@ mod tests {
     }
 
     #[test]
-    fn paths_mode_ignores_requested_startup_profile() {
-        let config = TerminalStartupConfig {
-            default_profile: Some("missing".into()),
-            ..TerminalStartupConfig::default()
-        };
-        let cli = Cli::try_parse_from(["zed-terminal", "--paths", "--profile", "missing"])
-            .expect("failed to parse cli args");
-        let command = TerminalCliCommand::from_cli_and_startup_config(cli, config)
-            .expect("paths mode should not resolve startup profiles");
+    fn paths_mode_rejects_requested_startup_profile() {
+        let error =
+            TerminalPathCommand::from_args(["zed-terminal", "--paths", "--profile", "missing"])
+                .expect_err("paths mode should reject startup profile selection");
 
-        assert!(matches!(command, TerminalCliCommand::PrintPaths { .. }));
+        assert!(format!("{error:#}").contains("--paths cannot be used with --profile"));
     }
 
     #[test]

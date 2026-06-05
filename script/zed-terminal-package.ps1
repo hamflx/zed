@@ -401,6 +401,42 @@ function Assert-PackageReadme {
     }
 }
 
+function Assert-VersionInfoJson {
+    param(
+        [Parameter(Mandatory = $true)]$VersionInfo,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Platform,
+        [Parameter(Mandatory = $true)][string]$Architecture
+    )
+
+    $expectedTargetOs = switch ($Platform) {
+        "windows" { "windows" }
+        "macos" { "macos" }
+        "linux" { "linux" }
+        default { $Platform }
+    }
+
+    $expectedTargetArch = switch ($Architecture) {
+        "x86_64" { "x86_64" }
+        "aarch64" { "aarch64" }
+        "arm" { "arm" }
+        "x86" { "x86" }
+        default { $Architecture }
+    }
+
+    if (
+        $VersionInfo.app_name -ne "Zed Terminal" -or
+        $VersionInfo.binary_name -ne "zed-terminal" -or
+        $VersionInfo.package_name -ne "zed_terminal" -or
+        $VersionInfo.version -ne $Version -or
+        $VersionInfo.target_os -ne $expectedTargetOs -or
+        $VersionInfo.target_arch -ne $expectedTargetArch -or
+        $null -eq $VersionInfo.debug_assertions
+    ) {
+        throw "zed-terminal --version-info did not report expected package metadata"
+    }
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -429,13 +465,21 @@ function Assert-PackageManifest {
         $manifest.architecture -ne $Architecture -or
         $manifest.binary -ne $BinaryFileName -or
         $manifest.binary_sha256 -ne $BinaryHash -or
+        -not $manifest.version_info -or
         $manifest.config_template_dir -ne "config-template"
     ) {
         throw "package manifest metadata did not match the package that was just built"
     }
 
+    Assert-VersionInfoJson `
+        -VersionInfo $manifest.version_info `
+        -Version $Version `
+        -Platform $Platform `
+        -Architecture $Architecture
+
     foreach ($validationName in @(
         "help",
+        "version_info",
         "paths",
         "init_config",
         "startup_schema",
@@ -575,6 +619,17 @@ function Assert-PackageZipArchive {
         throw "extracted package zed-terminal --help did not expose expected standalone help text"
     }
 
+    $versionInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--version-info",
+        "--version-info-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    $versionInfoJson = $versionInfo.Stdout | ConvertFrom-Json
+    Assert-VersionInfoJson `
+        -VersionInfo $versionInfoJson `
+        -Version $Version `
+        -Platform $Platform `
+        -Architecture $Architecture
+
     $paths = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
         "--config-dir", $extractedConfigDir,
@@ -694,6 +749,17 @@ if ($help.Stdout -notmatch "Launch the standalone Zed terminal" -or $help.Stdout
     throw "packaged zed-terminal --help did not expose expected standalone help text"
 }
 
+$versionInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--version-info",
+    "--version-info-format", "json"
+)
+$versionInfoJson = $versionInfo.Stdout | ConvertFrom-Json
+Assert-VersionInfoJson `
+    -VersionInfo $versionInfoJson `
+    -Version $version `
+    -Platform $platform `
+    -Architecture $architecture
+
 $paths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $validationConfigDir,
@@ -798,9 +864,11 @@ $manifest = [pscustomobject]@{
     created_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     binary = $binaryFileName
     binary_sha256 = $binaryHash
+    version_info = $versionInfoJson
     config_template_dir = "config-template"
     validation = [pscustomobject]@{
         help = "ok"
+        version_info = "ok"
         paths = "ok"
         init_config = "ok"
         startup_schema = "ok"
@@ -869,6 +937,7 @@ $packageSummary = [pscustomobject]@{
     config_template_dir = $configTemplateDir
     binary = $packagedBinary
     binary_sha256 = $binaryHash
+    version_info = $versionInfoJson
     zip_file = $zipFile
     zip_sha256 = $zipHash
     zip_checksum_file = $zipChecksumFile
