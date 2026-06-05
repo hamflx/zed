@@ -79,12 +79,14 @@ $cliDataDir = Join-Path $runDir "cli-data"
 $cliConfigDir = Join-Path $runDir "cli-config"
 $brokenCliDataDir = Join-Path $runDir "broken-cli-data"
 $brokenCliConfigDir = Join-Path $runDir "broken-cli-config"
+$mutationCliDataDir = Join-Path $runDir "mutation-cli-data"
+$mutationCliConfigDir = Join-Path $runDir "mutation-cli-config"
 $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 
-New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $brokenCliDataDir, $brokenCliConfigDir | Out-Null
+New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $brokenCliDataDir, $brokenCliConfigDir, $mutationCliDataDir, $mutationCliConfigDir | Out-Null
 Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
 $script:StepResults = New-Object System.Collections.Generic.List[object]
@@ -497,6 +499,105 @@ try {
             )
             if ($defaultKeymap -match "do-not-log") {
                 throw "Default keymap output unexpectedly contained release fixture content."
+            }
+            Invoke-NativeJsonCommand "mutation-init-config" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--init-config",
+                "--init-config-format", "json"
+            )
+            $createdProfile = Invoke-NativeJsonCommandResult "mutation-create-profile" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--create-profile", "work",
+                "--profile-display-name", "Work Shell",
+                "--profile-description", "Project startup shell",
+                "--profile-icon", "terminal",
+                "--profile-color", "#0f766e",
+                "--create-profile-format", "json"
+            )
+            if ($createdProfile.profile -ne "work" -or $createdProfile.display_name -ne "Work Shell" -or -not $createdProfile.changed -or $createdProfile.total_profile_count -ne 1) {
+                throw "Profile creation mutation did not report the expected created work profile."
+            }
+            $defaultProfileUpdate = Invoke-NativeJsonCommandResult "mutation-set-default-profile" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--set-default-profile", "work",
+                "--default-profile-format", "json"
+            )
+            if ($defaultProfileUpdate.default_profile -ne "work" -or $null -ne $defaultProfileUpdate.previous_default_profile -or -not $defaultProfileUpdate.changed) {
+                throw "Default profile mutation did not report work as the new default profile."
+            }
+            $profileStartupUpdate = Invoke-NativeJsonCommandResult "mutation-update-profile-startup" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--update-profile-startup", "work",
+                "--profile-command", "pwsh -NoLogo",
+                "--profile-title", "Work Home",
+                "--update-profile-startup-format", "json"
+            )
+            if ($profileStartupUpdate.profile -ne "work" -or $profileStartupUpdate.command -ne "pwsh -NoLogo" -or $profileStartupUpdate.title -ne "Work Home" -or -not $profileStartupUpdate.changed) {
+                throw "Profile startup mutation did not report the expected command and title."
+            }
+            $profileEnvUpdate = Invoke-NativeJsonCommandResult "mutation-update-profile-env" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--update-profile-env", "work",
+                "--profile-env", "ZED_TERMINAL_MUTATION_TOKEN=release-check-value",
+                "--update-profile-env-format", "json"
+            )
+            $profileEnvKeys = @($profileEnvUpdate.env_keys)
+            if ($profileEnvUpdate.profile -ne "work" -or $profileEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN" -or -not $profileEnvUpdate.changed) {
+                throw "Profile environment mutation did not report the expected environment key."
+            }
+            $profileEnvUpdateText = $profileEnvUpdate | ConvertTo-Json -Depth 10
+            if ($profileEnvUpdateText -match "release-check-value") {
+                throw "Profile environment mutation output leaked an environment variable value."
+            }
+            $rootStartupTab = Invoke-NativeJsonCommandResult "mutation-add-startup-tab" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--add-startup-tab",
+                "--startup-tab-profile", "work",
+                "--startup-tab-title", "Work Tab",
+                "--startup-tab-split", "right",
+                "--add-startup-tab-format", "json"
+            )
+            if ($rootStartupTab.tab -ne 1 -or $rootStartupTab.tab_config.profile -ne "work" -or $rootStartupTab.tab_config.title -ne "Work Tab" -or $rootStartupTab.tab_config.split -ne "right" -or -not $rootStartupTab.changed) {
+                throw "Root startup tab mutation did not report the expected profile-backed split tab."
+            }
+            Invoke-NativeJsonCommand "mutation-validate-startup-config" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--validate-startup-config",
+                "--validate-startup-config-format", "json"
+            )
+            $mutationStartup = Invoke-NativeJsonCommandResult "mutation-describe-startup" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-startup",
+                "--describe-startup-format", "json"
+            )
+            $mutationTabs = @($mutationStartup.tabs)
+            if ($mutationStartup.default_profile -ne "work" -or $mutationStartup.profile_count -ne 1 -or $mutationStartup.visible_profile_count -ne 1 -or $mutationTabs.Count -ne 1) {
+                throw "Mutated startup description did not report the expected default profile and tab counts."
+            }
+            if ($mutationTabs[0].profile -ne "work" -or $mutationTabs[0].title -ne "Work Tab" -or $mutationTabs[0].split -ne "right") {
+                throw "Mutated startup description did not report the expected startup tab."
+            }
+            $mutationProfileDescription = Invoke-NativeJsonCommandResult "mutation-describe-profile-work" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-profile", "work",
+                "--describe-profile-format", "json"
+            )
+            $mutationProfileEnvKeys = @($mutationProfileDescription.env_keys)
+            if ($mutationProfileDescription.profile -ne "work" -or -not $mutationProfileDescription.is_default -or $mutationProfileDescription.command -ne "pwsh -NoLogo" -or $mutationProfileDescription.title -ne "Work Home" -or $mutationProfileEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
+                throw "Mutated profile description did not report the expected default profile state."
+            }
+            $mutationProfileDescriptionText = $mutationProfileDescription | ConvertTo-Json -Depth 10
+            if ($mutationProfileDescriptionText -match "release-check-value") {
+                throw "Mutated profile description leaked an environment variable value."
             }
             Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
 {
