@@ -1329,6 +1329,7 @@ try {
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupToolsPicker",
                 "zed_terminal::OpenActiveKeymapBindingsReport",
+                "zed_terminal::OpenPathsReport",
                 "zed_terminal::OpenVersionInfoReport",
                 "terminal::Paste",
                 "pane::CloseActiveItem"
@@ -1376,6 +1377,10 @@ try {
             $activeBindingsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenActiveKeymapBindingsReport" } | Select-Object -First 1
             if (-not $activeBindingsReportAction -or $activeBindingsReportAction.namespace -ne "zed_terminal" -or $activeBindingsReportAction.input -ne "none") {
                 throw "Keymap action list is missing the OpenActiveKeymapBindingsReport action metadata."
+            }
+            $pathsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenPathsReport" } | Select-Object -First 1
+            if (-not $pathsReportAction -or $pathsReportAction.namespace -ne "zed_terminal" -or $pathsReportAction.input -ne "none") {
+                throw "Keymap action list is missing the OpenPathsReport action metadata."
             }
             $versionInfoReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenVersionInfoReport" } | Select-Object -First 1
             if (-not $versionInfoReportAction -or $versionInfoReportAction.namespace -ne "zed_terminal" -or $versionInfoReportAction.input -ne "none") {
@@ -1455,6 +1460,15 @@ try {
             if ($activeBindingsReportActionDescription.action.name -ne "zed_terminal::OpenActiveKeymapBindingsReport" -or $activeBindingsReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected active bindings report action contract."
             }
+            $pathsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-paths-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenPathsReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($pathsReportActionDescription.action.name -ne "zed_terminal::OpenPathsReport" -or $pathsReportActionDescription.action.namespace -ne "zed_terminal" -or $pathsReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected paths report action contract."
+            }
             $versionInfoReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-version-info-report" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -1481,6 +1495,7 @@ try {
                 $startupToolsPickerActionDescription,
                 $keymapToolsPickerActionDescription,
                 $activeBindingsReportActionDescription,
+                $pathsReportActionDescription,
                 $versionInfoReportActionDescription,
                 $pasteActionDescription
             ) | ConvertTo-Json -Depth 20

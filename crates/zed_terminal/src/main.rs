@@ -59,6 +59,7 @@ actions!(
         OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
         OpenDataDirectory,
+        OpenPathsReport,
         OpenDiagnosticsReport,
         OpenVersionInfoReport,
         OpenSupportInfoReport,
@@ -166,6 +167,7 @@ const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_KEYMAP_SCHEMA_FILE: &str = "keymap.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
+const TERMINAL_PATHS_REPORT_FILE: &str = "zed-terminal-paths.json";
 const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_VERSION_INFO_REPORT_FILE: &str = "zed-terminal-version-info.json";
 const TERMINAL_SUPPORT_INFO_REPORT_FILE: &str = "zed-terminal-support-info.txt";
@@ -19586,6 +19588,21 @@ fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> 
         .with_context(|| format!("failed to write diagnostics report {}", path.display()))
 }
 
+fn write_paths_report_file(path: &Path, report: &TerminalPathReport) -> Result<()> {
+    let report = format_terminal_paths_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create paths report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write paths report {}", path.display()))
+}
+
 fn write_version_info_report_file(path: &Path, report: &TerminalVersionInfo) -> Result<()> {
     let report = format_terminal_version_info_json(report)?;
     if let Some(parent) = path.parent() {
@@ -21917,6 +21934,10 @@ fn active_terminal_diagnostics_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
 }
 
+fn active_terminal_paths_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PATHS_REPORT_FILE)
+}
+
 fn active_terminal_version_info_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_VERSION_INFO_REPORT_FILE)
 }
@@ -22045,6 +22066,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
+    cx.on_action(open_paths_report);
     cx.on_action(open_diagnostics_report);
     cx.on_action(open_version_info_report);
     cx.on_action(open_support_info_report);
@@ -22283,6 +22305,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenConfigDirectory>(),
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
+        TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
         TerminalActionSurface::new::<OpenActiveKeymapBindingsReport>(),
@@ -23001,6 +23024,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
+        MenuItem::action("Open Paths Report", OpenPathsReport),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
         MenuItem::action("Open Version Info Report", OpenVersionInfoReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
@@ -23925,6 +23949,17 @@ fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
     }
 
     cx.open_with_system(&diagnostics_report_file);
+}
+
+fn open_paths_report(_: &OpenPathsReport, cx: &mut App) {
+    let paths_report_file = active_terminal_paths_report_file();
+    let report = active_terminal_path_report();
+    if let Err(error) = write_paths_report_file(&paths_report_file, &report) {
+        log::warn!("failed to write paths report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&paths_report_file);
 }
 
 fn open_version_info_report(_: &OpenVersionInfoReport, cx: &mut App) {
@@ -24992,6 +25027,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
+        assert_command_palette_action_visible(&filter, &OpenPathsReport);
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
         assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
@@ -26201,6 +26237,7 @@ mod tests {
             "Open Data Directory",
             "zed_terminal::OpenDataDirectory",
         );
+        assert_menu_action(&items, "Open Paths Report", "zed_terminal::OpenPathsReport");
         assert_menu_action(
             &items,
             "Open Diagnostics Report",
@@ -27094,6 +27131,14 @@ mod tests {
                 .downcast_ref::<OpenSupportInfoReport>()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn parses_open_paths_report_action_input() {
+        let action = <OpenPathsReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open paths report action input should parse");
+
+        assert!(action.as_any().downcast_ref::<OpenPathsReport>().is_some());
     }
 
     #[test]
@@ -30045,6 +30090,31 @@ mod tests {
         assert_eq!(json["settings"]["files"][0]["source"], "file");
         assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
         assert!(diagnostics_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_paths_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let paths_file = root_dir.join("logs").join(TERMINAL_PATHS_REPORT_FILE);
+        let report = sample_path_report();
+
+        write_paths_report_file(&paths_file, &report).expect("paths report should write");
+
+        let report_text = std_fs::read_to_string(&paths_file).expect("failed to read paths report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("paths report should parse");
+        assert_eq!(json["mode"], report.mode.as_str());
+        assert_eq!(json["config_dir"], report.config_dir.display().to_string());
+        assert_eq!(json["data_dir"], report.data_dir.display().to_string());
+        assert_eq!(json["logs_dir"], report.logs_dir.display().to_string());
+        assert_eq!(
+            json["startup_config_file"],
+            report.startup_config_file.display().to_string()
+        );
+        assert_eq!(json["log_file"], report.log_file.display().to_string());
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
