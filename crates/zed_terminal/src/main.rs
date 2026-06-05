@@ -59,6 +59,7 @@ actions!(
         OpenDiagnosticsReport,
         OpenSupportInfoReport,
         OpenStartupDescriptionReport,
+        OpenStartupProfilePicker,
         OpenStartupProfilesReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -17269,6 +17270,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupConfigValidationReport>(),
         TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
         TerminalActionSurface::new::<OpenStartupProfileConfig>(),
+        TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenThemesDirectory>(),
         TerminalActionSurface::new::<ResetPaneSizes>(),
@@ -17643,6 +17645,8 @@ fn shell_menu_items_with_visibility(
         MenuItem::action("New Tab", NewTerminalTab),
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
         MenuItem::action("Reopen Closed Tab", workspace::pane::ReopenClosedItem),
+        MenuItem::separator(),
+        MenuItem::action("Open Profile Picker...", OpenStartupProfilePicker),
         MenuItem::separator(),
         MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
         MenuItem::action("Duplicate Split Right", DuplicateTerminalSplitRight),
@@ -18096,6 +18100,9 @@ fn open_terminal_window(
                             log::warn!("failed to open new terminal window: {error:#}");
                         }
                     }
+                });
+                workspace.register_action(|workspace, _: &OpenStartupProfilePicker, window, cx| {
+                    command_palette::CommandPalette::toggle(workspace, "profile", window, cx);
                 });
                 let profile_terminal_window_app_state = app_state.clone();
                 workspace.register_action(
@@ -19756,6 +19763,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenKeymapActionCatalogReport);
         assert_command_palette_action_visible(&filter, &OpenActiveKeymapBindingsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(
             &filter,
@@ -20555,6 +20563,17 @@ mod tests {
         let items = shell_menu_items(Vec::new());
 
         assert_menu_action(&items, "Reopen Closed Tab", "pane::ReopenClosedItem");
+    }
+
+    #[test]
+    fn shell_menu_exposes_profile_picker_action() {
+        let items = shell_menu_items(Vec::new());
+
+        assert_menu_action(
+            &items,
+            "Open Profile Picker...",
+            "zed_terminal::OpenStartupProfilePicker",
+        );
     }
 
     #[test]
@@ -21414,6 +21433,20 @@ mod tests {
         .expect_err("unknown startup profile config action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_open_startup_profile_picker_action_input() {
+        let action =
+            <OpenStartupProfilePicker as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup profile picker action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfilePicker>()
+                .is_some()
+        );
     }
 
     #[test]
@@ -23444,6 +23477,7 @@ mod tests {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::OpenStartupProfileConfig",
+            "zed_terminal::OpenStartupProfilePicker",
             "terminal::Paste",
             "pane::CloseActiveItem",
         ] {
@@ -23512,6 +23546,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenStartupProfileConfig")
             .expect("profile config action should be listed");
         assert_eq!(profile_config.input, TerminalKeymapActionInput::Object);
+
+        let profile_picker = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfilePicker")
+            .expect("profile picker action should be listed");
+        assert_eq!(profile_picker.input, TerminalKeymapActionInput::None);
 
         let paste = report
             .actions
