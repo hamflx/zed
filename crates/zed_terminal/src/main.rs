@@ -31,7 +31,7 @@ use node_runtime::NodeRuntime;
 use project::Project;
 use reqwest_client::ReqwestClient;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use session::{AppSession, Session};
 use settings::{KeybindSource, KeymapFile, KeymapFileLoadResult, Settings};
 use task::{
@@ -180,6 +180,8 @@ const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
 const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
+const TERMINAL_SETTINGS_BACKUP_FORMAT: &str = "zed-terminal-settings-backup";
+const TERMINAL_SETTINGS_BACKUP_VERSION: u64 = 1;
 const TERMINAL_CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -223,6 +225,24 @@ Startup config backup and restore options:
           Validate settings.json and global_settings.json without opening a terminal window
       --validate-settings-format <text|json>
           Set the output format for --validate-settings
+
+Settings backup and restore options:
+      --backup-settings --backup-settings-file <FILE>
+          Back up settings.json and global_settings.json to a portable backup file without opening a terminal window
+      --backup-settings-format <text|json>
+          Set the output format for --backup-settings
+      --check-settings-backup --check-settings-backup-file <FILE>
+          Validate and compare settings.json/global_settings.json with a backup file without opening a terminal window
+      --check-settings-backup-format <text|json>
+          Set the output format for --check-settings-backup
+      --diff-settings-backup --diff-settings-backup-file <FILE>
+          Summarize differences between settings.json/global_settings.json and a backup file without opening a terminal window
+      --diff-settings-backup-format <text|json>
+          Set the output format for --diff-settings-backup
+      --restore-settings --restore-settings-file <FILE>
+          Restore settings.json and global_settings.json from a verified backup file without opening a terminal window
+      --restore-settings-format <text|json>
+          Set the output format for --restore-settings
 
 Keymap backup and restore options:
       --backup-keymap --backup-keymap-file <FILE>
@@ -3002,6 +3022,34 @@ struct TerminalStartupConfigRestoreCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalSettingsBackupOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupCheckCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalSettingsBackupCheckOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupDiffCommand {
+    path_options: TerminalPathOptions,
+    backup_file: PathBuf,
+    format: TerminalSettingsBackupDiffOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsRestoreCommand {
+    path_options: TerminalPathOptions,
+    restore_file: PathBuf,
+    format: TerminalSettingsRestoreOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalKeymapBackupCommand {
     path_options: TerminalPathOptions,
     backup_file: PathBuf,
@@ -4034,6 +4082,110 @@ struct TerminalSettingsValidationReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackup {
+    settings_file: TerminalSettingsBackupFileSummary,
+    global_settings_file: TerminalSettingsBackupFileSummary,
+    backup_file: PathBuf,
+    backup_byte_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupCheck {
+    settings_file: TerminalSettingsBackupFileComparison,
+    global_settings_file: TerminalSettingsBackupFileComparison,
+    backup_file: PathBuf,
+    matches: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupDiff {
+    settings_file: TerminalSettingsBackupFileComparison,
+    global_settings_file: TerminalSettingsBackupFileComparison,
+    backup_file: PathBuf,
+    matches: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsRestore {
+    settings_file: TerminalSettingsRestoreFileSummary,
+    global_settings_file: TerminalSettingsRestoreFileSummary,
+    restore_file: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupFileSummary {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    byte_count: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsBackupFileComparison {
+    label: &'static str,
+    path: PathBuf,
+    exists: bool,
+    backup_exists: bool,
+    byte_count: Option<u64>,
+    backup_byte_count: Option<u64>,
+    text_matches: bool,
+    settings_matches: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsRestoreFileSummary {
+    label: &'static str,
+    path: PathBuf,
+    restored_exists: bool,
+    byte_count: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSettingsBackupDiffCategory {
+    Text,
+    Settings,
+    Presence,
+    ByteCount,
+}
+
+impl TerminalSettingsBackupDiffCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Settings => "settings",
+            Self::Presence => "presence",
+            Self::ByteCount => "byte_count",
+        }
+    }
+}
+
+impl TerminalSettingsBackupFileComparison {
+    fn is_exact_match(&self) -> bool {
+        self.exists == self.backup_exists
+            && self.byte_count == self.backup_byte_count
+            && self.text_matches
+            && self.settings_matches
+    }
+
+    fn categories(&self) -> Vec<TerminalSettingsBackupDiffCategory> {
+        let mut categories = Vec::new();
+        if self.exists != self.backup_exists {
+            categories.push(TerminalSettingsBackupDiffCategory::Presence);
+        }
+        if !self.text_matches {
+            categories.push(TerminalSettingsBackupDiffCategory::Text);
+        }
+        if !self.settings_matches {
+            categories.push(TerminalSettingsBackupDiffCategory::Settings);
+        }
+        if self.byte_count != self.backup_byte_count {
+            categories.push(TerminalSettingsBackupDiffCategory::ByteCount);
+        }
+        categories
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalSettingsFileValidation {
     label: &'static str,
     path: PathBuf,
@@ -4049,6 +4201,39 @@ struct TerminalSettingsFileValidation {
 enum TerminalSettingsFileKind {
     User,
     Global,
+}
+
+impl TerminalSettingsFileKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::User => "settings_file",
+            Self::Global => "global_settings_file",
+        }
+    }
+
+    fn file_name(self) -> &'static str {
+        match self {
+            Self::User => "settings.json",
+            Self::Global => "global_settings.json",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalSettingsBackupFile {
+    label: String,
+    file_name: String,
+    exists: bool,
+    content: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalSettingsBackupPackage {
+    format: String,
+    version: u64,
+    files: Vec<TerminalSettingsBackupFile>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4499,6 +4684,34 @@ enum TerminalStartupConfigBackupDiffOutputFormat {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigRestoreOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSettingsBackupOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSettingsBackupCheckOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSettingsBackupDiffOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSettingsRestoreOutputFormat {
     #[default]
     Text,
     Json,
@@ -6083,6 +6296,123 @@ enum TerminalKeymapFileCommand {
     Restore(TerminalKeymapRestoreCommand),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalSettingsFileCommand {
+    Backup(TerminalSettingsBackupCommand),
+    CheckBackup(TerminalSettingsBackupCheckCommand),
+    DiffBackup(TerminalSettingsBackupDiffCommand),
+    Restore(TerminalSettingsRestoreCommand),
+}
+
+impl TerminalSettingsFileCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalSettingsFileParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--backup-settings" => {
+                    if inline_value.is_some() {
+                        bail!("--backup-settings does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--backup-settings")?);
+                }
+                "--backup-settings-file" => {
+                    parser.backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_settings_file_option = true;
+                }
+                "--backup-settings-format" => {
+                    parser.backup_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_settings_file_option = true;
+                }
+                "--check-settings-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--check-settings-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--check-settings-backup")?);
+                }
+                "--check-settings-backup-file" => {
+                    parser.check_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_settings_file_option = true;
+                }
+                "--check-settings-backup-format" => {
+                    parser.check_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_settings_file_option = true;
+                }
+                "--diff-settings-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--diff-settings-backup does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--diff-settings-backup")?);
+                }
+                "--diff-settings-backup-file" => {
+                    parser.diff_backup_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_settings_file_option = true;
+                }
+                "--diff-settings-backup-format" => {
+                    parser.diff_backup_format =
+                        Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_settings_file_option = true;
+                }
+                "--restore-settings" => {
+                    if inline_value.is_some() {
+                        bail!("--restore-settings does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--restore-settings")?);
+                }
+                "--restore-settings-file" => {
+                    parser.restore_file =
+                        Some(PathBuf::from(cli_os_value(&mut args, flag, inline_value)?));
+                    parser.seen_settings_file_option = true;
+                }
+                "--restore-settings-format" => {
+                    parser.restore_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_settings_file_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Backup(command) => &command.path_options,
+            Self::CheckBackup(command) => &command.path_options,
+            Self::DiffBackup(command) => &command.path_options,
+            Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
 impl TerminalKeymapFileCommand {
     fn from_env_args() -> Result<Option<Self>> {
         Self::from_args(env::args_os())
@@ -6355,6 +6685,180 @@ impl TerminalKeymapFileParser {
                 }
                 if self.restore_format.is_some() {
                     bail!("--restore-keymap-format requires --restore-keymap");
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalSettingsFileParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_settings_file_option: bool,
+    pre_settings_file_arg: Option<String>,
+    backup_file: Option<PathBuf>,
+    backup_format: Option<String>,
+    check_backup_file: Option<PathBuf>,
+    check_backup_format: Option<String>,
+    diff_backup_file: Option<PathBuf>,
+    diff_backup_format: Option<String>,
+    restore_file: Option<PathBuf>,
+    restore_format: Option<String>,
+}
+
+impl TerminalSettingsFileParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_settings_file_option = true;
+        if let Some(arg) = &self.pre_settings_file_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_settings_file_option {
+            let mode = self.mode.unwrap_or("terminal settings file command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_settings_file_arg.is_none() {
+            self.pre_settings_file_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalSettingsFileCommand>> {
+        if !self.seen_settings_file_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--backup-settings") => {
+                if self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--backup-settings cannot be used with other settings file options");
+                }
+                let backup_file = self
+                    .backup_file
+                    .context("--backup-settings requires --backup-settings-file")?;
+                Ok(Some(TerminalSettingsFileCommand::Backup(
+                    TerminalSettingsBackupCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_settings_backup_output_format(self.backup_format.as_deref())?,
+                    },
+                )))
+            }
+            Some("--check-settings-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!(
+                        "--check-settings-backup cannot be used with other settings file options"
+                    );
+                }
+                let backup_file = self
+                    .check_backup_file
+                    .context("--check-settings-backup requires --check-settings-backup-file")?;
+                Ok(Some(TerminalSettingsFileCommand::CheckBackup(
+                    TerminalSettingsBackupCheckCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_settings_backup_check_output_format(
+                            self.check_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--diff-settings-backup") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.restore_file.is_some()
+                    || self.restore_format.is_some()
+                {
+                    bail!("--diff-settings-backup cannot be used with other settings file options");
+                }
+                let backup_file = self
+                    .diff_backup_file
+                    .context("--diff-settings-backup requires --diff-settings-backup-file")?;
+                Ok(Some(TerminalSettingsFileCommand::DiffBackup(
+                    TerminalSettingsBackupDiffCommand {
+                        path_options,
+                        backup_file,
+                        format: parse_settings_backup_diff_output_format(
+                            self.diff_backup_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--restore-settings") => {
+                if self.backup_file.is_some()
+                    || self.backup_format.is_some()
+                    || self.check_backup_file.is_some()
+                    || self.check_backup_format.is_some()
+                    || self.diff_backup_file.is_some()
+                    || self.diff_backup_format.is_some()
+                {
+                    bail!("--restore-settings cannot be used with other settings file options");
+                }
+                let restore_file = self
+                    .restore_file
+                    .context("--restore-settings requires --restore-settings-file")?;
+                Ok(Some(TerminalSettingsFileCommand::Restore(
+                    TerminalSettingsRestoreCommand {
+                        path_options,
+                        restore_file,
+                        format: parse_settings_restore_output_format(
+                            self.restore_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some(mode) => bail!("unsupported terminal settings file mode: {mode}"),
+            None => {
+                if self.backup_file.is_some() {
+                    bail!("--backup-settings-file requires --backup-settings");
+                }
+                if self.backup_format.is_some() {
+                    bail!("--backup-settings-format requires --backup-settings");
+                }
+                if self.check_backup_file.is_some() {
+                    bail!("--check-settings-backup-file requires --check-settings-backup");
+                }
+                if self.check_backup_format.is_some() {
+                    bail!("--check-settings-backup-format requires --check-settings-backup");
+                }
+                if self.diff_backup_file.is_some() {
+                    bail!("--diff-settings-backup-file requires --diff-settings-backup");
+                }
+                if self.diff_backup_format.is_some() {
+                    bail!("--diff-settings-backup-format requires --diff-settings-backup");
+                }
+                if self.restore_file.is_some() {
+                    bail!("--restore-settings-file requires --restore-settings");
+                }
+                if self.restore_format.is_some() {
+                    bail!("--restore-settings-format requires --restore-settings");
                 }
                 Ok(None)
             }
@@ -7623,6 +8127,18 @@ fn main() {
         }
     }
 
+    match TerminalSettingsFileCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_settings_file_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalKeymapFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_keymap_file_command(command);
@@ -8016,6 +8532,45 @@ fn run_terminal_keymap_discovery_command(command: TerminalKeymapDiscoveryCommand
             run_active_keymap_binding_list_printing(command.contexts, command.format)
         }
     }
+}
+
+fn run_terminal_settings_file_command(command: TerminalSettingsFileCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            let result = match command {
+                TerminalSettingsFileCommand::Backup(command) => {
+                    print_settings_backup(&command.backup_file, command.format, cx)
+                }
+                TerminalSettingsFileCommand::CheckBackup(command) => {
+                    print_settings_backup_check(&command.backup_file, command.format, cx)
+                }
+                TerminalSettingsFileCommand::DiffBackup(command) => {
+                    print_settings_backup_diff(&command.backup_file, command.format, cx)
+                }
+                TerminalSettingsFileCommand::Restore(command) => {
+                    print_settings_restore(&command.restore_file, command.format, cx)
+                }
+            };
+
+            match result {
+                Ok(()) => io::stdout()
+                    .flush()
+                    .expect("failed to flush terminal settings file output"),
+                Err(error) => {
+                    eprintln!("failed to manage terminal settings file: {error:#}");
+                    io::stderr().flush().ok();
+                    cx.quit();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
 }
 
 fn run_terminal_keymap_file_command(command: TerminalKeymapFileCommand) {
@@ -9052,6 +9607,92 @@ fn print_startup_config_restore(
     Ok(())
 }
 
+fn print_settings_backup(
+    backup_file: &Path,
+    format: TerminalSettingsBackupOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let backup = backup_settings(
+        paths::settings_file(),
+        paths::global_settings_file(),
+        backup_file,
+        cx,
+    )?;
+    match format {
+        TerminalSettingsBackupOutputFormat::Text => print!("{}", format_settings_backup(&backup)),
+        TerminalSettingsBackupOutputFormat::Json => {
+            print!("{}", format_settings_backup_json(&backup)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_settings_backup_check(
+    backup_file: &Path,
+    format: TerminalSettingsBackupCheckOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let check = check_settings_backup(
+        paths::settings_file(),
+        paths::global_settings_file(),
+        backup_file,
+        cx,
+    )?;
+    match format {
+        TerminalSettingsBackupCheckOutputFormat::Text => {
+            print!("{}", format_settings_backup_check(&check))
+        }
+        TerminalSettingsBackupCheckOutputFormat::Json => {
+            print!("{}", format_settings_backup_check_json(&check)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_settings_backup_diff(
+    backup_file: &Path,
+    format: TerminalSettingsBackupDiffOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let diff = diff_settings_backup(
+        paths::settings_file(),
+        paths::global_settings_file(),
+        backup_file,
+        cx,
+    )?;
+    match format {
+        TerminalSettingsBackupDiffOutputFormat::Text => {
+            print!("{}", format_settings_backup_diff(&diff))
+        }
+        TerminalSettingsBackupDiffOutputFormat::Json => {
+            print!("{}", format_settings_backup_diff_json(&diff)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_settings_restore(
+    restore_file: &Path,
+    format: TerminalSettingsRestoreOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let restore = restore_settings(
+        paths::settings_file(),
+        paths::global_settings_file(),
+        restore_file,
+        cx,
+    )?;
+    match format {
+        TerminalSettingsRestoreOutputFormat::Text => {
+            print!("{}", format_settings_restore(&restore))
+        }
+        TerminalSettingsRestoreOutputFormat::Json => {
+            print!("{}", format_settings_restore_json(&restore)?)
+        }
+    }
+    Ok(())
+}
+
 fn print_keymap_backup(
     backup_file: &Path,
     format: TerminalKeymapBackupOutputFormat,
@@ -9531,6 +10172,50 @@ fn parse_startup_config_restore_output_format(
         format => {
             bail!("unsupported --restore-startup-config-format {format:?}; expected text or json")
         }
+    }
+}
+
+fn parse_settings_backup_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSettingsBackupOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSettingsBackupOutputFormat::Text),
+        "json" => Ok(TerminalSettingsBackupOutputFormat::Json),
+        format => bail!("unsupported --backup-settings-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_settings_backup_check_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSettingsBackupCheckOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSettingsBackupCheckOutputFormat::Text),
+        "json" => Ok(TerminalSettingsBackupCheckOutputFormat::Json),
+        format => {
+            bail!("unsupported --check-settings-backup-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_settings_backup_diff_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSettingsBackupDiffOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSettingsBackupDiffOutputFormat::Text),
+        "json" => Ok(TerminalSettingsBackupDiffOutputFormat::Json),
+        format => {
+            bail!("unsupported --diff-settings-backup-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_settings_restore_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSettingsRestoreOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSettingsRestoreOutputFormat::Text),
+        "json" => Ok(TerminalSettingsRestoreOutputFormat::Json),
+        format => bail!("unsupported --restore-settings-format {format:?}; expected text or json"),
     }
 }
 
@@ -12858,6 +13543,487 @@ fn read_valid_startup_config_text(path: &Path, label: &str) -> Result<TerminalSt
     })
 }
 
+fn backup_settings(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsBackup> {
+    reject_settings_backup_target(settings_file, global_settings_file, backup_file, "backup")?;
+
+    let settings = read_settings_snapshot(TerminalSettingsFileKind::User, settings_file, cx)?;
+    let global_settings =
+        read_settings_snapshot(TerminalSettingsFileKind::Global, global_settings_file, cx)?;
+    let package = TerminalSettingsBackupPackage {
+        format: TERMINAL_SETTINGS_BACKUP_FORMAT.into(),
+        version: TERMINAL_SETTINGS_BACKUP_VERSION,
+        files: vec![settings.to_backup_file(), global_settings.to_backup_file()],
+    };
+    let mut content = serde_json::to_string_pretty(&package)
+        .context("failed to serialize terminal settings backup")?;
+    content.push('\n');
+
+    if let Some(parent) = backup_file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create terminal settings backup directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std_fs::write(backup_file, content).with_context(|| {
+        format!(
+            "failed to write terminal settings backup {}",
+            backup_file.display()
+        )
+    })?;
+    let backup_byte_count = std_fs::metadata(backup_file)
+        .with_context(|| {
+            format!(
+                "failed to inspect terminal settings backup {}",
+                backup_file.display()
+            )
+        })?
+        .len();
+
+    Ok(TerminalSettingsBackup {
+        settings_file: settings.summary(),
+        global_settings_file: global_settings.summary(),
+        backup_file: backup_file.to_path_buf(),
+        backup_byte_count,
+    })
+}
+
+fn check_settings_backup(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsBackupCheck> {
+    reject_settings_backup_target(settings_file, global_settings_file, backup_file, "backup")?;
+
+    let active = read_settings_snapshots(settings_file, global_settings_file, cx)?;
+    let backup = read_settings_backup_package(backup_file, cx)?;
+    let settings_file = compare_settings_snapshot(&active.settings_file, &backup.settings_file);
+    let global_settings_file =
+        compare_settings_snapshot(&active.global_settings_file, &backup.global_settings_file);
+    let matches = settings_file.is_exact_match() && global_settings_file.is_exact_match();
+
+    Ok(TerminalSettingsBackupCheck {
+        settings_file,
+        global_settings_file,
+        backup_file: backup_file.to_path_buf(),
+        matches,
+    })
+}
+
+fn diff_settings_backup(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsBackupDiff> {
+    let check = check_settings_backup(settings_file, global_settings_file, backup_file, cx)?;
+    Ok(TerminalSettingsBackupDiff {
+        settings_file: check.settings_file,
+        global_settings_file: check.global_settings_file,
+        backup_file: check.backup_file,
+        matches: check.matches,
+    })
+}
+
+fn restore_settings(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    restore_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsRestore> {
+    reject_settings_backup_target(settings_file, global_settings_file, restore_file, "restore")?;
+
+    let backup = read_settings_backup_package(restore_file, cx)?;
+    let settings_file = restore_settings_snapshot(settings_file, &backup.settings_file)?;
+    let global_settings_file =
+        restore_settings_snapshot(global_settings_file, &backup.global_settings_file)?;
+
+    Ok(TerminalSettingsRestore {
+        settings_file,
+        global_settings_file,
+        restore_file: restore_file.to_path_buf(),
+    })
+}
+
+fn reject_settings_backup_target(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    backup_file: &Path,
+    operation: &str,
+) -> Result<()> {
+    for settings_path in [settings_file, global_settings_file] {
+        if paths_refer_to_same_file(settings_path, backup_file)? {
+            bail!(
+                "{operation} file {} must be different from terminal settings file {}",
+                backup_file.display(),
+                settings_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+struct TerminalSettingsSnapshots {
+    settings_file: TerminalSettingsSnapshot,
+    global_settings_file: TerminalSettingsSnapshot,
+}
+
+struct TerminalSettingsBackupSnapshots {
+    settings_file: TerminalSettingsSnapshot,
+    global_settings_file: TerminalSettingsSnapshot,
+}
+
+struct TerminalSettingsSnapshot {
+    kind: TerminalSettingsFileKind,
+    path: PathBuf,
+    exists: bool,
+    content: Option<String>,
+    byte_count: Option<u64>,
+    json: Option<serde_json::Value>,
+}
+
+impl TerminalSettingsSnapshot {
+    fn summary(&self) -> TerminalSettingsBackupFileSummary {
+        TerminalSettingsBackupFileSummary {
+            label: self.kind.label(),
+            path: self.path.clone(),
+            exists: self.exists,
+            byte_count: self.byte_count,
+        }
+    }
+
+    fn to_backup_file(&self) -> TerminalSettingsBackupFile {
+        TerminalSettingsBackupFile {
+            label: self.kind.label().into(),
+            file_name: self.kind.file_name().into(),
+            exists: self.exists,
+            content: self.content.clone(),
+        }
+    }
+}
+
+fn read_settings_snapshots(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsSnapshots> {
+    Ok(TerminalSettingsSnapshots {
+        settings_file: read_settings_snapshot(TerminalSettingsFileKind::User, settings_file, cx)?,
+        global_settings_file: read_settings_snapshot(
+            TerminalSettingsFileKind::Global,
+            global_settings_file,
+            cx,
+        )?,
+    })
+}
+
+fn read_settings_snapshot(
+    kind: TerminalSettingsFileKind,
+    path: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsSnapshot> {
+    let metadata = match std_fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalSettingsSnapshot {
+                kind,
+                path: path.to_path_buf(),
+                exists: false,
+                content: None,
+                byte_count: None,
+                json: None,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect terminal settings {}", path.display())
+            });
+        }
+    };
+
+    if !metadata.is_file() {
+        bail!("terminal settings {} is not a file", path.display());
+    }
+
+    let content = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal settings {}", path.display()))?;
+    let json = validate_settings_content(kind, &content, cx).with_context(|| {
+        format!(
+            "refusing to use invalid terminal settings {}",
+            path.display()
+        )
+    })?;
+
+    Ok(TerminalSettingsSnapshot {
+        kind,
+        path: path.to_path_buf(),
+        exists: true,
+        content: Some(content),
+        byte_count: Some(metadata.len()),
+        json: Some(json),
+    })
+}
+
+fn validate_settings_content(
+    kind: TerminalSettingsFileKind,
+    content: &str,
+    cx: &mut App,
+) -> Result<serde_json::Value> {
+    let mut store = settings::SettingsStore::new(cx, &settings::default_settings());
+    let parse_result = match kind {
+        TerminalSettingsFileKind::User => store.set_user_settings(content, cx),
+        TerminalSettingsFileKind::Global => store.set_global_settings(content, cx),
+    };
+    if parse_result.requires_user_action() {
+        let message = settings_parse_result_message(&parse_result)
+            .unwrap_or_else(|| "settings require user action".into());
+        bail!("{message}");
+    }
+
+    settings::parse_json_with_comments::<serde_json::Value>(content)
+        .context("failed to parse settings json")
+}
+
+fn read_settings_backup_package(
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsBackupSnapshots> {
+    let metadata = std_fs::metadata(backup_file).with_context(|| {
+        format!(
+            "failed to inspect terminal settings backup {}",
+            backup_file.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        bail!(
+            "terminal settings backup {} is not a file",
+            backup_file.display()
+        );
+    }
+
+    let content = std_fs::read_to_string(backup_file).with_context(|| {
+        format!(
+            "failed to read terminal settings backup {}",
+            backup_file.display()
+        )
+    })?;
+    let package: TerminalSettingsBackupPackage =
+        serde_json::from_str(&content).with_context(|| {
+            format!(
+                "failed to parse terminal settings backup {}",
+                backup_file.display()
+            )
+        })?;
+    validate_settings_backup_package(package, backup_file, cx)
+}
+
+fn validate_settings_backup_package(
+    package: TerminalSettingsBackupPackage,
+    backup_file: &Path,
+    cx: &mut App,
+) -> Result<TerminalSettingsBackupSnapshots> {
+    if package.format != TERMINAL_SETTINGS_BACKUP_FORMAT {
+        bail!(
+            "unsupported terminal settings backup format {:?}; expected {:?}",
+            package.format,
+            TERMINAL_SETTINGS_BACKUP_FORMAT
+        );
+    }
+    if package.version != TERMINAL_SETTINGS_BACKUP_VERSION {
+        bail!(
+            "unsupported terminal settings backup version {}; expected {}",
+            package.version,
+            TERMINAL_SETTINGS_BACKUP_VERSION
+        );
+    }
+    if package.files.len() != 2 {
+        bail!(
+            "terminal settings backup must contain exactly 2 files; found {}",
+            package.files.len()
+        );
+    }
+
+    let mut files = BTreeMap::new();
+    for file in package.files {
+        let label = file.label.clone();
+        if files.insert(label.clone(), file).is_some() {
+            bail!("terminal settings backup contains duplicate file label {label:?}");
+        }
+    }
+
+    Ok(TerminalSettingsBackupSnapshots {
+        settings_file: backup_snapshot_from_package_file(
+            backup_file,
+            TerminalSettingsFileKind::User,
+            files.remove(TerminalSettingsFileKind::User.label()),
+            cx,
+        )?,
+        global_settings_file: backup_snapshot_from_package_file(
+            backup_file,
+            TerminalSettingsFileKind::Global,
+            files.remove(TerminalSettingsFileKind::Global.label()),
+            cx,
+        )?,
+    })
+}
+
+fn backup_snapshot_from_package_file(
+    backup_file: &Path,
+    kind: TerminalSettingsFileKind,
+    file: Option<TerminalSettingsBackupFile>,
+    cx: &mut App,
+) -> Result<TerminalSettingsSnapshot> {
+    let Some(file) = file else {
+        bail!("terminal settings backup is missing {}", kind.label());
+    };
+    if file.label != kind.label() {
+        bail!(
+            "terminal settings backup file label {:?} does not match expected {:?}",
+            file.label,
+            kind.label()
+        );
+    }
+    if file.file_name != kind.file_name() {
+        bail!(
+            "terminal settings backup file {:?} has unexpected file_name {:?}; expected {:?}",
+            kind.label(),
+            file.file_name,
+            kind.file_name()
+        );
+    }
+    match (file.exists, file.content) {
+        (true, Some(content)) => {
+            let json = validate_settings_content(kind, &content, cx).with_context(|| {
+                format!(
+                    "refusing to use invalid {} from terminal settings backup {}",
+                    kind.label(),
+                    backup_file.display()
+                )
+            })?;
+            Ok(TerminalSettingsSnapshot {
+                kind,
+                path: PathBuf::from(kind.file_name()),
+                exists: true,
+                byte_count: Some(content.len() as u64),
+                content: Some(content),
+                json: Some(json),
+            })
+        }
+        (true, None) => {
+            bail!(
+                "terminal settings backup file {:?} is marked present but has no content",
+                kind.label()
+            );
+        }
+        (false, Some(_)) => {
+            bail!(
+                "terminal settings backup file {:?} is marked missing but contains content",
+                kind.label()
+            );
+        }
+        (false, None) => Ok(TerminalSettingsSnapshot {
+            kind,
+            path: PathBuf::from(kind.file_name()),
+            exists: false,
+            content: None,
+            byte_count: None,
+            json: None,
+        }),
+    }
+}
+
+fn compare_settings_snapshot(
+    active: &TerminalSettingsSnapshot,
+    backup: &TerminalSettingsSnapshot,
+) -> TerminalSettingsBackupFileComparison {
+    let text_matches = active.exists == backup.exists && active.content == backup.content;
+    let settings_matches = active.exists == backup.exists && active.json == backup.json;
+
+    TerminalSettingsBackupFileComparison {
+        label: active.kind.label(),
+        path: active.path.clone(),
+        exists: active.exists,
+        backup_exists: backup.exists,
+        byte_count: active.byte_count,
+        backup_byte_count: backup.byte_count,
+        text_matches,
+        settings_matches,
+    }
+}
+
+fn restore_settings_snapshot(
+    target_path: &Path,
+    backup: &TerminalSettingsSnapshot,
+) -> Result<TerminalSettingsRestoreFileSummary> {
+    if backup.exists {
+        let content = backup
+            .content
+            .as_ref()
+            .context("settings backup entry is missing content")?;
+        if let Some(parent) = target_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create terminal settings directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        std_fs::write(target_path, content).with_context(|| {
+            format!(
+                "failed to write terminal settings {}",
+                target_path.display()
+            )
+        })?;
+        Ok(TerminalSettingsRestoreFileSummary {
+            label: backup.kind.label(),
+            path: target_path.to_path_buf(),
+            restored_exists: true,
+            byte_count: Some(content.len() as u64),
+        })
+    } else {
+        match std_fs::metadata(target_path) {
+            Ok(metadata) if metadata.is_file() => {
+                std_fs::remove_file(target_path).with_context(|| {
+                    format!(
+                        "failed to remove terminal settings {}",
+                        target_path.display()
+                    )
+                })?
+            }
+            Ok(_) => bail!(
+                "refusing to remove non-file terminal settings path {}",
+                target_path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to inspect terminal settings {}",
+                        target_path.display()
+                    )
+                });
+            }
+        }
+        Ok(TerminalSettingsRestoreFileSummary {
+            label: backup.kind.label(),
+            path: target_path.to_path_buf(),
+            restored_exists: false,
+            byte_count: None,
+        })
+    }
+}
+
 fn backup_keymap(path: &Path, backup_file: &Path, cx: &mut App) -> Result<TerminalKeymapBackup> {
     if paths_refer_to_same_file(path, backup_file)? {
         bail!(
@@ -14682,6 +15848,247 @@ fn format_startup_config_restore_json(restore: &TerminalStartupConfigRestore) ->
         .context("failed to serialize terminal startup config restore as json")?;
     output.push('\n');
     Ok(output)
+}
+
+fn format_settings_backup(backup: &TerminalSettingsBackup) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "backup_file: {}", backup.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "backup_bytes: {}", backup.backup_byte_count)
+        .expect("writing to string should not fail");
+    format_settings_backup_file_summary(&mut output, &backup.settings_file);
+    format_settings_backup_file_summary(&mut output, &backup.global_settings_file);
+    output
+}
+
+fn format_settings_backup_json(backup: &TerminalSettingsBackup) -> Result<String> {
+    let value = serde_json::json!({
+        "backup_file": backup.backup_file.display().to_string(),
+        "status": "ok",
+        "backup_byte_count": backup.backup_byte_count,
+        "files": [
+            settings_backup_file_summary_json(&backup.settings_file),
+            settings_backup_file_summary_json(&backup.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal settings backup as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_settings_backup_file_summary(
+    output: &mut String,
+    summary: &TerminalSettingsBackupFileSummary,
+) {
+    writeln!(output, "{}: {}", summary.label, summary.path.display())
+        .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", summary.exists).expect("writing to string should not fail");
+    if let Some(byte_count) = summary.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+}
+
+fn settings_backup_file_summary_json(
+    summary: &TerminalSettingsBackupFileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": summary.label,
+        "path": summary.path.display().to_string(),
+        "exists": summary.exists,
+        "byte_count": summary.byte_count,
+    })
+}
+
+fn format_settings_backup_check(check: &TerminalSettingsBackupCheck) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "backup_file: {}", check.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", check.matches).expect("writing to string should not fail");
+    format_settings_backup_file_comparison(&mut output, &check.settings_file);
+    format_settings_backup_file_comparison(&mut output, &check.global_settings_file);
+    output
+}
+
+fn format_settings_backup_check_json(check: &TerminalSettingsBackupCheck) -> Result<String> {
+    let value = serde_json::json!({
+        "backup_file": check.backup_file.display().to_string(),
+        "status": "ok",
+        "matches": check.matches,
+        "files": [
+            settings_backup_file_comparison_json(&check.settings_file),
+            settings_backup_file_comparison_json(&check.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal settings backup check as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_settings_backup_diff(diff: &TerminalSettingsBackupDiff) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "backup_file: {}", diff.backup_file.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "matches: {}", diff.matches).expect("writing to string should not fail");
+    format_settings_backup_file_diff(&mut output, &diff.settings_file);
+    format_settings_backup_file_diff(&mut output, &diff.global_settings_file);
+    output
+}
+
+fn format_settings_backup_diff_json(diff: &TerminalSettingsBackupDiff) -> Result<String> {
+    let value = serde_json::json!({
+        "backup_file": diff.backup_file.display().to_string(),
+        "status": "ok",
+        "matches": diff.matches,
+        "files": [
+            settings_backup_file_diff_json(&diff.settings_file),
+            settings_backup_file_diff_json(&diff.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal settings backup diff as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_settings_backup_file_comparison(
+    output: &mut String,
+    comparison: &TerminalSettingsBackupFileComparison,
+) {
+    writeln!(
+        output,
+        "{}: {}",
+        comparison.label,
+        comparison.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(output, "  exists: {}", comparison.exists).expect("writing to string should not fail");
+    writeln!(output, "  backup_exists: {}", comparison.backup_exists)
+        .expect("writing to string should not fail");
+    if let Some(byte_count) = comparison.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+    if let Some(byte_count) = comparison.backup_byte_count {
+        writeln!(output, "  backup_bytes: {byte_count}")
+            .expect("writing to string should not fail");
+    }
+    writeln!(output, "  text_matches: {}", comparison.text_matches)
+        .expect("writing to string should not fail");
+    writeln!(
+        output,
+        "  settings_matches: {}",
+        comparison.settings_matches
+    )
+    .expect("writing to string should not fail");
+}
+
+fn settings_backup_file_comparison_json(
+    comparison: &TerminalSettingsBackupFileComparison,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": comparison.label,
+        "path": comparison.path.display().to_string(),
+        "exists": comparison.exists,
+        "backup_exists": comparison.backup_exists,
+        "byte_count": comparison.byte_count,
+        "backup_byte_count": comparison.backup_byte_count,
+        "text_matches": comparison.text_matches,
+        "settings_matches": comparison.settings_matches,
+    })
+}
+
+fn format_settings_backup_file_diff(
+    output: &mut String,
+    comparison: &TerminalSettingsBackupFileComparison,
+) {
+    format_settings_backup_file_comparison(output, comparison);
+    let categories = comparison
+        .categories()
+        .into_iter()
+        .map(TerminalSettingsBackupDiffCategory::as_str)
+        .collect::<Vec<_>>();
+    writeln!(
+        output,
+        "  categories: {}",
+        if categories.is_empty() {
+            "none".into()
+        } else {
+            categories.join(", ")
+        }
+    )
+    .expect("writing to string should not fail");
+}
+
+fn settings_backup_file_diff_json(
+    comparison: &TerminalSettingsBackupFileComparison,
+) -> serde_json::Value {
+    let mut value = settings_backup_file_comparison_json(comparison);
+    value["categories"] = serde_json::Value::Array(
+        comparison
+            .categories()
+            .into_iter()
+            .map(TerminalSettingsBackupDiffCategory::as_str)
+            .map(serde_json::Value::from)
+            .collect(),
+    );
+    value
+}
+
+fn format_settings_restore(restore: &TerminalSettingsRestore) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "restore_file: {}",
+        restore.restore_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    format_settings_restore_file_summary(&mut output, &restore.settings_file);
+    format_settings_restore_file_summary(&mut output, &restore.global_settings_file);
+    output
+}
+
+fn format_settings_restore_json(restore: &TerminalSettingsRestore) -> Result<String> {
+    let value = serde_json::json!({
+        "restore_file": restore.restore_file.display().to_string(),
+        "status": "ok",
+        "files": [
+            settings_restore_file_summary_json(&restore.settings_file),
+            settings_restore_file_summary_json(&restore.global_settings_file),
+        ],
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal settings restore as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_settings_restore_file_summary(
+    output: &mut String,
+    summary: &TerminalSettingsRestoreFileSummary,
+) {
+    writeln!(output, "{}: {}", summary.label, summary.path.display())
+        .expect("writing to string should not fail");
+    writeln!(output, "  restored_exists: {}", summary.restored_exists)
+        .expect("writing to string should not fail");
+    if let Some(byte_count) = summary.byte_count {
+        writeln!(output, "  bytes: {byte_count}").expect("writing to string should not fail");
+    }
+}
+
+fn settings_restore_file_summary_json(
+    summary: &TerminalSettingsRestoreFileSummary,
+) -> serde_json::Value {
+    serde_json::json!({
+        "label": summary.label,
+        "path": summary.path.display().to_string(),
+        "restored_exists": summary.restored_exists,
+        "byte_count": summary.byte_count,
+    })
 }
 
 fn format_keymap_backup(backup: &TerminalKeymapBackup) -> String {
@@ -24738,6 +26145,219 @@ mod tests {
                 .contains("failed to parse settings")
         );
         assert!(report.has_errors());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn backup_settings_preserves_jsonc_and_missing_file_state(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let settings_file = root_dir.join("settings.json");
+        let global_settings_file = root_dir.join("global_settings.json");
+        let backup_file = root_dir.join("backups").join("settings.backup.json");
+        let settings = r#"// keep comment
+{
+  "theme": "One Dark",
+  "buffer_font_size": 15
+}
+"#;
+        std_fs::write(&settings_file, settings).expect("failed to write settings file");
+
+        let backup = backup_settings(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("settings should back up");
+
+        assert_eq!(backup.settings_file.path, settings_file);
+        assert!(backup.settings_file.exists);
+        assert_eq!(backup.settings_file.byte_count, Some(settings.len() as u64));
+        assert_eq!(backup.global_settings_file.path, global_settings_file);
+        assert!(!backup.global_settings_file.exists);
+        assert_eq!(backup.global_settings_file.byte_count, None);
+        assert!(backup.backup_byte_count > settings.len() as u64);
+
+        let package_text =
+            std_fs::read_to_string(&backup.backup_file).expect("failed to read backup package");
+        let package: serde_json::Value =
+            serde_json::from_str(&package_text).expect("backup package should parse");
+        assert_eq!(package["format"], TERMINAL_SETTINGS_BACKUP_FORMAT);
+        assert_eq!(package["version"], TERMINAL_SETTINGS_BACKUP_VERSION);
+        assert_eq!(package["files"][0]["label"], "settings_file");
+        assert_eq!(package["files"][0]["content"], settings);
+        assert_eq!(package["files"][1]["label"], "global_settings_file");
+        assert_eq!(package["files"][1]["exists"], false);
+        assert_eq!(package["files"][1]["content"], serde_json::Value::Null);
+
+        let output = format_settings_backup(&backup);
+        assert!(output.contains("status: ok"));
+        assert!(output.contains("settings_file:"));
+        assert!(output.contains("global_settings_file:"));
+        assert!(!output.contains("One Dark"));
+        assert!(!output.contains("buffer_font_size"));
+        let output_json = format_settings_backup_json(&backup).expect("backup json should format");
+        assert!(!output_json.contains("One Dark"));
+        assert!(!output_json.contains("buffer_font_size"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn check_and_diff_settings_backup_report_presence_text_and_settings_drift(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let settings_file = root_dir.join("settings.json");
+        let global_settings_file = root_dir.join("global_settings.json");
+        let backup_file = root_dir.join("settings.backup.json");
+
+        std_fs::write(
+            &settings_file,
+            r#"{
+  "theme": "One Dark"
+}
+"#,
+        )
+        .expect("failed to write settings file");
+        std_fs::write(&global_settings_file, "{}\n").expect("failed to write global settings");
+        backup_settings(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("settings should back up");
+
+        let check = check_settings_backup(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("matching settings backup should check");
+        assert!(check.matches);
+        assert!(check.settings_file.is_exact_match());
+        assert!(check.global_settings_file.is_exact_match());
+
+        std_fs::write(
+            &settings_file,
+            r#"// comment-only drift
+{
+  "theme": "One Dark"
+}
+"#,
+        )
+        .expect("failed to write comment-only drift");
+        std_fs::remove_file(&global_settings_file).expect("failed to remove global settings");
+
+        let diff = diff_settings_backup(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("settings backup should diff");
+        assert!(!diff.matches);
+        assert_eq!(
+            diff.settings_file.categories(),
+            vec![
+                TerminalSettingsBackupDiffCategory::Text,
+                TerminalSettingsBackupDiffCategory::ByteCount,
+            ]
+        );
+        assert!(diff.settings_file.settings_matches);
+        assert_eq!(
+            diff.global_settings_file.categories(),
+            vec![
+                TerminalSettingsBackupDiffCategory::Presence,
+                TerminalSettingsBackupDiffCategory::Text,
+                TerminalSettingsBackupDiffCategory::Settings,
+                TerminalSettingsBackupDiffCategory::ByteCount,
+            ]
+        );
+
+        let output = format_settings_backup_diff(&diff);
+        assert!(output.contains("categories: text, byte_count"));
+        assert!(output.contains("categories: presence, text, settings, byte_count"));
+        assert!(!output.contains("One Dark"));
+        let output_json = format_settings_backup_diff_json(&diff).expect("diff json should format");
+        assert!(!output_json.contains("One Dark"));
+
+        std_fs::write(
+            &settings_file,
+            r#"{
+  "theme": "Ayu Dark"
+}
+"#,
+        )
+        .expect("failed to write semantic drift");
+        let diff = diff_settings_backup(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("semantic settings drift should diff");
+        assert!(
+            diff.settings_file
+                .categories()
+                .contains(&TerminalSettingsBackupDiffCategory::Settings)
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn restore_settings_repairs_files_and_missing_file_state(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let settings_file = root_dir.join("config").join("settings.json");
+        let global_settings_file = root_dir.join("config").join("global_settings.json");
+        let backup_file = root_dir.join("backups").join("settings.backup.json");
+        std_fs::create_dir_all(settings_file.parent().unwrap())
+            .expect("failed to create settings dir");
+        let settings = r#"// restore comment
+{
+  "theme": "One Dark"
+}
+"#;
+        std_fs::write(&settings_file, settings).expect("failed to write settings file");
+        backup_settings(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("settings should back up");
+        std_fs::write(&settings_file, "{ broken settings")
+            .expect("failed to write broken settings");
+        std_fs::write(&global_settings_file, "{}\n").expect("failed to write global settings");
+
+        let restore = restore_settings(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect("settings should restore");
+
+        assert_eq!(
+            std_fs::read_to_string(&settings_file).expect("failed to read restored settings"),
+            settings
+        );
+        assert!(
+            !global_settings_file.exists(),
+            "global_settings.json should be restored to missing state"
+        );
+        assert!(restore.settings_file.restored_exists);
+        assert_eq!(
+            restore.settings_file.byte_count,
+            Some(settings.len() as u64)
+        );
+        assert!(!restore.global_settings_file.restored_exists);
+
+        let output = format_settings_restore(&restore);
+        assert!(output.contains("status: ok"));
+        assert!(output.contains("restored_exists: false"));
+        assert!(!output.contains("One Dark"));
+        let output_json =
+            format_settings_restore_json(&restore).expect("restore json should format");
+        assert!(!output_json.contains("One Dark"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
+    fn settings_backup_rejects_invalid_and_same_file_sources(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let settings_file = root_dir.join("settings.json");
+        let global_settings_file = root_dir.join("global_settings.json");
+        let backup_file = root_dir.join("settings.backup.json");
+
+        std_fs::write(&settings_file, "{ broken settings")
+            .expect("failed to write invalid settings");
+        let error = backup_settings(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect_err("invalid settings should not back up");
+        assert!(format!("{error:#}").contains("refusing to use invalid terminal settings"));
+        assert!(!backup_file.exists());
+
+        std_fs::write(&settings_file, "{}\n").expect("failed to write valid settings");
+        let error = backup_settings(&settings_file, &global_settings_file, &settings_file, cx)
+            .expect_err("same settings and backup file should be rejected");
+        assert!(format!("{error:#}").contains("must be different from terminal settings file"));
+
+        std_fs::write(
+            &backup_file,
+            r#"{ "format": "zed-terminal-settings-backup", "version": 1, "files": [] }"#,
+        )
+        .expect("failed to write invalid backup package");
+        let error = check_settings_backup(&settings_file, &global_settings_file, &backup_file, cx)
+            .expect_err("invalid backup package should not check");
+        assert!(format!("{error:#}").contains("must contain exactly 2 files"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -37170,6 +38790,15 @@ mod tests {
         assert!(help.contains("--restore-startup-config-format <text|json>"));
         assert!(help.contains("--validate-settings"));
         assert!(help.contains("--validate-settings-format <text|json>"));
+        assert!(help.contains("Settings backup and restore options:"));
+        assert!(help.contains("--backup-settings --backup-settings-file <FILE>"));
+        assert!(help.contains("--backup-settings-format <text|json>"));
+        assert!(help.contains("--check-settings-backup --check-settings-backup-file <FILE>"));
+        assert!(help.contains("--check-settings-backup-format <text|json>"));
+        assert!(help.contains("--diff-settings-backup --diff-settings-backup-file <FILE>"));
+        assert!(help.contains("--diff-settings-backup-format <text|json>"));
+        assert!(help.contains("--restore-settings --restore-settings-file <FILE>"));
+        assert!(help.contains("--restore-settings-format <text|json>"));
         assert!(help.contains("Keymap backup and restore options:"));
         assert!(help.contains("--backup-keymap --backup-keymap-file <FILE>"));
         assert!(help.contains("--backup-keymap-format <text|json>"));
@@ -37428,6 +39057,109 @@ mod tests {
             command.format,
             TerminalStartupConfigBackupDiffOutputFormat::Json
         );
+    }
+
+    #[test]
+    fn backup_settings_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("settings.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--backup-settings",
+            "--backup-settings-file",
+            backup_file.to_str().unwrap(),
+            "--backup-settings-format",
+            "json",
+        ])
+        .expect("backup settings json mode should parse")
+        .expect("backup settings json mode should resolve");
+
+        let TerminalSettingsFileCommand::Backup(command) = command else {
+            panic!("expected backup settings mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(command.format, TerminalSettingsBackupOutputFormat::Json);
+    }
+
+    #[test]
+    fn restore_settings_format_json_is_carried_through_cli_resolution() {
+        let restore_file = PathBuf::from("settings.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--restore-settings",
+            "--restore-settings-file",
+            restore_file.to_str().unwrap(),
+            "--restore-settings-format",
+            "json",
+        ])
+        .expect("restore settings json mode should parse")
+        .expect("restore settings json mode should resolve");
+
+        let TerminalSettingsFileCommand::Restore(command) = command else {
+            panic!("expected restore settings mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.restore_file, restore_file);
+        assert_eq!(command.format, TerminalSettingsRestoreOutputFormat::Json);
+    }
+
+    #[test]
+    fn check_settings_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("settings.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--check-settings-backup",
+            "--check-settings-backup-file",
+            backup_file.to_str().unwrap(),
+            "--check-settings-backup-format",
+            "json",
+        ])
+        .expect("check settings backup json mode should parse")
+        .expect("check settings backup json mode should resolve");
+
+        let TerminalSettingsFileCommand::CheckBackup(command) = command else {
+            panic!("expected check settings backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(
+            command.format,
+            TerminalSettingsBackupCheckOutputFormat::Json
+        );
+    }
+
+    #[test]
+    fn diff_settings_backup_format_json_is_carried_through_cli_resolution() {
+        let backup_file = PathBuf::from("settings.backup.json");
+        let config_dir = PathBuf::from("config");
+        let command = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--diff-settings-backup",
+            "--diff-settings-backup-file",
+            backup_file.to_str().unwrap(),
+            "--diff-settings-backup-format",
+            "json",
+        ])
+        .expect("diff settings backup json mode should parse")
+        .expect("diff settings backup json mode should resolve");
+
+        let TerminalSettingsFileCommand::DiffBackup(command) = command else {
+            panic!("expected diff settings backup mode");
+        };
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(command.backup_file, backup_file);
+        assert_eq!(command.format, TerminalSettingsBackupDiffOutputFormat::Json);
     }
 
     #[test]
@@ -37735,6 +39467,169 @@ mod tests {
             format!("{error:#}").contains(
                 "--diff-startup-config-backup-format requires --diff-startup-config-backup"
             )
+        );
+    }
+
+    #[test]
+    fn backup_settings_rejects_startup_only_arguments() {
+        let backup_file = "settings.backup.json";
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--backup-settings",
+            "--backup-settings-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with settings backup");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--backup-settings",
+            "--backup-settings-file",
+            backup_file,
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with settings backup");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--backup-settings",
+            "--backup-settings-file",
+            backup_file,
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with settings backup");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--backup-settings-format",
+            "json",
+        ])
+        .expect_err("backup settings format should require backup mode");
+        assert!(
+            format!("{error:#}").contains("--backup-settings-format requires --backup-settings")
+        );
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn restore_settings_rejects_startup_only_arguments() {
+        let restore_file = "settings.backup.json";
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--restore-settings",
+            "--restore-settings-file",
+            restore_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with settings restore");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--restore-settings",
+            "--restore-settings-file",
+            restore_file,
+            "--backup-settings",
+            "--backup-settings-file",
+            "other.json",
+        ])
+        .expect_err("backup and restore settings modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --backup-settings"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--restore-settings-format",
+            "json",
+        ])
+        .expect_err("restore settings format should require restore mode");
+        assert!(
+            format!("{error:#}").contains("--restore-settings-format requires --restore-settings")
+        );
+    }
+
+    #[test]
+    fn check_settings_backup_rejects_startup_only_arguments() {
+        let backup_file = "settings.backup.json";
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--check-settings-backup",
+            "--check-settings-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with settings backup check");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--check-settings-backup",
+            "--check-settings-backup-file",
+            backup_file,
+            "--restore-settings",
+            "--restore-settings-file",
+            "other.json",
+        ])
+        .expect_err("check and restore settings modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-settings"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--check-settings-backup-format",
+            "json",
+        ])
+        .expect_err("check settings backup format should require check mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--check-settings-backup-format requires --check-settings-backup")
+        );
+    }
+
+    #[test]
+    fn diff_settings_backup_rejects_startup_only_arguments() {
+        let backup_file = "settings.backup.json";
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--diff-settings-backup",
+            "--diff-settings-backup-file",
+            backup_file,
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with settings backup diff");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--diff-settings-backup",
+            "--diff-settings-backup-file",
+            backup_file,
+            "--restore-settings",
+            "--restore-settings-file",
+            "other.json",
+        ])
+        .expect_err("diff and restore settings modes should conflict");
+        assert!(format!("{error:#}").contains("cannot be used with --restore-settings"));
+
+        let error = TerminalSettingsFileCommand::from_args([
+            "zed-terminal",
+            "--diff-settings-backup-format",
+            "json",
+        ])
+        .expect_err("diff settings backup format should require diff mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--diff-settings-backup-format requires --diff-settings-backup")
         );
     }
 

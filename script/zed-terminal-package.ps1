@@ -357,6 +357,14 @@ Validate settings without opening a terminal window:
 .\{{BINARY}} --validate-settings --validate-settings-format json
 ```
 
+Back up and restore settings without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --backup-settings --backup-settings-file settings.backup.json
+.\{{BINARY}} --check-settings-backup --check-settings-backup-file settings.backup.json
+.\{{BINARY}} --restore-settings --restore-settings-file settings.backup.json
+```
+
 Generate support information without opening a terminal window:
 
 ```powershell
@@ -371,7 +379,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, doctor, support-info, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -406,6 +414,9 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
+        ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
+        ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
+        ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
         ".\$BinaryFileName --support-info",
         "$PackageName.zip.sha256",
         "config-template/",
@@ -499,6 +510,130 @@ function Assert-SettingsValidationJson {
     }
 }
 
+function Assert-SettingsBackupJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$BackupFile
+    )
+
+    $files = @($Report.files)
+    $labels = @($files | ForEach-Object { $_.label })
+    if (
+        $Report.status -ne "ok" -or
+        $Report.backup_file -ne $BackupFile -or
+        $files.Count -ne 2 -or
+        $labels -notcontains "settings_file" -or
+        $labels -notcontains "global_settings_file"
+    ) {
+        throw "zed-terminal --backup-settings did not report expected settings backup status"
+    }
+
+    foreach ($file in $files) {
+        if ($null -eq $file.exists) {
+            throw "zed-terminal --backup-settings reported an invalid settings backup file entry"
+        }
+    }
+}
+
+function Assert-SettingsBackupCheckJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][bool]$ExpectedMatches
+    )
+
+    $files = @($Report.files)
+    if ($Report.status -ne "ok" -or $Report.backup_file -ne $BackupFile -or $Report.matches -ne $ExpectedMatches -or $files.Count -ne 2) {
+        throw "zed-terminal settings backup check/diff did not report expected status"
+    }
+}
+
+function Assert-SettingsRestoreJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$RestoreFile
+    )
+
+    $files = @($Report.files)
+    if ($Report.status -ne "ok" -or $Report.restore_file -ne $RestoreFile -or $files.Count -ne 2) {
+        throw "zed-terminal --restore-settings did not report expected settings restore status"
+    }
+}
+
+function Invoke-SettingsBackupSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $backup = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--backup-settings",
+        "--backup-settings-file", $BackupFile,
+        "--backup-settings-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-SettingsBackupJson ($backup.Stdout | ConvertFrom-Json) $BackupFile
+    if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
+        throw "zed-terminal --backup-settings did not write the requested backup file"
+    }
+
+    $check = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-settings-backup",
+        "--check-settings-backup-file", $BackupFile,
+        "--check-settings-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-SettingsBackupCheckJson ($check.Stdout | ConvertFrom-Json) $BackupFile $true
+
+    $diff = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-settings-backup",
+        "--diff-settings-backup-file", $BackupFile,
+        "--diff-settings-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-SettingsBackupCheckJson ($diff.Stdout | ConvertFrom-Json) $BackupFile $true
+
+    Add-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "`n// package settings drift"
+    $drift = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-settings-backup",
+        "--diff-settings-backup-file", $BackupFile,
+        "--diff-settings-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $driftJson = $drift.Stdout | ConvertFrom-Json
+    Assert-SettingsBackupCheckJson $driftJson $BackupFile $false
+    $settingsFileDiff = @($driftJson.files) | Where-Object { $_.label -eq "settings_file" } | Select-Object -First 1
+    if (-not $settingsFileDiff -or $settingsFileDiff.text_matches -or -not $settingsFileDiff.settings_matches -or @($settingsFileDiff.categories) -notcontains "text") {
+        throw "zed-terminal --diff-settings-backup did not distinguish text-only settings drift"
+    }
+
+    Set-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "{ broken settings" -NoNewline
+    $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-settings",
+        "--restore-settings-file", $BackupFile,
+        "--restore-settings-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-SettingsRestoreJson ($restore.Stdout | ConvertFrom-Json) $BackupFile
+
+    $postRestore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-settings-backup",
+        "--check-settings-backup-file", $BackupFile,
+        "--check-settings-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-SettingsBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $BackupFile $true
+}
+
 function Assert-PackageManifest {
     param(
         [Parameter(Mandatory = $true)][string]$PackageDir,
@@ -549,6 +684,7 @@ function Assert-PackageManifest {
         "keymap_schema",
         "default_keymap",
         "settings_validation",
+        "settings_backup",
         "doctor",
         "support_info",
         "readme",
@@ -740,6 +876,13 @@ function Assert-PackageZipArchive {
     ) -WorkingDirectory $extractedPackageDir
     Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
+    Invoke-SettingsBackupSmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -BackupFile (Join-Path $ValidationRoot "zip-settings.backup.json") `
+        -WorkingDirectory $extractedPackageDir
+
     $supportInfo = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
         "--config-dir", $extractedConfigDir,
@@ -923,6 +1066,13 @@ $settingsValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments
 ) -WorkingDirectory $packageDir
 Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
+Invoke-SettingsBackupSmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -BackupFile (Join-Path $runDir "settings.backup.json") `
+    -WorkingDirectory $packageDir
+
 $supportInfo = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -976,6 +1126,7 @@ $manifest = [pscustomobject]@{
         keymap_schema = "ok"
         default_keymap = "ok"
         settings_validation = "ok"
+        settings_backup = "ok"
         doctor = "ok"
         support_info = "ok"
         readme = "ok"

@@ -520,6 +520,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.paths -ne "ok" -or
         $manifest.validation.portable_paths -ne "ok" -or
         $manifest.validation.settings_validation -ne "ok" -or
+        $manifest.validation.settings_backup -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
         $manifest.validation.readme -ne "ok"
     ) {
@@ -529,9 +530,10 @@ function Read-PackageSmokeSummary {
         $summary.validation.version_info -ne "ok" -or
         $summary.validation.paths -ne "ok" -or
         $summary.validation.portable_paths -ne "ok" -or
-        $summary.validation.settings_validation -ne "ok"
+        $summary.validation.settings_validation -ne "ok" -or
+        $summary.validation.settings_backup -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/settings validation status"
+        throw "package smoke summary did not report expected path/version/settings validation/backup status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
@@ -1079,6 +1081,15 @@ try {
                 "--restore-startup-config-format <text\|json>",
                 "--validate-settings",
                 "--validate-settings-format <text\|json>",
+                "Settings backup and restore options:",
+                "--backup-settings --backup-settings-file <FILE>",
+                "--backup-settings-format <text\|json>",
+                "--check-settings-backup --check-settings-backup-file <FILE>",
+                "--check-settings-backup-format <text\|json>",
+                "--diff-settings-backup --diff-settings-backup-file <FILE>",
+                "--diff-settings-backup-format <text\|json>",
+                "--restore-settings --restore-settings-file <FILE>",
+                "--restore-settings-format <text\|json>",
                 "Keymap backup and restore options:",
                 "--backup-keymap --backup-keymap-file <FILE>",
                 "--backup-keymap-format <text\|json>",
@@ -1504,6 +1515,100 @@ try {
             $activeKeymapBindingsText = $activeKeymapBindings | ConvertTo-Json -Depth 20
             if ($activeKeymapBindingsText -match "do-not-log-keymap") {
                 throw "Active keymap binding list output leaked keymap file contents."
+            }
+            $mutationSettingsFile = Join-Path $mutationCliConfigDir "settings.json"
+            Set-Content -LiteralPath $mutationSettingsFile -Value @'
+// release-check settings do-not-log-settings
+{
+  "theme": "One Dark",
+  "buffer_font_size": 15
+}
+'@ -Encoding ascii
+            $mutationSettingsBackupFile = Join-Path $mutationCliConfigDir "backups\settings.backup.json"
+            $settingsBackup = Invoke-NativeJsonCommandResult "mutation-backup-settings" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--backup-settings",
+                "--backup-settings-file", $mutationSettingsBackupFile,
+                "--backup-settings-format", "json"
+            )
+            $settingsBackupFiles = @($settingsBackup.files)
+            if ($settingsBackup.status -ne "ok" -or $settingsBackup.backup_file -ne $mutationSettingsBackupFile -or $settingsBackupFiles.Count -ne 2 -or $settingsBackup.backup_byte_count -le 0) {
+                throw "Settings backup did not report the expected mutated settings summary."
+            }
+            $settingsBackupText = $settingsBackup | ConvertTo-Json -Depth 10
+            if ($settingsBackupText -match "do-not-log-settings" -or $settingsBackupText -match "One Dark" -or $settingsBackupText -match "buffer_font_size") {
+                throw "Settings backup output leaked settings file contents."
+            }
+            $settingsBackupFileText = Get-Content -Raw -LiteralPath $mutationSettingsBackupFile
+            if ($settingsBackupFileText -notmatch "do-not-log-settings") {
+                throw "Settings backup package did not preserve the full settings payload."
+            }
+            $settingsBackupCheck = Invoke-NativeJsonCommandResult "mutation-check-settings-backup-match" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--check-settings-backup",
+                "--check-settings-backup-file", $mutationSettingsBackupFile,
+                "--check-settings-backup-format", "json"
+            )
+            if (-not $settingsBackupCheck.matches -or $settingsBackupCheck.backup_file -ne $mutationSettingsBackupFile -or @($settingsBackupCheck.files).Count -ne 2) {
+                throw "Settings backup check did not report the expected matching settings summary."
+            }
+            $settingsBackupCheckText = $settingsBackupCheck | ConvertTo-Json -Depth 10
+            if ($settingsBackupCheckText -match "do-not-log-settings" -or $settingsBackupCheckText -match "One Dark") {
+                throw "Settings backup check output leaked settings file contents."
+            }
+            Add-Content -LiteralPath $mutationSettingsFile -Value "`n// release-check settings drift"
+            $settingsBackupTextDrift = Invoke-NativeJsonCommandResult "mutation-diff-settings-backup-text-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-settings-backup",
+                "--diff-settings-backup-file", $mutationSettingsBackupFile,
+                "--diff-settings-backup-format", "json"
+            )
+            $settingsFileTextDrift = @($settingsBackupTextDrift.files) | Where-Object { $_.label -eq "settings_file" } | Select-Object -First 1
+            if ($settingsBackupTextDrift.matches -or -not $settingsFileTextDrift -or $settingsFileTextDrift.text_matches -or -not $settingsFileTextDrift.settings_matches -or @($settingsFileTextDrift.categories) -notcontains "text") {
+                throw "Settings backup diff did not distinguish text-only settings drift."
+            }
+            Set-Content -LiteralPath $mutationSettingsFile -Value @'
+{
+  "theme": "Ayu Dark",
+  "buffer_font_size": 15
+}
+'@ -Encoding ascii
+            $settingsBackupDiffDrift = Invoke-NativeJsonCommandResult "mutation-diff-settings-backup-drift" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--diff-settings-backup",
+                "--diff-settings-backup-file", $mutationSettingsBackupFile,
+                "--diff-settings-backup-format", "json"
+            )
+            $settingsFileDrift = @($settingsBackupDiffDrift.files) | Where-Object { $_.label -eq "settings_file" } | Select-Object -First 1
+            if ($settingsBackupDiffDrift.matches -or -not $settingsFileDrift -or $settingsFileDrift.settings_matches -or @($settingsFileDrift.categories) -notcontains "settings") {
+                throw "Settings backup diff did not report semantic settings drift."
+            }
+            $settingsBackupDiffDriftText = $settingsBackupDiffDrift | ConvertTo-Json -Depth 10
+            if ($settingsBackupDiffDriftText -match "Ayu Dark" -or $settingsBackupDiffDriftText -match "One Dark" -or $settingsBackupDiffDriftText -match "do-not-log-settings") {
+                throw "Settings backup diff drift output leaked settings file contents."
+            }
+            Set-Content -LiteralPath $mutationSettingsFile -Value "{ broken settings" -NoNewline
+            $settingsRestore = Invoke-NativeJsonCommandResult "mutation-restore-settings" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--restore-settings",
+                "--restore-settings-file", $mutationSettingsBackupFile,
+                "--restore-settings-format", "json"
+            )
+            if ($settingsRestore.status -ne "ok" -or $settingsRestore.restore_file -ne $mutationSettingsBackupFile -or @($settingsRestore.files).Count -ne 2) {
+                throw "Settings restore did not report the expected restored settings summary."
+            }
+            $settingsRestoreText = $settingsRestore | ConvertTo-Json -Depth 10
+            if ($settingsRestoreText -match "do-not-log-settings" -or $settingsRestoreText -match "One Dark") {
+                throw "Settings restore output leaked settings file contents."
+            }
+            $restoredSettingsFileText = Get-Content -Raw -LiteralPath $mutationSettingsFile
+            if ($restoredSettingsFileText -notmatch "do-not-log-settings" -or $restoredSettingsFileText -notmatch '"theme": "One Dark"') {
+                throw "Settings restore did not restore settings.json from the backup package."
             }
             $mutationKeymapBackupFile = Join-Path $mutationCliConfigDir "backups\keymap.backup.json"
             $keymapBackup = Invoke-NativeJsonCommandResult "mutation-backup-keymap" @(
