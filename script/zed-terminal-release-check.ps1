@@ -446,6 +446,8 @@ try {
                 "--print-keymap-schema",
                 "--list-keymap-actions",
                 "--list-keymap-actions-format <text\|json>",
+                "--describe-keymap-action <ACTION>",
+                "--describe-keymap-action-format <text\|json>",
                 "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -560,6 +562,44 @@ try {
             $keymapActionsText = $keymapActions | ConvertTo-Json -Depth 20
             if ($keymapActionsText -match "do-not-log") {
                 throw "Keymap action list output unexpectedly contained release fixture content."
+            }
+            $newTabActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-new-tab" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::NewTerminalTab",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($newTabActionDescription.status -ne "ok" -or $newTabActionDescription.default_keymap -ne "keymaps/zed-terminal.json" -or $newTabActionDescription.action.name -ne "zed_terminal::NewTerminalTab" -or $newTabActionDescription.action.namespace -ne "zed_terminal" -or $newTabActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected NewTerminalTab metadata."
+            }
+            if (-not ($newTabActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-T" -and $null -eq $_.context })) {
+                throw "Keymap action description is missing the NewTerminalTab default binding."
+            }
+            $profileTabActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-tab" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::NewTerminalTabWithProfile",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfile" -or $profileTabActionDescription.action.input -ne "object") {
+                throw "Keymap action description did not report the expected profile-tab input contract."
+            }
+            $pasteActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-paste" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "terminal::Paste",
+                "--describe-keymap-action-format", "json"
+            )
+            if (-not ($pasteActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-V" -and $_.context -eq "Terminal" })) {
+                throw "Keymap action description is missing the terminal Paste default binding."
+            }
+            $keymapActionDescriptionText = @(
+                $newTabActionDescription,
+                $profileTabActionDescription,
+                $pasteActionDescription
+            ) | ConvertTo-Json -Depth 20
+            if ($keymapActionDescriptionText -match "do-not-log") {
+                throw "Keymap action description output unexpectedly contained release fixture content."
             }
             $defaultKeymap = Invoke-NativeTextCommandResult "print-default-keymap" @(
                 "--user-data-dir", $cliDataDir,
