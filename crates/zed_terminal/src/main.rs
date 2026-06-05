@@ -11852,6 +11852,8 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<workspace::pane::CloseItemsToTheLeft>(),
         TypeId::of::<workspace::pane::CloseItemsToTheRight>(),
         TypeId::of::<workspace::pane::CloseOtherItems>(),
+        TypeId::of::<workspace::pane::JoinAll>(),
+        TypeId::of::<workspace::pane::JoinIntoNext>(),
         TypeId::of::<workspace::pane::ReopenClosedItem>(),
         TypeId::of::<workspace::pane::SwapItemLeft>(),
         TypeId::of::<workspace::pane::SwapItemRight>(),
@@ -12398,6 +12400,8 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Next Pane", workspace::ActivateNextPane),
         MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
         MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
+        MenuItem::action("Join Pane Into Next", workspace::pane::JoinIntoNext),
+        MenuItem::action("Join All Panes", workspace::pane::JoinAll),
         MenuItem::separator(),
         MenuItem::action("Resize Pane Left", ResizePaneLeft),
         MenuItem::action("Resize Pane Right", ResizePaneRight),
@@ -14116,6 +14120,8 @@ mod tests {
         );
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
         assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
+        assert_command_palette_action_visible(&filter, &workspace::pane::JoinAll);
+        assert_command_palette_action_visible(&filter, &workspace::pane::JoinIntoNext);
         assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
         assert_command_palette_action_visible(&filter, &workspace::pane::TogglePinTab);
         assert_command_palette_action_visible(&filter, &workspace::pane::UnpinAllTabs);
@@ -14971,6 +14977,14 @@ mod tests {
             "pane::CloseItemsToTheLeft",
         );
         assert_menu_action(&items, "Close All Tabs in Pane", "pane::CloseAllItems");
+    }
+
+    #[test]
+    fn pane_menu_exposes_pane_join_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Join Pane Into Next", "pane::JoinIntoNext");
+        assert_menu_action(&items, "Join All Panes", "pane::JoinAll");
     }
 
     #[test]
