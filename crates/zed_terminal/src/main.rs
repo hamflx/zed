@@ -117,6 +117,20 @@ struct SetDefaultStartupProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct HideStartupProfile {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct ShowStartupProfile {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct OpenProfileDescriptionReport {
     profile: String,
 }
@@ -2947,6 +2961,21 @@ struct TerminalStartupProfileMenuEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TerminalStartupProfileMenuEntries {
+    visible: Vec<TerminalStartupProfileMenuEntry>,
+    hidden: Vec<TerminalStartupProfileMenuEntry>,
+}
+
+impl From<Vec<TerminalStartupProfileMenuEntry>> for TerminalStartupProfileMenuEntries {
+    fn from(visible: Vec<TerminalStartupProfileMenuEntry>) -> Self {
+        Self {
+            visible,
+            hidden: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct TerminalStartupProfileCreationMetadata {
     display_name: Option<String>,
     description: Option<String>,
@@ -4689,14 +4718,22 @@ impl TerminalStartupConfig {
             .collect()
     }
 
-    fn profile_menu_entries(&self) -> Vec<TerminalStartupProfileMenuEntry> {
-        self.profile_summaries(false)
-            .into_iter()
-            .map(|profile| TerminalStartupProfileMenuEntry {
+    fn profile_menu_entries_by_visibility(&self) -> TerminalStartupProfileMenuEntries {
+        let mut entries = TerminalStartupProfileMenuEntries::default();
+        for profile in self.profile_summaries(true) {
+            let hidden = profile.hidden;
+            let entry = TerminalStartupProfileMenuEntry {
                 label: profile_menu_label(&profile),
                 profile: profile.name,
-            })
-            .collect()
+            };
+            if hidden {
+                entries.hidden.push(entry);
+            } else {
+                entries.visible.push(entry);
+            }
+        }
+
+        entries
     }
 
     fn profile_initial_tab(&self, profile: &str) -> Result<LaunchTab> {
@@ -11347,12 +11384,12 @@ fn profile_command_palette_label(profile: &TerminalStartupProfileSummary) -> Str
     label
 }
 
-fn startup_profile_menu_entries() -> Vec<TerminalStartupProfileMenuEntry> {
+fn startup_profile_menu_entries() -> TerminalStartupProfileMenuEntries {
     match TerminalStartupConfig::load(&active_terminal_startup_config_file()) {
-        Ok(startup_config) => startup_config.profile_menu_entries(),
+        Ok(startup_config) => startup_config.profile_menu_entries_by_visibility(),
         Err(error) => {
             log::warn!("failed to load startup profile menu: {error:#}");
-            Vec::new()
+            TerminalStartupProfileMenuEntries::default()
         }
     }
 }
@@ -11549,6 +11586,8 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_themes_directory);
     cx.on_action(set_default_startup_profile_action);
     cx.on_action(clear_default_startup_profile_action);
+    cx.on_action(hide_startup_profile_action);
+    cx.on_action(show_startup_profile_action);
     cx.on_action(|_: &zed_actions::OpenSettingsFile, cx| {
         cx.dispatch_action(&OpenSettingsFile);
     });
@@ -11747,6 +11786,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<DuplicateTerminalSplitRight>(),
         TypeId::of::<DuplicateTerminalSplitUp>(),
         TypeId::of::<DuplicateTerminalTab>(),
+        TypeId::of::<HideStartupProfile>(),
         TypeId::of::<MinimizeTerminalWindow>(),
         TypeId::of::<NewTerminalWindow>(),
         TypeId::of::<NewTerminalWindowWithProfile>(),
@@ -11777,6 +11817,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<ResizePaneRight>(),
         TypeId::of::<ResizePaneUp>(),
         TypeId::of::<SetDefaultStartupProfile>(),
+        TypeId::of::<ShowStartupProfile>(),
         TypeId::of::<ToggleFullScreen>(),
         TypeId::of::<ZoomTerminalWindow>(),
         TypeId::of::<editor::actions::SelectAll>(),
@@ -11829,7 +11870,7 @@ fn terminal_profile_command_palette_result(
     startup_config_file: &Path,
 ) -> command_palette_hooks::CommandInterceptResult {
     let profiles = match TerminalStartupConfig::load(startup_config_file) {
-        Ok(startup_config) => startup_config.profile_summaries(false),
+        Ok(startup_config) => startup_config.profile_summaries(true),
         Err(error) => {
             log::warn!("failed to load startup profile command palette entries: {error:#}");
             Vec::new()
@@ -11861,6 +11902,18 @@ fn terminal_profile_command_palette_items(
     for profile in profiles {
         let label = profile_command_palette_label(&profile);
         let profile_name = profile.name.clone();
+        if profile.hidden {
+            items.push(terminal_profile_command_palette_item(
+                query,
+                format!("Show Profile: {label}"),
+                ShowStartupProfile {
+                    profile: profile_name,
+                }
+                .boxed_clone(),
+            ));
+            continue;
+        }
+
         items.push(terminal_profile_command_palette_item(
             query,
             format!("New Tab With Profile: {label}"),
@@ -11905,6 +11958,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Open Description Report For Profile: {label}"),
             OpenProfileDescriptionReport {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Hide Profile: {label}"),
+            HideStartupProfile {
                 profile: profile_name.clone(),
             }
             .boxed_clone(),
@@ -12081,7 +12142,16 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Vec<MenuItem> {
+    shell_menu_items_with_visibility(profile_entries.into())
+}
+
+fn shell_menu_items_with_visibility(
+    profile_entries: TerminalStartupProfileMenuEntries,
+) -> Vec<MenuItem> {
+    let visible_profile_entries = profile_entries.visible;
+    let hidden_profile_entries = profile_entries.hidden;
     let mut shell_items = vec![
         MenuItem::action("New Tab", NewTerminalTab),
         MenuItem::action("Duplicate Tab", DuplicateTerminalTab),
@@ -12097,9 +12167,9 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
         MenuItem::action("Split Left", NewTerminalSplitLeft),
         MenuItem::action("Split Up", NewTerminalSplitUp),
     ];
-    if !profile_entries.is_empty() {
+    if !visible_profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("New Tab With Profile").items(
-            profile_entries.iter().cloned().map(|entry| {
+            visible_profile_entries.iter().cloned().map(|entry| {
                 MenuItem::action(
                     entry.label,
                     NewTerminalTabWithProfile {
@@ -12109,21 +12179,21 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
             }),
         )));
         shell_items.push(MenuItem::submenu(
-            Menu::new("New Window With Profile").items(profile_entries.iter().cloned().map(
-                |entry| {
+            Menu::new("New Window With Profile").items(
+                visible_profile_entries.iter().cloned().map(|entry| {
                     MenuItem::action(
                         entry.label,
                         NewTerminalWindowWithProfile {
                             profile: entry.profile,
                         },
                     )
-                },
-            )),
+                }),
+            ),
         ));
         for split_direction in terminal_profile_split_direction_entries() {
             shell_items.push(MenuItem::submenu(
                 Menu::new(format!("Split {} With Profile", split_direction.label)).items(
-                    profile_entries.iter().cloned().map(move |entry| {
+                    visible_profile_entries.iter().cloned().map(move |entry| {
                         MenuItem::action(
                             entry.label,
                             NewTerminalSplitWithProfile {
@@ -12136,10 +12206,32 @@ fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Ve
             ));
         }
         shell_items.push(MenuItem::submenu(Menu::new("Set Default Profile").items(
-            profile_entries.into_iter().map(|entry| {
+            visible_profile_entries.iter().cloned().map(|entry| {
                 MenuItem::action(
                     entry.label,
                     SetDefaultStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+        shell_items.push(MenuItem::submenu(Menu::new("Hide Profile").items(
+            visible_profile_entries.iter().cloned().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    HideStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+    }
+    if !hidden_profile_entries.is_empty() {
+        shell_items.push(MenuItem::submenu(Menu::new("Show Profile").items(
+            hidden_profile_entries.into_iter().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    ShowStartupProfile {
                         profile: entry.profile,
                     },
                 )
@@ -12233,7 +12325,7 @@ fn terminal_menu_items() -> Vec<MenuItem> {
 }
 
 fn set_app_menus(cx: &mut App) {
-    let shell_items = shell_menu_items(startup_profile_menu_entries());
+    let shell_items = shell_menu_items_with_visibility(startup_profile_menu_entries());
 
     cx.set_menus(vec![
         Menu::new("Zed Terminal").items(app_menu_items()),
@@ -13361,6 +13453,31 @@ fn clear_default_startup_profile_action(_: &ClearDefaultStartupProfile, cx: &mut
     }
 }
 
+fn hide_startup_profile_action(action: &HideStartupProfile, cx: &mut App) {
+    set_startup_profile_visibility_action(&action.profile, true, cx);
+}
+
+fn show_startup_profile_action(action: &ShowStartupProfile, cx: &mut App) {
+    set_startup_profile_visibility_action(&action.profile, false, cx);
+}
+
+fn set_startup_profile_visibility_action(profile: &str, hidden: bool, cx: &mut App) {
+    match set_startup_profile_visibility(&active_terminal_startup_config_file(), profile, hidden) {
+        Ok(update) => {
+            log::info!(
+                "set startup profile {:?} hidden={} in {:?}",
+                update.profile,
+                update.hidden,
+                update.path
+            );
+            set_app_menus(cx);
+        }
+        Err(error) => {
+            log::warn!("failed to set startup profile {profile:?} visibility: {error:#}");
+        }
+    }
+}
+
 fn open_directory(path: &Path, label: &str, cx: &mut App) {
     if let Err(error) = std_fs::create_dir_all(path) {
         log::warn!("failed to create {label} directory {path:?}: {error:?}");
@@ -13572,6 +13689,25 @@ mod tests {
         action.as_ref()
     }
 
+    fn submenu_action_labels(menu_items: &[MenuItem], submenu_label: &str) -> Vec<String> {
+        let submenu = menu_items
+            .iter()
+            .find_map(|item| match item {
+                MenuItem::Submenu(menu) if menu.name.as_ref() == submenu_label => Some(menu),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing submenu {submenu_label:?}"));
+
+        submenu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn assert_profile_submenu_action<'a, A: Action + 'static>(
         menu_items: &'a [MenuItem],
         submenu_label: &str,
@@ -13594,6 +13730,10 @@ mod tests {
         {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<SetDefaultStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<HideStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<ShowStartupProfile>() {
             &action.profile
         } else {
             panic!("profile submenu action has no profile field");
@@ -13921,6 +14061,18 @@ mod tests {
                 profile: "work".into(),
             },
         );
+        assert_command_palette_action_visible(
+            &filter,
+            &HideStartupProfile {
+                profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
+            &ShowStartupProfile {
+                profile: "work".into(),
+            },
+        );
         assert_command_palette_action_visible(&filter, &ToggleFullScreen);
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
@@ -14031,6 +14183,7 @@ mod tests {
                 "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Hide Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
 
@@ -14059,11 +14212,12 @@ mod tests {
         assert_set_default_profile_action(&result.results[6], "work");
         assert_open_profile_config_action(&result.results[7]);
         assert_open_profile_description_report_action(&result.results[8], "work");
+        assert_hide_profile_action(&result.results[9], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
     #[test]
-    fn terminal_profile_command_palette_uses_visible_startup_profiles() {
+    fn terminal_profile_command_palette_respects_profile_visibility() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "hidden".into(),
@@ -14087,22 +14241,33 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries(
             "",
-            config.profile_summaries(false),
+            config.profile_summaries(true),
         );
 
-        assert_eq!(result.results.len(), 9);
-        assert!(
+        assert_eq!(
             result
                 .results
                 .iter()
-                .all(|item| item.string.contains("Work Shell"))
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Show Profile: Hidden Shell (hidden)",
+                "New Tab With Profile: Work Shell (work)",
+                "New Window With Profile: Work Shell (work)",
+                "Split Right With Profile: Work Shell (work)",
+                "Split Down With Profile: Work Shell (work)",
+                "Split Left With Profile: Work Shell (work)",
+                "Split Up With Profile: Work Shell (work)",
+                "Set Default Profile: Work Shell (work)",
+                "Open Config For Profile: Work Shell (work)",
+                "Open Description Report For Profile: Work Shell (work)",
+                "Hide Profile: Work Shell (work)",
+            ]
         );
-        assert!(
-            result
-                .results
-                .iter()
-                .all(|item| !item.string.contains("Hidden Shell"))
-        );
+
+        assert_show_profile_action(&result.results[0], "hidden");
+        assert_profile_tab_action(&result.results[1], "work");
+        assert_hide_profile_action(&result.results[10], "work");
     }
 
     #[test]
@@ -14132,7 +14297,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 9);
+        assert_eq!(result.results.len(), 10);
         assert!(
             result
                 .results
@@ -14156,7 +14321,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 9);
+        assert_eq!(description_result.results.len(), 10);
         assert!(
             description_result
                 .results
@@ -14166,7 +14331,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 9);
+        assert_eq!(icon_result.results.len(), 10);
         assert!(
             icon_result
                 .results
@@ -14176,7 +14341,7 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 9);
+        assert_eq!(color_result.results.len(), 10);
         assert!(
             color_result
                 .results
@@ -14343,6 +14508,30 @@ mod tests {
             .as_any()
             .downcast_ref::<SetDefaultStartupProfile>()
             .expect("expected set default profile action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_hide_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<HideStartupProfile>()
+            .expect("expected hide profile action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_show_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<ShowStartupProfile>()
+            .expect("expected show profile action");
         assert_eq!(action.profile, expected_profile);
     }
 
@@ -14588,7 +14777,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_menu_entries_use_visible_profiles() {
+    fn profile_menu_entries_group_by_visibility() {
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "secret".into(),
@@ -14611,11 +14800,19 @@ mod tests {
             ..TerminalStartupConfig::default()
         };
 
+        let profile_entries = config.profile_menu_entries_by_visibility();
         assert_eq!(
-            config.profile_menu_entries(),
+            profile_entries.visible,
             vec![TerminalStartupProfileMenuEntry {
                 profile: "work".into(),
                 label: "Work Shell (work) - Default".into(),
+            }]
+        );
+        assert_eq!(
+            profile_entries.hidden,
+            vec![TerminalStartupProfileMenuEntry {
+                profile: "secret".into(),
+                label: "Secret (secret)".into(),
             }]
         );
     }
@@ -14795,6 +14992,47 @@ mod tests {
             "Work Shell (work)",
             "work",
             TerminalStartupSplitDirection::Up,
+        );
+        assert_profile_submenu_action::<SetDefaultStartupProfile>(
+            &items,
+            "Set Default Profile",
+            "Work Shell (work)",
+            "work",
+        );
+        assert_profile_submenu_action::<HideStartupProfile>(
+            &items,
+            "Hide Profile",
+            "Work Shell (work)",
+            "work",
+        );
+    }
+
+    #[test]
+    fn shell_menu_exposes_hidden_profile_restore_action() {
+        let items = shell_menu_items_with_visibility(TerminalStartupProfileMenuEntries {
+            visible: vec![TerminalStartupProfileMenuEntry {
+                profile: "work".into(),
+                label: "Work Shell (work)".into(),
+            }],
+            hidden: vec![TerminalStartupProfileMenuEntry {
+                profile: "secret".into(),
+                label: "Secret (secret)".into(),
+            }],
+        });
+
+        assert_profile_submenu_action::<ShowStartupProfile>(
+            &items,
+            "Show Profile",
+            "Secret (secret)",
+            "secret",
+        );
+        assert_eq!(
+            submenu_action_labels(&items, "New Tab With Profile"),
+            vec!["Work Shell (work)"]
+        );
+        assert_eq!(
+            submenu_action_labels(&items, "Hide Profile"),
+            vec!["Work Shell (work)"]
         );
     }
 
@@ -14981,7 +15219,16 @@ mod tests {
             ..TerminalStartupConfig::default()
         };
 
-        assert_eq!(config.profile_menu_entries(), Vec::new());
+        assert_eq!(
+            config.profile_menu_entries_by_visibility(),
+            TerminalStartupProfileMenuEntries {
+                visible: Vec::new(),
+                hidden: vec![TerminalStartupProfileMenuEntry {
+                    profile: "secret".into(),
+                    label: "secret".into(),
+                }],
+            }
+        );
 
         let tab = config
             .profile_initial_tab("secret")
@@ -15378,6 +15625,61 @@ mod tests {
         .expect_err("unknown set default profile action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_startup_profile_visibility_action_inputs() {
+        let hide_action = <HideStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("hide profile action input should parse");
+        let hide_action = hide_action
+            .as_any()
+            .downcast_ref::<HideStartupProfile>()
+            .expect("action type should match");
+        assert_eq!(
+            hide_action,
+            &HideStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        let show_action = <ShowStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("show profile action input should parse");
+        let show_action = show_action
+            .as_any()
+            .downcast_ref::<ShowStartupProfile>()
+            .expect("action type should match");
+        assert_eq!(
+            show_action,
+            &ShowStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        for (action_name, error) in [
+            (
+                "hide profile",
+                <HideStartupProfile as Action>::build(
+                    gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+                )
+                .expect_err("unknown hide profile action fields should be rejected"),
+            ),
+            (
+                "show profile",
+                <ShowStartupProfile as Action>::build(
+                    gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+                )
+                .expect_err("unknown show profile action fields should be rejected"),
+            ),
+        ] {
+            assert!(
+                format!("{error:#}").contains("unknown field"),
+                "{action_name} should reject unknown fields"
+            );
+        }
     }
 
     #[test]
