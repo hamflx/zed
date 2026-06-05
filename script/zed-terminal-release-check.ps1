@@ -448,6 +448,8 @@ try {
                 "--list-keymap-actions-format <text\|json>",
                 "--describe-keymap-action <ACTION>",
                 "--describe-keymap-action-format <text\|json>",
+                "--describe-keymap-binding <KEYSTROKES>",
+                "--describe-keymap-binding-format <text\|json>",
                 "Profile transfer, startup config file, and keymap file options may be combined with --user-data-dir",
                 "and --config-dir only."
             )
@@ -600,6 +602,34 @@ try {
             ) | ConvertTo-Json -Depth 20
             if ($keymapActionDescriptionText -match "do-not-log") {
                 throw "Keymap action description output unexpectedly contained release fixture content."
+            }
+            $newTabBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-new-tab" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-binding", "ctrl-shift-t",
+                "--describe-keymap-binding-format", "json"
+            )
+            if ($newTabBindingDescription.status -ne "ok" -or $newTabBindingDescription.default_keymap -ne "keymaps/zed-terminal.json" -or $newTabBindingDescription.keystrokes -ne "ctrl-shift-t" -or $newTabBindingDescription.match_count -lt 1) {
+                throw "Keymap binding description did not report the expected NewTerminalTab binding contract."
+            }
+            if (-not ($newTabBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-shift-T" -and $_.match -eq "exact" -and $_.action -eq "zed_terminal::NewTerminalTab" -and $null -eq $_.context })) {
+                throw "Keymap binding description is missing the NewTerminalTab exact binding."
+            }
+            $pasteBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-paste" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-binding", "ctrl-shift-v",
+                "--describe-keymap-binding-format", "json"
+            )
+            if (-not ($pasteBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-shift-V" -and $_.match -eq "exact" -and $_.action -eq "terminal::Paste" -and $_.context -eq "Terminal" })) {
+                throw "Keymap binding description is missing the terminal Paste exact binding."
+            }
+            $keymapBindingDescriptionText = @(
+                $newTabBindingDescription,
+                $pasteBindingDescription
+            ) | ConvertTo-Json -Depth 20
+            if ($keymapBindingDescriptionText -match "do-not-log") {
+                throw "Keymap binding description output unexpectedly contained release fixture content."
             }
             $defaultKeymap = Invoke-NativeTextCommandResult "print-default-keymap" @(
                 "--user-data-dir", $cliDataDir,
