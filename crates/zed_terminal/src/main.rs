@@ -51,6 +51,7 @@ actions!(
         OpenDefaultKeymapReferenceFile,
         OpenConfigDirectory,
         OpenDataDirectory,
+        OpenDiagnosticsReport,
         OpenLogFile,
         OpenLogsDirectory,
         OpenThemesDirectory,
@@ -112,6 +113,7 @@ const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
+const TERMINAL_DIAGNOSTICS_REPORT_FILE: &str = "zed-terminal-diagnostics.json";
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 
 static TERMINAL_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
@@ -9721,6 +9723,21 @@ fn write_default_keymap_reference_file(path: &Path) -> Result<()> {
     })
 }
 
+fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> Result<()> {
+    let report = format_doctor_report_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create diagnostics report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write diagnostics report {}", path.display()))
+}
+
 fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
     let mut output = String::new();
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
@@ -11239,6 +11256,10 @@ fn active_terminal_default_keymap_reference_file() -> PathBuf {
     terminal_default_keymap_reference_file(paths::config_dir())
 }
 
+fn active_terminal_diagnostics_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_DIAGNOSTICS_REPORT_FILE)
+}
+
 fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     component::init();
     menu::init();
@@ -11252,6 +11273,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_default_keymap_reference_file);
     cx.on_action(open_config_directory);
     cx.on_action(open_data_directory);
+    cx.on_action(open_diagnostics_report);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
     cx.on_action(open_themes_directory);
@@ -11462,6 +11484,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<OpenConfigDirectory>(),
         TypeId::of::<OpenDataDirectory>(),
         TypeId::of::<OpenDefaultKeymapReferenceFile>(),
+        TypeId::of::<OpenDiagnosticsReport>(),
         TypeId::of::<OpenLogFile>(),
         TypeId::of::<OpenLogsDirectory>(),
         TypeId::of::<OpenStartupConfigFile>(),
@@ -11967,6 +11990,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         ),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
         MenuItem::action("Open Data Directory", OpenDataDirectory),
+        MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
         MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
         MenuItem::action("Open Themes Directory", OpenThemesDirectory),
@@ -12692,6 +12716,17 @@ fn open_default_keymap_reference_file(_: &OpenDefaultKeymapReferenceFile, cx: &m
     cx.open_with_system(&default_keymap_reference_file);
 }
 
+fn open_diagnostics_report(_: &OpenDiagnosticsReport, cx: &mut App) {
+    let diagnostics_report_file = active_terminal_diagnostics_report_file();
+    let report = diagnose_terminal(&active_terminal_path_options(), cx);
+    if let Err(error) = write_diagnostics_report_file(&diagnostics_report_file, &report) {
+        log::warn!("failed to write diagnostics report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&diagnostics_report_file);
+}
+
 fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
     open_directory(paths::config_dir(), "config", cx);
 }
@@ -13295,6 +13330,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenLogFile);
         assert_command_palette_action_visible(&filter, &OpenLogsDirectory);
+        assert_command_palette_action_visible(&filter, &OpenDiagnosticsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigFile);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigSchemaFile);
         assert_command_palette_action_visible(&filter, &OpenThemesDirectory);
@@ -14080,6 +14116,11 @@ mod tests {
             "Open Data Directory",
             "zed_terminal::OpenDataDirectory",
         );
+        assert_menu_action(
+            &items,
+            "Open Diagnostics Report",
+            "zed_terminal::OpenDiagnosticsReport",
+        );
         assert_menu_action(&items, "Open Log File", "zed_terminal::OpenLogFile");
         assert_menu_action(
             &items,
@@ -14684,6 +14725,15 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenLogsDirectory>()
+                .is_some()
+        );
+
+        let action = <OpenDiagnosticsReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open diagnostics report action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenDiagnosticsReport>()
                 .is_some()
         );
 
@@ -15827,6 +15877,26 @@ mod tests {
             std_fs::read_to_string(&reference_file).expect("failed to read reference keymap"),
             default_keymap_content()
         );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_diagnostics_report_file_as_doctor_json() {
+        let root_dir = temp_test_dir();
+        let diagnostics_file = root_dir.join("logs").join(TERMINAL_DIAGNOSTICS_REPORT_FILE);
+
+        write_diagnostics_report_file(&diagnostics_file, &sample_doctor_report())
+            .expect("diagnostics report should write");
+
+        let diagnostics_text =
+            std_fs::read_to_string(&diagnostics_file).expect("failed to read diagnostics report");
+        let json: serde_json::Value =
+            serde_json::from_str(&diagnostics_text).expect("diagnostics report should parse");
+        assert_eq!(json["status"], "error");
+        assert_eq!(json["startup_config"]["validation"]["layouts"], 2);
+        assert_eq!(json["keymap"]["validation"]["default_bindings"], 31);
+        assert!(diagnostics_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
