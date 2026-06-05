@@ -93,6 +93,8 @@ Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
 $script:StepResults = New-Object System.Collections.Generic.List[object]
 $script:PackageSmoke = $null
+$script:VisualSmoke = $null
+$script:SplitVisualSmoke = $null
 
 function Write-ReleaseLog {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -348,7 +350,7 @@ function Invoke-NativeTextCommand {
     $null = Invoke-NativeTextCommandResult -Name $Name -Arguments $Arguments -RequiredPatterns $RequiredPatterns
 }
 
-function Convert-PackageSmokeOutput {
+function Convert-KeyValueOutput {
     param([Parameter(Mandatory = $true)][object[]]$Output)
 
     $values = @{}
@@ -363,6 +365,76 @@ function Convert-PackageSmokeOutput {
         }
     }
 
+    return $values
+}
+
+function Get-RequiredOutputValue {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if (-not $Values.ContainsKey($Key) -or [string]::IsNullOrWhiteSpace($Values[$Key])) {
+        throw "$Context output did not include $Key"
+    }
+
+    return $Values[$Key]
+}
+
+function Convert-OutputInt64 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $parsed = 0L
+    if (-not [int64]::TryParse($Value, [ref]$parsed)) {
+        throw "$Name was not a valid integer: $Value"
+    }
+    return $parsed
+}
+
+function Convert-OutputDouble {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $parsed = 0.0
+    if (-not [double]::TryParse(
+            $Value,
+            [System.Globalization.NumberStyles]::Float,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [ref]$parsed
+        )) {
+        throw "$Name was not a valid number: $Value"
+    }
+    return $parsed
+}
+
+function Assert-VisualSmokeFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int64]$ExpectedBytes,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "visual smoke output referenced a missing $Name file: $Path"
+    }
+
+    $actualBytes = (Get-Item -LiteralPath $Path).Length
+    if ($actualBytes -ne $ExpectedBytes) {
+        throw "visual smoke $Name byte count did not match the file length"
+    }
+}
+
+function Convert-PackageSmokeOutput {
+    param([Parameter(Mandatory = $true)][object[]]$Output)
+
+    $values = Convert-KeyValueOutput -Output $Output
+
     $requiredKeys = @(
         "status",
         "package_dir",
@@ -374,9 +446,7 @@ function Convert-PackageSmokeOutput {
         "zip_checksum_file"
     )
     foreach ($key in $requiredKeys) {
-        if (-not $values.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($values[$key])) {
-            throw "package smoke output did not include $key"
-        }
+        $null = Get-RequiredOutputValue -Values $values -Key $key -Context "package smoke"
     }
 
     if ($values["status"] -ne "ok") {
@@ -464,6 +534,200 @@ function Convert-PackageSmokeOutput {
     }
 }
 
+function Convert-VisualSmokeOutput {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Output,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "split")][string]$Mode,
+        [Parameter(Mandatory = $true)][bool]$BaselineExpected
+    )
+
+    $values = Convert-KeyValueOutput -Output $Output
+
+    $requiredKeys = @(
+        "status",
+        "binary",
+        "process_id",
+        "window_handle",
+        "window_title",
+        "window_bounds",
+        "window_client_region",
+        "probe_ready_file",
+        "capture_method",
+        "screenshot_file",
+        "screenshot_bytes",
+        "client_screenshot_file",
+        "client_screenshot_bytes",
+        "comparison_region",
+        "comparison_top_inset",
+        "comparison_client_region",
+        "comparison_screenshot_file",
+        "comparison_screenshot_bytes",
+        "sampled_pixels",
+        "sampled_unique_colors"
+    )
+    foreach ($key in $requiredKeys) {
+        $null = Get-RequiredOutputValue -Values $values -Key $key -Context "$Mode visual smoke"
+    }
+
+    if ($values["status"] -ne "ok") {
+        throw "$Mode visual smoke did not report ok status"
+    }
+    if ($values["window_title"] -ne "Zed Terminal") {
+        throw "$Mode visual smoke reported an unexpected window title: $($values["window_title"])"
+    }
+    if ($values["capture_method"] -ne "PrintWindow(PW_RENDERFULLCONTENT)") {
+        throw "$Mode visual smoke reported an unexpected capture method: $($values["capture_method"])"
+    }
+
+    $processId = Convert-OutputInt64 -Value $values["process_id"] -Name "$Mode visual smoke process_id"
+    $windowHandle = Convert-OutputInt64 -Value $values["window_handle"] -Name "$Mode visual smoke window_handle"
+    $screenshotBytes = Convert-OutputInt64 -Value $values["screenshot_bytes"] -Name "$Mode visual smoke screenshot_bytes"
+    $clientScreenshotBytes = Convert-OutputInt64 -Value $values["client_screenshot_bytes"] -Name "$Mode visual smoke client_screenshot_bytes"
+    $comparisonTopInset = Convert-OutputInt64 -Value $values["comparison_top_inset"] -Name "$Mode visual smoke comparison_top_inset"
+    $comparisonScreenshotBytes = Convert-OutputInt64 -Value $values["comparison_screenshot_bytes"] -Name "$Mode visual smoke comparison_screenshot_bytes"
+    $sampledPixels = Convert-OutputInt64 -Value $values["sampled_pixels"] -Name "$Mode visual smoke sampled_pixels"
+    $sampledUniqueColors = Convert-OutputInt64 -Value $values["sampled_unique_colors"] -Name "$Mode visual smoke sampled_unique_colors"
+
+    if ($processId -le 0 -or $windowHandle -le 0) {
+        throw "$Mode visual smoke did not report a valid process/window handle"
+    }
+    if ($sampledPixels -le 0 -or $sampledUniqueColors -lt 8) {
+        throw "$Mode visual smoke comparison image appears blank or undersampled"
+    }
+
+    $probeReadyFile = [System.IO.Path]::GetFullPath($values["probe_ready_file"])
+    if (-not (Test-Path -LiteralPath $probeReadyFile -PathType Leaf)) {
+        throw "$Mode visual smoke probe readiness file was missing: $probeReadyFile"
+    }
+
+    $screenshotFile = [System.IO.Path]::GetFullPath($values["screenshot_file"])
+    $clientScreenshotFile = [System.IO.Path]::GetFullPath($values["client_screenshot_file"])
+    $comparisonScreenshotFile = [System.IO.Path]::GetFullPath($values["comparison_screenshot_file"])
+    Assert-VisualSmokeFile -Path $screenshotFile -ExpectedBytes $screenshotBytes -Name "window screenshot"
+    Assert-VisualSmokeFile -Path $clientScreenshotFile -ExpectedBytes $clientScreenshotBytes -Name "client screenshot"
+    Assert-VisualSmokeFile -Path $comparisonScreenshotFile -ExpectedBytes $comparisonScreenshotBytes -Name "comparison screenshot"
+
+    $startupConfigFile = $null
+    $splitMode = $null
+    $splitDirection = $null
+    $splitReadyFile = $null
+    $splitPaneVerified = $null
+    if ($Mode -eq "split") {
+        foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
+        }
+        if ($values["split_mode"] -ne "startup" -or $values["split_direction"] -ne "right") {
+            throw "split visual smoke reported unexpected split metadata"
+        }
+        if ($values["split_pane_verified"] -ne "True") {
+            throw "split visual smoke did not verify the split pane"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["startup_config_file"])
+        $splitReadyFile = [System.IO.Path]::GetFullPath($values["split_ready_file"])
+        foreach ($file in @($startupConfigFile, $splitReadyFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "split visual smoke referenced a missing file: $file"
+            }
+        }
+        $splitMode = $values["split_mode"]
+        $splitDirection = $values["split_direction"]
+        $splitPaneVerified = $true
+    }
+
+    $baseline = $null
+    if ($BaselineExpected) {
+        $baselineKeys = @(
+            "baseline_file",
+            "baseline_comparison_file",
+            "baseline_diff_file",
+            "baseline_pixels",
+            "baseline_different_pixels",
+            "baseline_different_pixel_ratio",
+            "baseline_average_channel_delta",
+            "baseline_max_channel_delta",
+            "baseline_pixel_tolerance",
+            "baseline_max_different_pixel_ratio",
+            "baseline_max_average_channel_delta"
+        )
+        foreach ($key in $baselineKeys) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "$Mode visual smoke baseline"
+        }
+
+        $baselineFile = [System.IO.Path]::GetFullPath($values["baseline_file"])
+        $baselineComparisonFile = [System.IO.Path]::GetFullPath($values["baseline_comparison_file"])
+        $baselineDiffFile = [System.IO.Path]::GetFullPath($values["baseline_diff_file"])
+        foreach ($file in @($baselineFile, $baselineComparisonFile, $baselineDiffFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "$Mode visual smoke baseline referenced a missing file: $file"
+            }
+        }
+
+        $baselinePixels = Convert-OutputInt64 -Value $values["baseline_pixels"] -Name "$Mode visual smoke baseline_pixels"
+        $baselineDifferentPixels = Convert-OutputInt64 -Value $values["baseline_different_pixels"] -Name "$Mode visual smoke baseline_different_pixels"
+        $baselineDifferentPixelRatio = Convert-OutputDouble -Value $values["baseline_different_pixel_ratio"] -Name "$Mode visual smoke baseline_different_pixel_ratio"
+        $baselineAverageChannelDelta = Convert-OutputDouble -Value $values["baseline_average_channel_delta"] -Name "$Mode visual smoke baseline_average_channel_delta"
+        $baselineMaxChannelDelta = Convert-OutputInt64 -Value $values["baseline_max_channel_delta"] -Name "$Mode visual smoke baseline_max_channel_delta"
+        $baselinePixelToleranceValue = Convert-OutputInt64 -Value $values["baseline_pixel_tolerance"] -Name "$Mode visual smoke baseline_pixel_tolerance"
+        $baselineMaxDifferentPixelRatio = Convert-OutputDouble -Value $values["baseline_max_different_pixel_ratio"] -Name "$Mode visual smoke baseline_max_different_pixel_ratio"
+        $baselineMaxAverageChannelDelta = Convert-OutputDouble -Value $values["baseline_max_average_channel_delta"] -Name "$Mode visual smoke baseline_max_average_channel_delta"
+
+        if ($baselinePixels -le 0 -or $baselineDifferentPixels -lt 0 -or $baselineDifferentPixels -gt $baselinePixels) {
+            throw "$Mode visual smoke baseline pixel counts were invalid"
+        }
+        if ($baselineDifferentPixelRatio -gt $baselineMaxDifferentPixelRatio -or $baselineAverageChannelDelta -gt $baselineMaxAverageChannelDelta) {
+            throw "$Mode visual smoke baseline metrics exceeded release thresholds"
+        }
+        if ($baselinePixelToleranceValue -ne $BaselinePixelTolerance) {
+            throw "$Mode visual smoke baseline pixel tolerance did not match the release check threshold"
+        }
+
+        $baseline = [pscustomobject]@{
+            file = $baselineFile
+            comparison_file = $baselineComparisonFile
+            diff_file = $baselineDiffFile
+            pixels = $baselinePixels
+            different_pixels = $baselineDifferentPixels
+            different_pixel_ratio = $baselineDifferentPixelRatio
+            average_channel_delta = $baselineAverageChannelDelta
+            max_channel_delta = $baselineMaxChannelDelta
+            pixel_tolerance = $baselinePixelToleranceValue
+            max_different_pixel_ratio = $baselineMaxDifferentPixelRatio
+            max_average_channel_delta = $baselineMaxAverageChannelDelta
+        }
+    }
+
+    return [pscustomobject]@{
+        status = "ok"
+        mode = $Mode
+        binary = [System.IO.Path]::GetFullPath($values["binary"])
+        process_id = $processId
+        window_handle = $windowHandle
+        window_title = $values["window_title"]
+        window_bounds = $values["window_bounds"]
+        window_client_region = $values["window_client_region"]
+        probe_ready_file = $probeReadyFile
+        startup_config_file = $startupConfigFile
+        split_mode = $splitMode
+        split_direction = $splitDirection
+        split_ready_file = $splitReadyFile
+        split_pane_verified = $splitPaneVerified
+        capture_method = $values["capture_method"]
+        screenshot_file = $screenshotFile
+        screenshot_bytes = $screenshotBytes
+        client_screenshot_file = $clientScreenshotFile
+        client_screenshot_bytes = $clientScreenshotBytes
+        comparison_region = $values["comparison_region"]
+        comparison_top_inset = $comparisonTopInset
+        comparison_client_region = $values["comparison_client_region"]
+        comparison_screenshot_file = $comparisonScreenshotFile
+        comparison_screenshot_bytes = $comparisonScreenshotBytes
+        sampled_pixels = $sampledPixels
+        sampled_unique_colors = $sampledUniqueColors
+        baseline = $baseline
+    }
+}
+
 function Assert-PowerShellSyntax {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -489,12 +753,14 @@ function Write-ReleaseSummary {
         package_smoke_skipped = [bool]$SkipPackage
         package_smoke = $script:PackageSmoke
         visual_baseline_skipped = [bool]$SkipVisualBaseline
+        visual_smoke = $script:VisualSmoke
+        split_visual_smoke = $script:SplitVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
         steps = $script:StepResults
     }
-    $payload | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $summaryFile -Encoding utf8
+    $payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryFile -Encoding utf8
 }
 
 try {
@@ -1475,7 +1741,11 @@ try {
         }
 
         Invoke-Step "visual smoke" {
-            Invoke-NativeCommand -FilePath "powershell" -Arguments $visualSmokeArgs
+            $visualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $visualSmokeArgs
+            $script:VisualSmoke = Convert-VisualSmokeOutput `
+                -Output (($visualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                -Mode "default" `
+                -BaselineExpected ([bool]$VisualBaselineImage)
         }
 
         if (-not $SkipSplitVisualSmoke) {
@@ -1498,7 +1768,11 @@ try {
                 )
             }
             Invoke-Step "visual smoke split pane" {
-                Invoke-NativeCommand -FilePath "powershell" -Arguments $splitVisualSmokeArgs
+                $splitVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $splitVisualSmokeArgs
+                $script:SplitVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($splitVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "split" `
+                    -BaselineExpected ([bool]$SplitVisualBaselineImage)
             }
         }
     }
