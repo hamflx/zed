@@ -64,6 +64,7 @@ actions!(
         OpenVersionInfoReport,
         OpenSupportInfoReport,
         OpenSupportBundleDirectory,
+        OpenStartupLayoutReport,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
         OpenStartupProfilesReport,
@@ -176,6 +177,7 @@ const TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE: &str = "zed-terminal-support-bundle
 const TERMINAL_SUPPORT_BUNDLE_PATHS_FILE: &str = "zed-terminal-paths.json";
 const TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE: &str = "zed-terminal-file-metadata.json";
 const TERMINAL_SUPPORT_BUNDLE_README_FILE: &str = "README.txt";
+const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
@@ -19742,6 +19744,24 @@ fn write_active_keymap_bindings_report_file(
     })
 }
 
+fn write_startup_layout_report_file(
+    path: &Path,
+    report: &TerminalStartupLayoutReport,
+) -> Result<()> {
+    let report = format_startup_layout_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup layout report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write startup layout report {}", path.display()))
+}
+
 fn write_startup_description_report_file(
     path: &Path,
     report: &TerminalStartupDescription,
@@ -21950,6 +21970,10 @@ fn active_terminal_support_bundle_dir() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SUPPORT_BUNDLE_DIR)
 }
 
+fn active_terminal_startup_layout_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_LAYOUT_REPORT_FILE)
+}
+
 fn active_terminal_startup_description_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE)
 }
@@ -22071,6 +22095,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_version_info_report);
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
+    cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
     cx.on_action(open_settings_validation_report);
@@ -22322,6 +22347,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupConfigFile>(),
         TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
         TerminalActionSurface::new::<OpenStartupConfigValidationReport>(),
+        TerminalActionSurface::new::<OpenStartupLayoutReport>(),
         TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
         TerminalActionSurface::new::<OpenStartupProfileConfig>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
@@ -22993,6 +23019,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Startup Config Schema File",
             OpenStartupConfigSchemaFile,
         ),
+        MenuItem::action("Open Startup Layout Report", OpenStartupLayoutReport),
         MenuItem::action(
             "Open Startup Description Report",
             OpenStartupDescriptionReport,
@@ -24070,6 +24097,33 @@ fn active_terminal_support_info(cx: &mut App) -> String {
     format_terminal_support_info(env!("CARGO_PKG_VERSION"), &path_report, &doctor_report)
 }
 
+fn active_terminal_startup_layout_report() -> Result<TerminalStartupLayoutReport> {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_config = TerminalStartupConfig::load(&startup_config_file)?;
+    let cli = Cli::try_parse_from(["zed-terminal"])
+        .context("failed to parse default terminal CLI for startup layout report")?;
+    let launch_options =
+        LaunchOptions::from_cli_parts(cli, startup_config, active_terminal_path_options())?;
+    Ok(startup_layout_report(&launch_options, &startup_config_file))
+}
+
+fn open_startup_layout_report(_: &OpenStartupLayoutReport, cx: &mut App) {
+    let startup_layout_report_file = active_terminal_startup_layout_report_file();
+    let report = match active_terminal_startup_layout_report() {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!("failed to build startup layout report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) = write_startup_layout_report_file(&startup_layout_report_file, &report) {
+        log::warn!("failed to write startup layout report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_layout_report_file);
+}
+
 fn open_startup_description_report(_: &OpenStartupDescriptionReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let startup_description_report_file = active_terminal_startup_description_report_file();
@@ -25041,6 +25095,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenKeymapActionCatalogReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapToolsPicker);
         assert_command_palette_action_visible(&filter, &OpenActiveKeymapBindingsReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupLayoutReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
@@ -26184,6 +26239,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Layout Report",
+            "zed_terminal::OpenStartupLayoutReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Description Report",
             "zed_terminal::OpenStartupDescriptionReport",
         );
@@ -26990,6 +27050,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupDescriptionReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_layout_report_action_input() {
+        let action =
+            <OpenStartupLayoutReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup layout report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupLayoutReport>()
                 .is_some()
         );
     }
@@ -30356,6 +30430,74 @@ mod tests {
         assert_eq!(json["source"], "file");
         assert_eq!(json["layout_count"], 2);
         assert_eq!(json["tab_count"], 4);
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_layout_report_file_as_resolved_layout_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_LAYOUT_REPORT_FILE);
+        let report = TerminalStartupLayoutReport {
+            startup_config_file: PathBuf::from("terminal.json"),
+            new_terminal_tab: TerminalStartupLayoutTabReport {
+                kind: TerminalStartupLayoutTabKind::Shell,
+                placement: TerminalStartupLayoutPlacement::Tab,
+                title: Some("Default".into()),
+                working_directory: Some(PathBuf::from(".")),
+                command: None,
+                shell: Some(Shell::System),
+                env_count: 1,
+            },
+            tabs: vec![
+                TerminalStartupLayoutTabReport {
+                    kind: TerminalStartupLayoutTabKind::Shell,
+                    placement: TerminalStartupLayoutPlacement::Tab,
+                    title: Some("Root".into()),
+                    working_directory: Some(PathBuf::from(".")),
+                    command: None,
+                    shell: Some(Shell::System),
+                    env_count: 1,
+                },
+                TerminalStartupLayoutTabReport {
+                    kind: TerminalStartupLayoutTabKind::Command,
+                    placement: TerminalStartupLayoutPlacement::Split(
+                        TerminalStartupSplitDirection::Right,
+                    ),
+                    title: Some("Logs".into()),
+                    working_directory: Some(PathBuf::from("logs")),
+                    command: Some(LaunchCommand {
+                        program: "cmd".into(),
+                        args: vec!["/C".into(), "echo ok".into()],
+                    }),
+                    shell: None,
+                    env_count: 0,
+                },
+            ],
+        };
+
+        write_startup_layout_report_file(&report_file, &report)
+            .expect("startup layout report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read startup layout report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("startup layout report should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["tab_count"], 2);
+        assert_eq!(json["new_terminal_tab"]["title"], "Default");
+        assert_eq!(json["new_terminal_tab"]["shell"]["kind"], "system");
+        assert_eq!(json["tabs"][0]["tab"], 1);
+        assert_eq!(json["tabs"][0]["placement"], "tab");
+        assert_eq!(json["tabs"][1]["tab"], 2);
+        assert_eq!(json["tabs"][1]["placement"], "split");
+        assert_eq!(json["tabs"][1]["split_direction"], "right");
+        assert_eq!(json["tabs"][1]["command"]["label"], "cmd /C \"echo ok\"");
+        assert_eq!(json["tabs"][1]["shell"], serde_json::Value::Null);
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
