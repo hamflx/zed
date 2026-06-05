@@ -680,6 +680,33 @@ try {
             if ($mutationAdminDescriptionText -match "release-check-value") {
                 throw "Imported admin profile description leaked an environment variable value."
             }
+            $adminStartupTab = Invoke-NativeJsonCommandResult "mutation-add-admin-startup-tab" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--add-startup-tab",
+                "--startup-tab-profile", "admin",
+                "--startup-tab-title", "Admin Tab",
+                "--add-startup-tab-format", "json"
+            )
+            if ($adminStartupTab.tab -ne 2 -or $adminStartupTab.tab_config.profile -ne "admin" -or $adminStartupTab.tab_config.title -ne "Admin Tab" -or -not $adminStartupTab.changed) {
+                throw "Admin startup tab mutation did not report the expected profile-backed tab."
+            }
+            $adminProfileRemoval = Invoke-NativeJsonCommandResult "mutation-remove-profile-admin" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--remove-profile", "admin",
+                "--remove-profile-references",
+                "--remove-profile-format", "json"
+            )
+            if ($adminProfileRemoval.profile -ne "admin" -or -not $adminProfileRemoval.changed -or $adminProfileRemoval.remaining_profile_count -ne 1 -or $adminProfileRemoval.removed_reference_count -ne 1 -or $adminProfileRemoval.removed_root_tab_count -ne 1 -or $adminProfileRemoval.removed_profile_tab_count -ne 0 -or $adminProfileRemoval.cleared_default_profile) {
+                throw "Admin profile removal did not report the expected reference cleanup."
+            }
+            Invoke-NativeJsonCommand "mutation-validate-startup-config-after-admin-removal" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--validate-startup-config",
+                "--validate-startup-config-format", "json"
+            )
             Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
 {
   "default_profile": "work",

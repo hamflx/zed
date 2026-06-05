@@ -2032,6 +2032,13 @@ struct Cli {
     remove_profile_format: Option<TerminalStartupProfileRemovalOutputFormat>,
 
     #[arg(
+        long = "remove-profile-references",
+        requires = "remove_profile",
+        help = "Also clear default_profile and remove startup tabs that reference the removed profile"
+    )]
+    remove_profile_references: bool,
+
+    #[arg(
         long = "rename-profile",
         value_names = ["OLD_NAME", "NEW_NAME"],
         num_args = 2,
@@ -2724,6 +2731,7 @@ enum TerminalCliCommand {
     RemoveProfile {
         path_options: TerminalPathOptions,
         profile: String,
+        remove_references: bool,
         format: TerminalStartupProfileRemovalOutputFormat,
     },
     SetProfileVisibility {
@@ -3369,6 +3377,10 @@ struct TerminalStartupProfileRemoval {
     profile: String,
     changed: bool,
     remaining_profile_count: usize,
+    removed_reference_count: usize,
+    cleared_default_profile: bool,
+    removed_root_tab_count: usize,
+    removed_profile_tab_count: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4108,6 +4120,7 @@ impl TerminalCliCommand {
             return Ok(Self::RemoveProfile {
                 path_options,
                 profile,
+                remove_references: cli.remove_profile_references,
                 format: cli.remove_profile_format.unwrap_or_default(),
             });
         }
@@ -5475,9 +5488,12 @@ fn main() {
             }
         }
         TerminalCliCommand::RemoveProfile {
-            profile, format, ..
+            profile,
+            remove_references,
+            format,
+            ..
         } => {
-            if let Err(error) = print_startup_profile_removal(&profile, format) {
+            if let Err(error) = print_startup_profile_removal(&profile, remove_references, format) {
                 eprintln!("failed to remove startup profile: {error:#}");
                 process::exit(2);
             }
@@ -6209,9 +6225,14 @@ fn print_startup_profile_import(
 
 fn print_startup_profile_removal(
     profile: &str,
+    remove_references: bool,
     format: TerminalStartupProfileRemovalOutputFormat,
 ) -> Result<()> {
-    let removal = remove_startup_profile(&active_terminal_startup_config_file(), profile)?;
+    let removal = remove_startup_profile_with_references(
+        &active_terminal_startup_config_file(),
+        profile,
+        remove_references,
+    )?;
     match format {
         TerminalStartupProfileRemovalOutputFormat::Text => {
             print!("{}", format_startup_profile_removal(&removal))
@@ -8995,6 +9016,14 @@ fn clear_default_startup_profile(path: &Path) -> Result<TerminalDefaultProfileUp
 }
 
 fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupProfileRemoval> {
+    remove_startup_profile_with_references(path, profile, false)
+}
+
+fn remove_startup_profile_with_references(
+    path: &Path,
+    profile: &str,
+    remove_references: bool,
+) -> Result<TerminalStartupProfileRemoval> {
     let profile = normalize_startup_profile_name(profile)?;
     let mut text = match std_fs::read_to_string(path) {
         Ok(text) => text,
@@ -9004,6 +9033,10 @@ fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupP
                 profile,
                 changed: false,
                 remaining_profile_count: 0,
+                removed_reference_count: 0,
+                cleared_default_profile: false,
+                removed_root_tab_count: 0,
+                removed_profile_tab_count: 0,
             });
         }
         Err(error) => {
@@ -9021,8 +9054,37 @@ fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupP
             profile,
             changed: false,
             remaining_profile_count: startup_config.profiles.len(),
+            removed_reference_count: 0,
+            cleared_default_profile: false,
+            removed_root_tab_count: 0,
+            removed_profile_tab_count: 0,
         });
     }
+
+    let cleared_default_profile =
+        remove_references && startup_config.default_profile.as_deref() == Some(profile.as_str());
+    let removed_root_tab_count = if remove_references {
+        remove_startup_profile_tab_references(&mut startup_config.tabs, &profile)
+    } else {
+        0
+    };
+    let mut removed_profile_tab_count = 0;
+    let mut changed_profile_tabs = Vec::new();
+    if remove_references {
+        for (profile_name, startup_profile) in startup_config.profiles.iter_mut() {
+            let removed_tabs =
+                remove_startup_profile_tab_references(&mut startup_profile.tabs, &profile);
+            if removed_tabs > 0 {
+                removed_profile_tab_count += removed_tabs;
+                changed_profile_tabs.push(profile_name.clone());
+            }
+        }
+        if cleared_default_profile {
+            startup_config.default_profile = None;
+        }
+    }
+    let removed_reference_count =
+        usize::from(cleared_default_profile) + removed_root_tab_count + removed_profile_tab_count;
 
     startup_config.validate().with_context(|| {
         format!(
@@ -9032,6 +9094,58 @@ fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupP
     })?;
 
     let indent_size = settings_json::infer_json_indent_size(&text);
+    if remove_references {
+        if cleared_default_profile {
+            let (range, replacement) = settings_json::replace_value_in_json_text(
+                &text,
+                &["default_profile"],
+                indent_size,
+                Some(&serde_json::Value::Null),
+                None,
+            );
+            text.replace_range(range, &replacement);
+        }
+        if removed_root_tab_count > 0 {
+            let tabs_value = serde_json::Value::Array(
+                startup_config
+                    .tabs
+                    .iter()
+                    .map(startup_tab_config_to_json_value)
+                    .collect(),
+            );
+            let (range, replacement) = settings_json::replace_value_in_json_text(
+                &text,
+                &["tabs"],
+                indent_size,
+                Some(&tabs_value),
+                None,
+            );
+            text.replace_range(range, &replacement);
+        }
+        for profile_name in &changed_profile_tabs {
+            let startup_profile = startup_config
+                .profiles
+                .get(profile_name)
+                .expect("changed startup profile tabs should still exist");
+            let tabs_value = serde_json::Value::Array(
+                startup_profile
+                    .tabs
+                    .iter()
+                    .map(startup_tab_config_to_json_value)
+                    .collect(),
+            );
+            if startup_profile.tabs.is_empty() {
+                replace_startup_profile_field(&mut text, profile_name.as_str(), "tabs", None);
+            } else {
+                replace_startup_profile_field(
+                    &mut text,
+                    profile_name.as_str(),
+                    "tabs",
+                    Some(tabs_value),
+                );
+            }
+        }
+    }
     let (range, replacement) = settings_json::replace_value_in_json_text(
         &text,
         &["profiles", profile.as_str()],
@@ -9063,7 +9177,20 @@ fn remove_startup_profile(path: &Path, profile: &str) -> Result<TerminalStartupP
         profile,
         changed: true,
         remaining_profile_count: startup_config.profiles.len(),
+        removed_reference_count,
+        cleared_default_profile,
+        removed_root_tab_count,
+        removed_profile_tab_count,
     })
+}
+
+fn remove_startup_profile_tab_references(
+    tabs: &mut Vec<TerminalStartupTabConfig>,
+    profile: &str,
+) -> usize {
+    let previous_len = tabs.len();
+    tabs.retain(|tab| tab.profile.as_deref() != Some(profile));
+    previous_len - tabs.len()
 }
 
 fn rename_startup_profile(
@@ -11973,6 +12100,30 @@ fn format_startup_profile_removal(removal: &TerminalStartupProfileRemoval) -> St
         removal.remaining_profile_count
     )
     .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_references: {}",
+        removal.removed_reference_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "cleared_default_profile: {}",
+        removal.cleared_default_profile
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_root_tabs: {}",
+        removal.removed_root_tab_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_profile_tabs: {}",
+        removal.removed_profile_tab_count
+    )
+    .expect("writing to string should not fail");
     output
 }
 
@@ -11983,6 +12134,10 @@ fn format_startup_profile_removal_json(removal: &TerminalStartupProfileRemoval) 
         "profile": removal.profile.as_str(),
         "changed": removal.changed,
         "remaining_profile_count": removal.remaining_profile_count,
+        "removed_reference_count": removal.removed_reference_count,
+        "cleared_default_profile": removal.cleared_default_profile,
+        "removed_root_tab_count": removal.removed_root_tab_count,
+        "removed_profile_tab_count": removal.removed_profile_tab_count,
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile removal as json")?;
@@ -20490,11 +20645,15 @@ mod tests {
             profile: "old".into(),
             changed: true,
             remaining_profile_count: 2,
+            removed_reference_count: 3,
+            cleared_default_profile: true,
+            removed_root_tab_count: 1,
+            removed_profile_tab_count: 1,
         });
 
         assert_eq!(
             output,
-            "startup_config_file: terminal.json\nstatus: ok\nprofile: old\nchanged: true\nremaining_profiles: 2\n"
+            "startup_config_file: terminal.json\nstatus: ok\nprofile: old\nchanged: true\nremaining_profiles: 2\nremoved_references: 3\ncleared_default_profile: true\nremoved_root_tabs: 1\nremoved_profile_tabs: 1\n"
         );
     }
 
@@ -20505,6 +20664,10 @@ mod tests {
             profile: "old".into(),
             changed: false,
             remaining_profile_count: 1,
+            removed_reference_count: 0,
+            cleared_default_profile: false,
+            removed_root_tab_count: 0,
+            removed_profile_tab_count: 0,
         })
         .expect("json output should format");
         let json: serde_json::Value =
@@ -20515,6 +20678,10 @@ mod tests {
         assert_eq!(json["profile"], "old");
         assert_eq!(json["changed"], false);
         assert_eq!(json["remaining_profile_count"], 1);
+        assert_eq!(json["removed_reference_count"], 0);
+        assert_eq!(json["cleared_default_profile"], false);
+        assert_eq!(json["removed_root_tab_count"], 0);
+        assert_eq!(json["removed_profile_tab_count"], 0);
         assert!(output.ends_with('\n'));
     }
 
@@ -26355,6 +26522,76 @@ mod tests {
     }
 
     #[test]
+    fn remove_startup_profile_with_references_clears_inbound_references() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"// keep leading comment
+{
+  "default_profile": "work",
+  "tabs": [
+    { "title": "Root Work", "profile": "work" },
+    { "title": "Root Admin", "profile": "admin" }
+  ],
+  "profiles": {
+    "admin": {
+      "display_name": "Admin",
+      "tabs": [
+        { "title": "Nested Work", "profile": "work" },
+        { "title": "Admin Logs", "command": "pwsh -NoLogo" }
+      ]
+    },
+    "work": {
+      "display_name": "Work"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        let removal = remove_startup_profile_with_references(&startup_config_file, " work ", true)
+            .expect("startup profile and inbound references should be removed");
+
+        assert_eq!(removal.path, startup_config_file);
+        assert_eq!(removal.profile, "work");
+        assert!(removal.changed);
+        assert_eq!(removal.remaining_profile_count, 1);
+        assert_eq!(removal.removed_reference_count, 3);
+        assert!(removal.cleared_default_profile);
+        assert_eq!(removal.removed_root_tab_count, 1);
+        assert_eq!(removal.removed_profile_tab_count, 1);
+
+        let content =
+            std_fs::read_to_string(&removal.path).expect("failed to read updated startup config");
+        assert!(content.contains("// keep leading comment"));
+        assert!(!content.contains(r#""work": {"#));
+        assert!(!content.contains(r#""profile": "work""#));
+        assert!(content.contains(r#""default_profile": null"#));
+        assert!(content.contains(r#""title": "Root Admin""#));
+        assert!(content.contains(r#""title": "Admin Logs""#));
+
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        updated_config
+            .validate()
+            .expect("updated config should validate");
+        assert_eq!(updated_config.default_profile, None);
+        assert_eq!(updated_config.tabs.len(), 1);
+        assert_eq!(updated_config.tabs[0].profile.as_deref(), Some("admin"));
+        assert!(updated_config.profiles.contains_key("admin"));
+        assert!(!updated_config.profiles.contains_key("work"));
+        assert_eq!(updated_config.profiles["admin"].tabs.len(), 1);
+        assert_eq!(
+            updated_config.profiles["admin"].tabs[0].title.as_deref(),
+            Some("Admin Logs")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn remove_startup_profile_rejects_default_profile_reference_without_writing() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -28719,6 +28956,7 @@ mod tests {
             "work",
             "--remove-profile-format",
             "json",
+            "--remove-profile-references",
         ])
         .expect("failed to parse remove profile json args");
         let command =
@@ -28726,12 +28964,16 @@ mod tests {
                 .expect("remove profile json mode should resolve");
 
         let TerminalCliCommand::RemoveProfile {
-            profile, format, ..
+            profile,
+            remove_references,
+            format,
+            ..
         } = command
         else {
             panic!("expected remove profile mode");
         };
         assert_eq!(profile, "work");
+        assert!(remove_references);
         assert_eq!(format, TerminalStartupProfileRemovalOutputFormat::Json);
     }
 
@@ -29610,6 +29852,7 @@ mod tests {
         let TerminalCliCommand::RemoveProfile {
             path_options,
             profile,
+            remove_references,
             format,
         } = command
         else {
@@ -29619,6 +29862,7 @@ mod tests {
         assert_eq!(path_options.data_dir, data_dir);
         assert_eq!(path_options.config_dir, config_dir);
         assert_eq!(profile, "work");
+        assert!(!remove_references);
         assert_eq!(format, TerminalStartupProfileRemovalOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
@@ -31707,6 +31951,10 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--remove-profile-format", "json"])
             .expect_err("remove profile format should require remove profile mode");
+        assert!(error.to_string().contains("required"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--remove-profile-references"])
+            .expect_err("remove profile references should require remove profile mode");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
