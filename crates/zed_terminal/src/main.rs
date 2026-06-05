@@ -11835,6 +11835,7 @@ fn terminal_command_palette_visible_action_types() -> Vec<TypeId> {
         TypeId::of::<terminal::ToggleViMode>(),
         TypeId::of::<terminal_view::RenameTerminal>(),
         TypeId::of::<terminal_view::RerunTask>(),
+        TypeId::of::<workspace::ActivateLastPane>(),
         TypeId::of::<workspace::ActivateNextPane>(),
         TypeId::of::<workspace::ActivatePaneDown>(),
         TypeId::of::<workspace::ActivatePaneLeft>(),
@@ -12421,6 +12422,7 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Focus Right", workspace::ActivatePaneRight),
         MenuItem::action("Focus Up", workspace::ActivatePaneUp),
         MenuItem::action("Focus Down", workspace::ActivatePaneDown),
+        MenuItem::action("Focus Center Pane", workspace::FocusCenterPane),
         MenuItem::separator(),
         MenuItem::action("Swap Pane Left", workspace::SwapPaneLeft),
         MenuItem::action("Swap Pane Right", workspace::SwapPaneRight),
@@ -12435,6 +12437,7 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Next Pane", workspace::ActivateNextPane),
         MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
+        MenuItem::action("Last Pane", workspace::ActivateLastPane),
         MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
         MenuItem::action("Join Pane Into Next", workspace::pane::JoinIntoNext),
         MenuItem::action("Join All Panes", workspace::pane::JoinAll),
@@ -14154,6 +14157,10 @@ mod tests {
             &filter,
             &zed_actions::IncreaseBufferFontSize { persist: false },
         );
+        assert_command_palette_action_visible(&filter, &workspace::ActivateLastPane);
+        assert_command_palette_action_visible(&filter, &workspace::ActivateNextPane);
+        assert_command_palette_action_visible(&filter, &workspace::ActivatePreviousPane);
+        assert_command_palette_action_visible(&filter, &workspace::FocusCenterPane);
         assert_command_palette_action_visible(&filter, &workspace::ActivatePaneLeft);
         assert_command_palette_action_visible(
             &filter,
@@ -15051,6 +15058,20 @@ mod tests {
             "Close Inactive Tabs and Panes",
             "workspace::CloseInactiveTabsAndPanes",
         );
+    }
+
+    #[test]
+    fn pane_menu_exposes_pane_focus_and_cycle_actions() {
+        let items = pane_menu_items();
+
+        assert_menu_action(&items, "Focus Left", "workspace::ActivatePaneLeft");
+        assert_menu_action(&items, "Focus Right", "workspace::ActivatePaneRight");
+        assert_menu_action(&items, "Focus Up", "workspace::ActivatePaneUp");
+        assert_menu_action(&items, "Focus Down", "workspace::ActivatePaneDown");
+        assert_menu_action(&items, "Focus Center Pane", "workspace::FocusCenterPane");
+        assert_menu_action(&items, "Next Pane", "workspace::ActivateNextPane");
+        assert_menu_action(&items, "Previous Pane", "workspace::ActivatePreviousPane");
+        assert_menu_action(&items, "Last Pane", "workspace::ActivateLastPane");
     }
 
     #[test]
