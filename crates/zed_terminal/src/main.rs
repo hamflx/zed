@@ -23097,9 +23097,12 @@ fn app_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
         MenuItem::separator(),
-        MenuItem::action("Open Support Tools...", OpenSupportToolsPicker),
         MenuItem::action("Open Settings Tools...", OpenSettingsToolsPicker),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+        MenuItem::action(
+            "Open Settings Validation Report",
+            OpenSettingsValidationReport,
+        ),
         MenuItem::action(
             "Open Config Initialization Report",
             OpenConfigInitializationReport,
@@ -23109,11 +23112,16 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Config Bundle Backups Directory",
             OpenConfigBundleBackupsDirectory,
         ),
+        MenuItem::separator(),
         MenuItem::action("Open Startup Tools...", OpenStartupToolsPicker),
         MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
         MenuItem::action(
             "Open Startup Config Schema File",
             OpenStartupConfigSchemaFile,
+        ),
+        MenuItem::action(
+            "Open Startup Config Validation Report",
+            OpenStartupConfigValidationReport,
         ),
         MenuItem::action("Open Startup Layout Report", OpenStartupLayoutReport),
         MenuItem::action(
@@ -23121,21 +23129,15 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupDescriptionReport,
         ),
         MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
-        MenuItem::action(
-            "Open Settings Validation Report",
-            OpenSettingsValidationReport,
-        ),
-        MenuItem::action(
-            "Open Startup Config Validation Report",
-            OpenStartupConfigValidationReport,
-        ),
-        MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
+        MenuItem::separator(),
         MenuItem::action("Open Keymap Tools...", OpenKeymapToolsPicker),
+        MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
         MenuItem::action("Open Keymap Schema File", OpenKeymapSchemaFile),
         MenuItem::action(
             "Open Default Keymap Reference File",
             OpenDefaultKeymapReferenceFile,
         ),
+        MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
         MenuItem::action(
             "Open Keymap Action Catalog Report",
             OpenKeymapActionCatalogReport,
@@ -23144,15 +23146,17 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Active Keymap Bindings Report",
             OpenActiveKeymapBindingsReport,
         ),
-        MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
-        MenuItem::action("Open Config Directory", OpenConfigDirectory),
-        MenuItem::action("Open Data Directory", OpenDataDirectory),
-        MenuItem::action("Open Paths Report", OpenPathsReport),
+        MenuItem::separator(),
+        MenuItem::action("Open Support Tools...", OpenSupportToolsPicker),
         MenuItem::action("Open Diagnostics Report", OpenDiagnosticsReport),
+        MenuItem::action("Open Paths Report", OpenPathsReport),
         MenuItem::action("Open Version Info Report", OpenVersionInfoReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
         MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
         MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
+        MenuItem::separator(),
+        MenuItem::action("Open Config Directory", OpenConfigDirectory),
+        MenuItem::action("Open Data Directory", OpenDataDirectory),
         MenuItem::action("Open Log File", OpenLogFile),
         MenuItem::action("Open Logs Directory", OpenLogsDirectory),
         MenuItem::action("Open Themes Directory", OpenThemesDirectory),
@@ -24661,6 +24665,18 @@ mod tests {
             panic!("menu item {label:?} should be an action");
         };
         assert_eq!(action.name(), action_name);
+    }
+
+    fn menu_item_labels(menu_items: &[MenuItem]) -> Vec<String> {
+        menu_items
+            .iter()
+            .map(|item| match item {
+                MenuItem::Action { name, .. } => name.to_string(),
+                MenuItem::Separator => "---".into(),
+                MenuItem::Submenu(menu) => format!(">{}", menu.name),
+                MenuItem::SystemMenu(menu) => format!(">{}", menu.name),
+            })
+            .collect()
     }
 
     fn profile_submenu_action<'a>(
@@ -26508,6 +26524,57 @@ mod tests {
             &items,
             "Open Themes Directory",
             "zed_terminal::OpenThemesDirectory",
+        );
+    }
+
+    #[test]
+    fn app_menu_groups_product_tools_by_workflow() {
+        let items = app_menu_items();
+
+        assert_eq!(
+            menu_item_labels(&items),
+            vec![
+                "Command Palette...",
+                "---",
+                "Open Settings Tools...",
+                "Open Settings File",
+                "Open Settings Validation Report",
+                "Open Config Initialization Report",
+                "Back Up Config Bundle...",
+                "Open Config Bundle Backups Directory",
+                "---",
+                "Open Startup Tools...",
+                "Open Startup Config File",
+                "Open Startup Config Schema File",
+                "Open Startup Config Validation Report",
+                "Open Startup Layout Report",
+                "Open Startup Description Report",
+                "Open Startup Profiles Report",
+                "---",
+                "Open Keymap Tools...",
+                "Open Keymap File",
+                "Open Keymap Schema File",
+                "Open Default Keymap Reference File",
+                "Open Keymap Validation Report",
+                "Open Keymap Action Catalog Report",
+                "Open Active Keymap Bindings Report",
+                "---",
+                "Open Support Tools...",
+                "Open Diagnostics Report",
+                "Open Paths Report",
+                "Open Version Info Report",
+                "Open Support Info Report",
+                "Open Support Bundle Directory",
+                "Copy Support Info",
+                "---",
+                "Open Config Directory",
+                "Open Data Directory",
+                "Open Log File",
+                "Open Logs Directory",
+                "Open Themes Directory",
+                "---",
+                "Quit",
+            ]
         );
     }
 
