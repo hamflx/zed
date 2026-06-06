@@ -970,6 +970,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigBundleBackupsReport",
+            "zed_terminal::RestoreConfigBundle",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -2019,6 +2020,7 @@ try {
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
                 "zed_terminal::OpenConfigBundleBackupsReport",
+                "zed_terminal::RestoreConfigBundle",
                 "zed_terminal::OpenConfigInitializationReport",
                 "zed_terminal::OpenKeymapToolsPicker",
                 "zed_terminal::OpenSettingsSchemaFile",
@@ -2100,6 +2102,10 @@ try {
             $configBundleBackupsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigBundleBackupsReport" } | Select-Object -First 1
             if (-not $configBundleBackupsReportAction -or $configBundleBackupsReportAction.namespace -ne "zed_terminal" -or $configBundleBackupsReportAction.input -ne "none") {
                 throw "Keymap action list is missing the OpenConfigBundleBackupsReport action metadata."
+            }
+            $restoreConfigBundleAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::RestoreConfigBundle" } | Select-Object -First 1
+            if (-not $restoreConfigBundleAction -or $restoreConfigBundleAction.namespace -ne "zed_terminal" -or $restoreConfigBundleAction.input -ne "none") {
+                throw "Keymap action list is missing the RestoreConfigBundle action metadata."
             }
             $configInitializationReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigInitializationReport" } | Select-Object -First 1
             if (-not $configInitializationReportAction -or $configInitializationReportAction.namespace -ne "zed_terminal" -or $configInitializationReportAction.input -ne "none") {
@@ -2302,6 +2308,15 @@ try {
             )
             if ($configBundleBackupsReportActionDescription.action.name -ne "zed_terminal::OpenConfigBundleBackupsReport" -or $configBundleBackupsReportActionDescription.action.namespace -ne "zed_terminal" -or $configBundleBackupsReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected config bundle backups report action contract."
+            }
+            $restoreConfigBundleActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-restore-config-bundle" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::RestoreConfigBundle",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($restoreConfigBundleActionDescription.action.name -ne "zed_terminal::RestoreConfigBundle" -or $restoreConfigBundleActionDescription.action.namespace -ne "zed_terminal" -or $restoreConfigBundleActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected config bundle restore action contract."
             }
             $configInitializationReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-initialization-report" @(
                 "--user-data-dir", $cliDataDir,

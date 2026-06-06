@@ -699,6 +699,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigBundleBackupsReport",
+            "zed_terminal::RestoreConfigBundle",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -1062,6 +1063,7 @@ function Invoke-KeymapDiscoverySmoke {
         "zed_terminal::OpenActiveKeymapConflictsReport",
         "zed_terminal::OpenConfigBundleBackupFile",
         "zed_terminal::OpenConfigBundleBackupsReport",
+        "zed_terminal::RestoreConfigBundle",
         "zed_terminal::CreateStartupProfile",
         "zed_terminal::CopyStartupProfile",
         "zed_terminal::RemoveStartupProfile",
@@ -1137,6 +1139,24 @@ function Invoke-KeymapDiscoverySmoke {
         @($restoreSpecificActionDescriptionJson.action.default_bindings).Count -ne 0
     ) {
         throw "zed-terminal --describe-keymap-action did not report the expected restore specific profile mutation backup action contract"
+    }
+
+    $restoreConfigBundleActionDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-keymap-action", "zed_terminal::RestoreConfigBundle",
+        "--describe-keymap-action-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $restoreConfigBundleActionDescriptionJson = $restoreConfigBundleActionDescription.Stdout | ConvertFrom-Json
+    if (
+        $restoreConfigBundleActionDescriptionJson.status -ne "ok" -or
+        $restoreConfigBundleActionDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $restoreConfigBundleActionDescriptionJson.action.name -ne "zed_terminal::RestoreConfigBundle" -or
+        $restoreConfigBundleActionDescriptionJson.action.namespace -ne "zed_terminal" -or
+        $restoreConfigBundleActionDescriptionJson.action.input -ne "none" -or
+        @($restoreConfigBundleActionDescriptionJson.action.default_bindings).Count -ne 0
+    ) {
+        throw "zed-terminal --describe-keymap-action did not report the expected restore config bundle action contract"
     }
 
     $bindingDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
