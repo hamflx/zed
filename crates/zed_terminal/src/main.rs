@@ -79,6 +79,7 @@ actions!(
         OpenStartupProfilePicker,
         OpenStartupProfilesReport,
         OpenStartupProfileSlotsReport,
+        OpenStartupProfileReferencesReport,
         OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -220,6 +221,8 @@ const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.j
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
 const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
+const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
+    "zed-terminal-profile-references.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
@@ -461,6 +464,7 @@ Profile transfer, startup config file, keymap file, version metadata, and path i
             "list_profiles",
             "all_profiles",
             "list_profile_slots",
+            "list_profile_references",
             "describe_profile",
             "describe_startup",
             "print_startup_layout",
@@ -547,6 +551,7 @@ struct Cli {
         long = "list-profiles",
         conflicts_with_all = [
             "list_profile_slots",
+            "list_profile_references",
             "describe_profile",
             "print_startup_layout",
             "set_default_profile",
@@ -585,6 +590,7 @@ struct Cli {
         requires = "list_profiles",
         conflicts_with_all = [
             "list_profile_slots",
+            "list_profile_references",
             "describe_profile",
             "print_startup_layout",
             "set_default_profile",
@@ -617,6 +623,7 @@ struct Cli {
         conflicts_with_all = [
             "list_profiles",
             "all_profiles",
+            "list_profile_references",
             "describe_profile",
             "describe_startup",
             "print_startup_layout",
@@ -678,12 +685,80 @@ struct Cli {
     list_profile_slots_format: Option<TerminalListProfileSlotsOutputFormat>,
 
     #[arg(
+        long = "list-profile-references",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "list_profile_slots",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_settings",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_settings_schema",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "support_info",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "List startup profile references without opening a terminal window"
+    )]
+    list_profile_references: bool,
+
+    #[arg(
+        long = "list-profile-references-format",
+        value_enum,
+        requires = "list_profile_references",
+        help = "Set the output format for --list-profile-references"
+    )]
+    list_profile_references_format: Option<TerminalListProfileReferencesOutputFormat>,
+
+    #[arg(
         long = "describe-profile",
         value_name = "NAME",
         conflicts_with_all = [
             "list_profiles",
             "all_profiles",
             "list_profile_slots",
+            "list_profile_references",
             "describe_startup",
             "print_startup_layout",
             "set_default_profile",
@@ -3045,6 +3120,11 @@ enum TerminalCliCommand {
         startup_config: TerminalStartupConfig,
         format: TerminalListProfileSlotsOutputFormat,
     },
+    ListProfileReferences {
+        path_options: TerminalPathOptions,
+        startup_config: TerminalStartupConfig,
+        format: TerminalListProfileReferencesOutputFormat,
+    },
     DescribeProfile {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
@@ -3754,6 +3834,28 @@ struct TerminalStartupProfileSlot {
     slot: usize,
     shortcut: String,
     profile: Option<TerminalStartupProfileSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileReferencesReport {
+    startup_config_file: PathBuf,
+    status: &'static str,
+    profile_count: usize,
+    reference_count: usize,
+    referenced_profile_count: usize,
+    unreferenced_profile_count: usize,
+    profiles: Vec<TerminalStartupProfileReferencesEntry>,
+    unreferenced_profiles: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileReferencesEntry {
+    profile: String,
+    display_name: String,
+    hidden: bool,
+    is_default: bool,
+    reference_count: usize,
+    references: Vec<TerminalStartupProfileReference>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5182,6 +5284,13 @@ enum TerminalListProfileSlotsOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalListProfileReferencesOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDescribeProfileOutputFormat {
     #[default]
     Text,
@@ -5597,6 +5706,14 @@ impl TerminalCliCommand {
                 path_options,
                 startup_config,
                 format: cli.list_profile_slots_format.unwrap_or_default(),
+            });
+        }
+
+        if cli.list_profile_references {
+            return Ok(Self::ListProfileReferences {
+                path_options,
+                startup_config,
+                format: cli.list_profile_references_format.unwrap_or_default(),
             });
         }
 
@@ -6018,6 +6135,7 @@ impl TerminalCliCommand {
         match self {
             Self::ListProfiles { path_options, .. } => path_options,
             Self::ListProfileSlots { path_options, .. } => path_options,
+            Self::ListProfileReferences { path_options, .. } => path_options,
             Self::DescribeProfile { path_options, .. } => path_options,
             Self::DescribeStartup { path_options, .. } => path_options,
             Self::SetDefaultProfile { path_options, .. } => path_options,
@@ -9722,6 +9840,16 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::ListProfileReferences {
+            startup_config,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_references(&startup_config, format) {
+                eprintln!("failed to list terminal startup profile references: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::DescribeProfile {
             startup_config,
             profile,
@@ -10688,6 +10816,23 @@ fn print_startup_profile_slots(
         }
         TerminalListProfileSlotsOutputFormat::Json => {
             print!("{}", format_startup_profile_slots_json(&report)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_references(
+    startup_config: &TerminalStartupConfig,
+    format: TerminalListProfileReferencesOutputFormat,
+) -> Result<()> {
+    let startup_config_file = active_terminal_startup_config_file();
+    let report = startup_profile_references_report(startup_config, &startup_config_file)?;
+    match format {
+        TerminalListProfileReferencesOutputFormat::Text => {
+            print!("{}", format_startup_profile_references_report(&report))
+        }
+        TerminalListProfileReferencesOutputFormat::Json => {
+            print!("{}", format_startup_profile_references_json(&report)?)
         }
     }
     Ok(())
@@ -17708,6 +17853,57 @@ fn startup_profile_slot_report(
     }
 }
 
+fn startup_profile_references_report(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+) -> Result<TerminalStartupProfileReferencesReport> {
+    startup_config.validate().with_context(|| {
+        format!(
+            "failed to validate terminal startup config {}",
+            startup_config_file.display()
+        )
+    })?;
+
+    let mut reference_count = 0;
+    let mut referenced_profiles = BTreeSet::new();
+    let profiles = startup_config
+        .profiles
+        .iter()
+        .map(|(name, profile)| {
+            let references = startup_profile_references(startup_config, name);
+            if !references.is_empty() {
+                referenced_profiles.insert(name.clone());
+            }
+            reference_count += references.len();
+            TerminalStartupProfileReferencesEntry {
+                profile: name.clone(),
+                display_name: normalize_profile_text(profile.display_name.as_deref())
+                    .unwrap_or_else(|| name.clone()),
+                hidden: profile.hidden,
+                is_default: startup_config.default_profile.as_deref() == Some(name.as_str()),
+                reference_count: references.len(),
+                references,
+            }
+        })
+        .collect::<Vec<_>>();
+    let unreferenced_profiles = profiles
+        .iter()
+        .filter(|profile| profile.references.is_empty())
+        .map(|profile| profile.profile.clone())
+        .collect::<Vec<_>>();
+
+    Ok(TerminalStartupProfileReferencesReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        status: "ok",
+        profile_count: startup_config.profiles.len(),
+        reference_count,
+        referenced_profile_count: referenced_profiles.len(),
+        unreferenced_profile_count: unreferenced_profiles.len(),
+        profiles,
+        unreferenced_profiles,
+    })
+}
+
 fn startup_profile_description_report(
     startup_config: &TerminalStartupConfig,
     startup_config_file: &Path,
@@ -18096,6 +18292,122 @@ fn startup_profile_slot_json(slot: &TerminalStartupProfileSlot) -> serde_json::V
         "slot": slot.slot,
         "shortcut": slot.shortcut.as_str(),
         "profile": slot.profile.as_ref().map(startup_profile_summary_json),
+    })
+}
+
+fn format_startup_profile_references_report(
+    report: &TerminalStartupProfileReferencesReport,
+) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        report.startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: {}", report.status).expect("writing to string should not fail");
+    writeln!(&mut output, "profiles: {}", report.profile_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "references: {}", report.reference_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "referenced_profiles: {}",
+        report.referenced_profile_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "unreferenced_profiles: {}",
+        report.unreferenced_profile_count
+    )
+    .expect("writing to string should not fail");
+
+    if report.profiles.is_empty() {
+        writeln!(&mut output, "No startup profiles configured.")
+            .expect("writing to string should not fail");
+        return output;
+    }
+
+    for profile in &report.profiles {
+        let mut badges = Vec::new();
+        if profile.is_default {
+            badges.push("default");
+        }
+        if profile.hidden {
+            badges.push("hidden");
+        }
+        let badges = if badges.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", badges.join(", "))
+        };
+
+        writeln!(&mut output, "- {}{}", profile.profile, badges)
+            .expect("writing to string should not fail");
+        writeln!(&mut output, "  display_name: {}", profile.display_name)
+            .expect("writing to string should not fail");
+        writeln!(&mut output, "  references: {}", profile.reference_count)
+            .expect("writing to string should not fail");
+        for reference in &profile.references {
+            writeln!(
+                &mut output,
+                "    - {} ({})",
+                reference.label,
+                reference.kind.as_str()
+            )
+            .expect("writing to string should not fail");
+        }
+    }
+
+    if !report.unreferenced_profiles.is_empty() {
+        writeln!(&mut output, "unreferenced_profile_names:")
+            .expect("writing to string should not fail");
+        for profile in &report.unreferenced_profiles {
+            writeln!(&mut output, "  - {profile}").expect("writing to string should not fail");
+        }
+    }
+
+    output
+}
+
+fn format_startup_profile_references_json(
+    report: &TerminalStartupProfileReferencesReport,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "status": report.status,
+        "profile_count": report.profile_count,
+        "reference_count": report.reference_count,
+        "referenced_profile_count": report.referenced_profile_count,
+        "unreferenced_profile_count": report.unreferenced_profile_count,
+        "profiles": report
+            .profiles
+            .iter()
+            .map(startup_profile_references_entry_json)
+            .collect::<Vec<_>>(),
+        "unreferenced_profiles": &report.unreferenced_profiles,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile references as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_references_entry_json(
+    profile: &TerminalStartupProfileReferencesEntry,
+) -> serde_json::Value {
+    serde_json::json!({
+        "profile": profile.profile.as_str(),
+        "display_name": profile.display_name.as_str(),
+        "hidden": profile.hidden,
+        "is_default": profile.is_default,
+        "reference_count": profile.reference_count,
+        "references": profile
+            .references
+            .iter()
+            .map(startup_profile_reference_json)
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -21414,6 +21726,28 @@ fn write_startup_profile_slots_report_file(
     })
 }
 
+fn write_startup_profile_references_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileReferencesReport,
+) -> Result<()> {
+    let report = format_startup_profile_references_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile references report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile references report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_description_report_file(
     path: &Path,
     report: &TerminalStartupProfileDescription,
@@ -23740,6 +24074,10 @@ fn active_terminal_startup_profile_slots_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE)
 }
 
+fn active_terminal_startup_profile_references_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE)
+}
+
 fn active_terminal_settings_validation_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SETTINGS_VALIDATION_REPORT_FILE)
 }
@@ -23868,6 +24206,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
     cx.on_action(open_startup_profile_slots_report);
+    cx.on_action(open_startup_profile_references_report);
     cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
@@ -24137,6 +24476,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
+        TerminalActionSurface::new::<OpenStartupProfileReferencesReport>(),
         TerminalActionSurface::new::<OpenStartupToolsPicker>(),
         TerminalActionSurface::new::<OpenThemesDirectory>(),
         TerminalActionSurface::new::<ResetPaneSizes>(),
@@ -24835,6 +25175,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupDescriptionReport,
         ),
         MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
+        MenuItem::action(
+            "Open Startup Profile References Report",
+            OpenStartupProfileReferencesReport,
+        ),
         MenuItem::action(
             "Open Startup Profile Slots Report",
             OpenStartupProfileSlotsReport,
@@ -26228,6 +26572,37 @@ fn open_startup_profile_slots_report(_: &OpenStartupProfileSlotsReport, cx: &mut
     cx.open_with_system(&startup_profile_slots_report_file);
 }
 
+fn open_startup_profile_references_report(_: &OpenStartupProfileReferencesReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_profile_references_report_file =
+        active_terminal_startup_profile_references_report_file();
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!(
+                "failed to load startup config for startup profile references report: {error:#}"
+            );
+            return;
+        }
+    };
+    let report = match startup_profile_references_report(&startup_config, &startup_config_file) {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!("failed to build startup profile references report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) = write_startup_profile_references_report_file(
+        &startup_profile_references_report_file,
+        &report,
+    ) {
+        log::warn!("failed to write startup profile references report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_profile_references_report_file);
+}
+
 fn open_settings_validation_report(_: &OpenSettingsValidationReport, cx: &mut App) {
     let validation_report_file = active_terminal_settings_validation_report_file();
     let report = validate_terminal_settings_files(
@@ -27196,6 +27571,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileSlotsReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileReferencesReport);
         assert_command_palette_action_visible(&filter, &OpenStartupToolsPicker);
         assert_command_palette_action_visible(
             &filter,
@@ -28555,6 +28931,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Profile References Report",
+            "zed_terminal::OpenStartupProfileReferencesReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Profile Slots Report",
             "zed_terminal::OpenStartupProfileSlotsReport",
         );
@@ -28678,6 +29059,7 @@ mod tests {
                 "Open Startup Layout Report",
                 "Open Startup Description Report",
                 "Open Startup Profiles Report",
+                "Open Startup Profile References Report",
                 "Open Startup Profile Slots Report",
                 "---",
                 "Open Keymap Tools...",
@@ -29609,6 +29991,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_open_startup_profile_references_report_action_input() {
+        let action = <OpenStartupProfileReferencesReport as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open startup profile references report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfileReferencesReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn parses_open_startup_tools_picker_action_input() {
         let action =
             <OpenStartupToolsPicker as Action>::build(gpui::private::serde_json::json!({}))
@@ -30082,6 +30479,97 @@ mod tests {
         assert_eq!(report.slots[8].shortcut, "ctrl-shift-9");
     }
 
+    #[test]
+    fn formats_startup_profile_references() {
+        let config = sample_startup_profile_references_config();
+        let report = startup_profile_references_report(&config, Path::new("terminal.json"))
+            .expect("profile references should report");
+
+        assert_eq!(report.profile_count, 3);
+        assert_eq!(report.reference_count, 3);
+        assert_eq!(report.referenced_profile_count, 1);
+        assert_eq!(report.unreferenced_profile_count, 2);
+        assert_eq!(
+            report.unreferenced_profiles,
+            vec!["admin".to_string(), "secret".to_string()]
+        );
+
+        let admin = &report.profiles[0];
+        assert_eq!(admin.profile, "admin");
+        assert_eq!(admin.reference_count, 0);
+
+        let secret = &report.profiles[1];
+        assert!(secret.hidden);
+        assert_eq!(secret.display_name, "Secret");
+        assert_eq!(secret.reference_count, 0);
+
+        let work = &report.profiles[2];
+        assert!(work.is_default);
+        assert_eq!(work.display_name, "Work Shell");
+        assert_eq!(work.reference_count, 3);
+        assert_eq!(
+            work.references[0].kind,
+            TerminalStartupProfileReferenceKind::DefaultProfile
+        );
+        assert_eq!(work.references[1].label, "root tab 1");
+        assert_eq!(work.references[2].label, "profile admin tab 1");
+
+        let text = format_startup_profile_references_report(&report);
+        assert!(text.contains("startup_config_file: terminal.json"));
+        assert!(text.contains("profiles: 3"));
+        assert!(text.contains("references: 3"));
+        assert!(text.contains("- work (default)"));
+        assert!(text.contains("    - default_profile (default_profile)"));
+        assert!(text.contains("    - root tab 1 (root_tab)"));
+        assert!(text.contains("    - profile admin tab 1 (profile_tab)"));
+        assert!(text.contains("unreferenced_profile_names:"));
+        assert!(text.contains("  - admin"));
+        assert!(text.contains("  - secret"));
+        assert!(!text.contains("SECRET_VALUE"));
+
+        let json = format_startup_profile_references_json(&report)
+            .expect("profile references json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&json).expect("profile references json should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile_count"], 3);
+        assert_eq!(json["reference_count"], 3);
+        assert_eq!(json["referenced_profile_count"], 1);
+        assert_eq!(json["unreferenced_profile_count"], 2);
+        assert_eq!(json["unreferenced_profiles"][0], "admin");
+        assert_eq!(json["unreferenced_profiles"][1], "secret");
+        assert_eq!(json["profiles"][2]["profile"], "work");
+        assert_eq!(json["profiles"][2]["reference_count"], 3);
+        assert_eq!(
+            json["profiles"][2]["references"][0]["kind"],
+            "default_profile"
+        );
+        assert_eq!(json["profiles"][2]["references"][1]["kind"], "root_tab");
+        assert_eq!(json["profiles"][2]["references"][1]["tab"], 1);
+        assert_eq!(json["profiles"][2]["references"][2]["kind"], "profile_tab");
+        assert_eq!(json["profiles"][2]["references"][2]["profile"], "admin");
+        assert!(
+            !serde_json::to_string(&json)
+                .unwrap()
+                .contains("SECRET_VALUE")
+        );
+    }
+
+    #[test]
+    fn startup_profile_references_report_rejects_invalid_references() {
+        let config = TerminalStartupConfig {
+            default_profile: Some("missing".into()),
+            ..TerminalStartupConfig::default()
+        };
+        let error = startup_profile_references_report(&config, Path::new("terminal.json"))
+            .expect_err("invalid startup config should be rejected");
+
+        assert!(
+            format!("{error:#}").contains("default_profile references missing startup profile")
+        );
+    }
+
     fn sample_startup_profile_list_config() -> TerminalStartupConfig {
         let mut profiles = BTreeMap::new();
         profiles.insert(
@@ -30104,6 +30592,47 @@ mod tests {
             },
         );
         TerminalStartupConfig {
+            default_profile: Some("work".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        }
+    }
+
+    fn sample_startup_profile_references_config() -> TerminalStartupConfig {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "admin".into(),
+            TerminalStartupProfileConfig {
+                tabs: vec![TerminalStartupTabConfig {
+                    profile: Some("work".into()),
+                    title: Some("Nested Work".into()),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "secret".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Secret".into()),
+                hidden: true,
+                env: test_env(&[("API_KEY", "SECRET_VALUE")]),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "work".into(),
+            TerminalStartupProfileConfig {
+                display_name: Some("Work Shell".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        TerminalStartupConfig {
+            tabs: vec![TerminalStartupTabConfig {
+                profile: Some("work".into()),
+                title: Some("Root Work".into()),
+                ..TerminalStartupTabConfig::default()
+            }],
             default_profile: Some("work".into()),
             profiles,
             ..TerminalStartupConfig::default()
@@ -31724,6 +32253,7 @@ mod tests {
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
+            "zed_terminal::OpenStartupProfileReferencesReport",
             "zed_terminal::OpenSupportBundleManifestFile",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
@@ -32583,6 +33113,16 @@ mod tests {
             .expect("startup profile slots report action should be listed");
         assert_eq!(
             startup_profile_slots_report.input,
+            TerminalKeymapActionInput::None
+        );
+
+        let startup_profile_references_report = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileReferencesReport")
+            .expect("startup profile references report action should be listed");
+        assert_eq!(
+            startup_profile_references_report.input,
             TerminalKeymapActionInput::None
         );
 
@@ -34054,6 +34594,38 @@ mod tests {
         assert_eq!(json["slots"][1]["slot"], 2);
         assert!(json["slots"][1]["profile"].is_null());
         assert!(!report_text.contains("secret"));
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profile_references_report_file_as_profile_references_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE);
+        let report = startup_profile_references_report(
+            &sample_startup_profile_references_config(),
+            Path::new("terminal.json"),
+        )
+        .expect("profile references should report");
+
+        write_startup_profile_references_report_file(&report_file, &report)
+            .expect("startup profile references report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read profile references report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("profile references report should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile_count"], 3);
+        assert_eq!(json["reference_count"], 3);
+        assert_eq!(json["unreferenced_profiles"][0], "admin");
+        assert_eq!(json["profiles"][2]["profile"], "work");
+        assert_eq!(json["profiles"][2]["references"][2]["profile"], "admin");
+        assert!(!report_text.contains("SECRET_VALUE"));
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
@@ -44390,6 +44962,25 @@ mod tests {
     }
 
     #[test]
+    fn list_profile_references_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--list-profile-references-format",
+            "json",
+        ])
+        .expect("failed to parse list profile references json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("profile references list json mode should resolve");
+
+        let TerminalCliCommand::ListProfileReferences { format, .. } = command else {
+            panic!("expected profile references listing mode");
+        };
+        assert_eq!(format, TerminalListProfileReferencesOutputFormat::Json);
+    }
+
+    #[test]
     fn describe_profile_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -47852,6 +48443,65 @@ mod tests {
         .expect("failed to parse cli args");
         let error = TerminalCliCommand::from_cli_and_config_file(cli)
             .expect_err("list-profile-slots mode should reject broken terminal.json");
+
+        assert!(format!("{error:#}").contains("failed to parse terminal startup config"));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn list_profile_references_loads_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        let startup_config_file = terminal_startup_config_file(&config_dir);
+        std_fs::write(
+            &startup_config_file,
+            r#"{ "profiles": { "work": { "display_name": "Work Shell" } } }"#,
+        )
+        .expect("failed to write startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--list-profile-references",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("list-profile-references mode should load terminal.json during cli resolution");
+
+        let TerminalCliCommand::ListProfileReferences {
+            path_options,
+            startup_config,
+            format,
+        } = command
+        else {
+            panic!("expected profile references listing mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalListProfileReferencesOutputFormat::Text);
+        assert_eq!(
+            startup_config
+                .profiles
+                .get("work")
+                .and_then(|profile| profile.display_name.as_deref()),
+            Some("Work Shell")
+        );
+
+        std_fs::write(&startup_config_file, "{ broken terminal config")
+            .expect("failed to write broken startup config");
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--list-profile-references",
+        ])
+        .expect("failed to parse cli args");
+        let error = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect_err("list-profile-references mode should reject broken terminal.json");
 
         assert!(format!("{error:#}").contains("failed to parse terminal startup config"));
 
@@ -52249,6 +52899,81 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--list-profile-slots-format", "json"])
             .expect_err("profile slot list format should require profile slot listing");
+        assert!(error.to_string().contains("required"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn list_profile_references_rejects_startup_only_arguments() {
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--list-profiles",
+        ])
+        .expect_err("profile listing should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--list-profile-slots",
+        ])
+        .expect_err("profile slot listing should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--describe-profile",
+            "work",
+        ])
+        .expect_err("profile description should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-references",
+            "--describe-startup",
+        ])
+        .expect_err("startup description should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profile-references", "--", "cmd"])
+            .expect_err("startup command should conflict with profile references listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--list-profile-references-format", "json"])
+                .expect_err("profile references format should require profile references listing");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();

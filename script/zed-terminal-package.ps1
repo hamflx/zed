@@ -363,6 +363,7 @@ Inspect startup profiles and root startup configuration without opening a window
 ```powershell
 .\{{BINARY}} --list-profiles --list-profiles-format json
 .\{{BINARY}} --list-profile-slots --list-profile-slots-format json
+.\{{BINARY}} --list-profile-references --list-profile-references-format json
 .\{{BINARY}} --describe-startup --describe-startup-format json
 ```
 
@@ -516,6 +517,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --print-startup-layout --startup-layout-format json",
         ".\$BinaryFileName --list-profiles --list-profiles-format json",
         ".\$BinaryFileName --list-profile-slots --list-profile-slots-format json",
+        ".\$BinaryFileName --list-profile-references --list-profile-references-format json",
         ".\$BinaryFileName --describe-startup --describe-startup-format json",
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
@@ -680,6 +682,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
+            "zed_terminal::OpenStartupProfileReferencesReport",
             "zed_terminal::OpenSupportBundleManifestFile",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
@@ -1032,6 +1035,7 @@ function Invoke-KeymapDiscoverySmoke {
         "zed_terminal::OpenConfigBundleBackupsReport",
         "zed_terminal::OpenKeymapActionCatalogReport",
         "zed_terminal::OpenStartupProfileSlotsReport",
+        "zed_terminal::OpenStartupProfileReferencesReport",
         "zed_terminal::OpenSupportBundleManifestFile",
         "terminal::Paste"
     )) {
@@ -2167,6 +2171,30 @@ function Invoke-StartupDiscoverySmoke {
     ) -WorkingDirectory $WorkingDirectory
 
     $profileListJson = ConvertFrom-Json -InputObject $profileList.Stdout
+    $profileReferences = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-profile-references",
+        "--list-profile-references-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $profileReferencesJson = ConvertFrom-Json -InputObject $profileReferences.Stdout
+    $profileReferenceEntries = @($profileReferencesJson.profiles)
+    if (
+        $profileReferencesJson.startup_config_file -ne $startupConfigFile -or
+        $profileReferencesJson.status -ne "ok" -or
+        [int64]$profileReferencesJson.profile_count -ne [int64]$profileListJson.total_count -or
+        $profileReferenceEntries.Count -ne [int64]$profileListJson.total_count -or
+        [int64]$profileReferencesJson.reference_count -lt 0 -or
+        [int64]$profileReferencesJson.referenced_profile_count -lt 0 -or
+        [int64]$profileReferencesJson.unreferenced_profile_count -lt 0
+    ) {
+        throw "zed-terminal --list-profile-references did not report expected profile reference discovery status"
+    }
+    foreach ($profileReferenceEntry in $profileReferenceEntries) {
+        if ([string]::IsNullOrWhiteSpace([string]$profileReferenceEntry.profile) -or [int64]$profileReferenceEntry.reference_count -lt 0) {
+            throw "zed-terminal --list-profile-references reported an invalid profile reference entry"
+        }
+    }
     $profileSlots = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
         "--user-data-dir", $DataDir,
         "--config-dir", $ConfigDir,

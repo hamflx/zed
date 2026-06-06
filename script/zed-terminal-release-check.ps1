@@ -1758,6 +1758,8 @@ try {
                 "--list-active-keymap-conflicts",
                 "--list-active-keymap-conflicts-context <CONTEXT>",
                 "--list-active-keymap-conflicts-format <text\|json>",
+                "--list-profile-references",
+                "--list-profile-references-format <text\|json>",
                 "--version-info",
                 "--paths",
                 "--paths-format <text\|json>",
@@ -1969,6 +1971,7 @@ try {
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupProfileSlotsReport",
+                "zed_terminal::OpenStartupProfileReferencesReport",
                 "zed_terminal::OpenSupportBundleManifestFile",
                 "zed_terminal::OpenSupportToolsPicker",
                 "zed_terminal::OpenStartupToolsPicker",
@@ -2057,6 +2060,10 @@ try {
             $startupProfileSlotsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileSlotsReport" } | Select-Object -First 1
             if (-not $startupProfileSlotsReportAction -or $startupProfileSlotsReportAction.namespace -ne "zed_terminal" -or $startupProfileSlotsReportAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfileSlotsReport no-input metadata."
+            }
+            $startupProfileReferencesReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileReferencesReport" } | Select-Object -First 1
+            if (-not $startupProfileReferencesReportAction -or $startupProfileReferencesReportAction.namespace -ne "zed_terminal" -or $startupProfileReferencesReportAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfileReferencesReport no-input metadata."
             }
             $supportToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportToolsPicker" } | Select-Object -First 1
             if (-not $supportToolsPickerAction -or $supportToolsPickerAction.namespace -ne "zed_terminal" -or $supportToolsPickerAction.input -ne "none") {
@@ -2240,6 +2247,15 @@ try {
             )
             if ($startupProfileSlotsReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileSlotsReport" -or $startupProfileSlotsReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileSlotsReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected startup profile slots report action contract."
+            }
+            $startupProfileReferencesReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-references-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileReferencesReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupProfileReferencesReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileReferencesReport" -or $startupProfileReferencesReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileReferencesReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup profile references report action contract."
             }
             $supportToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-support-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
@@ -3136,6 +3152,12 @@ try {
             )
             Set-Content -LiteralPath (Join-Path $cliConfigDir "terminal.json") -Value @'
 {
+  "tabs": [
+    {
+      "profile": "work",
+      "title": "Root Work"
+    }
+  ],
   "default_profile": "work",
   "profiles": {
     "work": {
@@ -3174,7 +3196,7 @@ try {
                 throw "Visible profile list reported unexpected counts."
             }
             $visibleProfileEntries = @($visibleProfiles.profiles)
-            if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default -or $visibleProfileEntries[0].reference_count -ne 1) {
+            if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default -or $visibleProfileEntries[0].reference_count -ne 2) {
                 throw "Visible profile list did not report only the referenced default work profile."
             }
             if ([int64]$visibleProfileEntries[0].visible_slot -ne 1) {
@@ -3202,6 +3224,36 @@ try {
             $profileSlotText = $profileSlots | ConvertTo-Json -Depth 10
             if ($profileSlotText -match '"name":\s*"secret"') {
                 throw "Profile slot list included a hidden profile."
+            }
+            $profileReferences = Invoke-NativeJsonCommandResult "list-profile-references" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--list-profile-references",
+                "--list-profile-references-format", "json"
+            )
+            $profileReferenceEntries = @($profileReferences.profiles)
+            if ($profileReferences.status -ne "ok" -or $profileReferences.profile_count -ne 2 -or $profileReferenceEntries.Count -ne 2 -or $profileReferences.reference_count -ne 2 -or $profileReferences.referenced_profile_count -ne 1 -or $profileReferences.unreferenced_profile_count -ne 1) {
+                throw "Profile reference list did not report the expected profile reference summary."
+            }
+            $workReferenceEntry = @($profileReferenceEntries | Where-Object { $_.profile -eq "work" } | Select-Object -First 1)
+            if ($workReferenceEntry.Count -ne 1 -or -not $workReferenceEntry[0].is_default -or $workReferenceEntry[0].reference_count -ne 2) {
+                throw "Profile reference list did not report the expected referenced work profile."
+            }
+            $workReferenceKinds = @($workReferenceEntry[0].references | ForEach-Object { $_.kind })
+            if ($workReferenceKinds -notcontains "default_profile" -or $workReferenceKinds -notcontains "root_tab") {
+                throw "Profile reference list did not include default_profile and root_tab references."
+            }
+            $secretReferenceEntry = @($profileReferenceEntries | Where-Object { $_.profile -eq "secret" } | Select-Object -First 1)
+            if ($secretReferenceEntry.Count -ne 1 -or -not $secretReferenceEntry[0].hidden -or $secretReferenceEntry[0].reference_count -ne 0) {
+                throw "Profile reference list did not report the expected unreferenced hidden secret profile."
+            }
+            $unreferencedProfiles = @($profileReferences.unreferenced_profiles)
+            if ($unreferencedProfiles.Count -ne 1 -or $unreferencedProfiles[0] -ne "secret") {
+                throw "Profile reference list did not report the expected unreferenced profile names."
+            }
+            $profileReferencesText = $profileReferences | ConvertTo-Json -Depth 10
+            if ($profileReferencesText -match "do-not-log") {
+                throw "Profile reference list leaked environment variable values."
             }
             $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
                 "--user-data-dir", $cliDataDir,
@@ -3241,8 +3293,8 @@ try {
                 throw "Profile description did not report expected environment key names."
             }
             $profileDescriptionReferences = @($profileDescription.references)
-            if ($profileDescription.reference_count -ne 1 -or $profileDescriptionReferences.Count -ne 1 -or $profileDescriptionReferences[0].kind -ne "default_profile") {
-                throw "Profile description did not report the expected default profile reference."
+            if ($profileDescription.reference_count -ne 2 -or $profileDescriptionReferences.Count -ne 2 -or $profileDescriptionReferences[0].kind -ne "default_profile" -or $profileDescriptionReferences[1].kind -ne "root_tab" -or $profileDescriptionReferences[1].tab -ne 1) {
+                throw "Profile description did not report the expected default and root tab profile references."
             }
             $profileDescriptionText = $profileDescription | ConvertTo-Json -Depth 10
             if ($profileDescriptionText -match "do-not-log") {
