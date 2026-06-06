@@ -197,6 +197,13 @@ struct OpenStartupProfileConfig {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct CopyStartupProfile {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct ExportStartupProfile {
     profile: String,
 }
@@ -232,6 +239,7 @@ const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json"
 const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
 const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
     "zed-terminal-profile-references.json";
+const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
@@ -14832,6 +14840,47 @@ fn copy_startup_profile(
     })
 }
 
+fn copy_startup_profile_to_available_name(
+    path: &Path,
+    source_profile: &str,
+) -> Result<TerminalStartupProfileCopy> {
+    let source_profile = normalize_startup_profile_name(source_profile)?;
+    let target_profile = available_startup_profile_copy_name(path, &source_profile)?;
+    copy_startup_profile(path, &source_profile, &target_profile)
+}
+
+fn available_startup_profile_copy_name(path: &Path, source_profile: &str) -> Result<String> {
+    let source_profile = normalize_startup_profile_name(source_profile)?;
+    let text = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal startup config {}", path.display()))?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?;
+    if !startup_config.profiles.contains_key(&source_profile) {
+        if startup_config.profiles.is_empty() {
+            bail!("startup profile not found: {source_profile}");
+        } else {
+            bail!(
+                "startup profile not found: {source_profile}. Available profiles: {}",
+                startup_config.profile_names().join(", ")
+            );
+        }
+    }
+
+    let base_profile = format!("{source_profile}-copy");
+    if !startup_config.profiles.contains_key(&base_profile) {
+        return Ok(base_profile);
+    }
+
+    for suffix in 2.. {
+        let candidate = format!("{base_profile}-{suffix}");
+        if !startup_config.profiles.contains_key(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("unbounded startup profile copy suffix iterator should always return")
+}
+
 fn export_startup_profile(
     path: &Path,
     profile: &str,
@@ -21854,6 +21903,28 @@ fn write_startup_profile_description_report_file(
     })
 }
 
+fn write_startup_profile_copy_report_file(
+    path: &Path,
+    copy: &TerminalStartupProfileCopy,
+) -> Result<()> {
+    let report = format_startup_profile_copy_json(copy)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile copy report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile copy report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_import_report_file(
     path: &Path,
     import: &TerminalStartupProfileImport,
@@ -24184,6 +24255,10 @@ fn active_terminal_startup_profile_references_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE)
 }
 
+fn active_terminal_profile_copy_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_COPY_REPORT_FILE)
+}
+
 fn active_terminal_profile_import_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_IMPORT_REPORT_FILE)
 }
@@ -24341,6 +24416,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(copy_support_info_to_clipboard);
     cx.on_action(open_profile_description_report);
     cx.on_action(open_startup_profile_config);
+    cx.on_action(copy_startup_profile_action);
     cx.on_action(export_startup_profile_action);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
@@ -24545,6 +24621,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<ClearDefaultStartupProfile>(),
         TerminalActionSurface::new::<CloseTerminalWindow>(),
         TerminalActionSurface::new::<CopySupportInfoToClipboard>(),
+        TerminalActionSurface::new::<CopyStartupProfile>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitAuto>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitDown>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitLeft>(),
@@ -24782,6 +24859,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Open Description Report For Profile: {label}"),
             OpenProfileDescriptionReport {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Copy Profile: {label}"),
+            CopyStartupProfile {
                 profile: profile_name.clone(),
             }
             .boxed_clone(),
@@ -25055,6 +25140,16 @@ fn shell_menu_items_with_visibility(
                 MenuItem::action(
                     entry.label,
                     HideStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+        shell_items.push(MenuItem::submenu(Menu::new("Copy Profile").items(
+            visible_profile_entries.iter().cloned().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    CopyStartupProfile {
                         profile: entry.profile,
                     },
                 )
@@ -26872,6 +26967,44 @@ fn open_profile_description_report(action: &OpenProfileDescriptionReport, cx: &m
     cx.open_with_system(&profile_description_report_file);
 }
 
+fn copy_startup_profile_action(action: &CopyStartupProfile, cx: &mut App) {
+    let source_profile = action.profile.clone();
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_spawn({
+                let source_profile = source_profile.clone();
+                async move {
+                    let copy = copy_startup_profile_to_available_name(
+                        &active_terminal_startup_config_file(),
+                        &source_profile,
+                    )?;
+                    write_startup_profile_copy_report_file(
+                        &active_terminal_profile_copy_report_file(),
+                        &copy,
+                    )?;
+                    anyhow::Ok(copy)
+                }
+            })
+            .await;
+        cx.update(|cx| match result {
+            Ok(copy) => {
+                log::info!(
+                    "copied startup profile {:?} to {:?} ({} tabs)",
+                    copy.source_profile,
+                    copy.profile,
+                    copy.copied_tab_count
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_copy_report_file());
+            }
+            Err(error) => {
+                log::warn!("failed to copy startup profile {source_profile:?}: {error:#}");
+            }
+        });
+    })
+    .detach();
+}
+
 fn export_startup_profile_action(action: &ExportStartupProfile, cx: &mut App) {
     let export_file = match active_terminal_profile_export_file(&action.profile) {
         Ok(path) => path,
@@ -27277,6 +27410,8 @@ mod tests {
         } else if let Some(action) = action.as_any().downcast_ref::<SetDefaultStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<HideStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<CopyStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<ExportStartupProfile>() {
             &action.profile
@@ -27782,6 +27917,12 @@ mod tests {
         );
         assert_command_palette_action_visible(
             &filter,
+            &CopyStartupProfile {
+                profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &ExportStartupProfile {
                 profile: "work".into(),
             },
@@ -27964,6 +28105,7 @@ mod tests {
                 "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Copy Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Export Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Hide Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
@@ -27994,8 +28136,9 @@ mod tests {
         assert_set_default_profile_action(&result.results[6], "work");
         assert_open_profile_config_action(&result.results[7], "work");
         assert_open_profile_description_report_action(&result.results[8], "work");
-        assert_export_profile_action(&result.results[9], "work");
-        assert_hide_profile_action(&result.results[10], "work");
+        assert_copy_profile_action(&result.results[9], "work");
+        assert_export_profile_action(&result.results[10], "work");
+        assert_hide_profile_action(&result.results[11], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -28044,6 +28187,7 @@ mod tests {
                 "Set Default Profile: Work Shell (work)",
                 "Open Config For Profile: Work Shell (work)",
                 "Open Description Report For Profile: Work Shell (work)",
+                "Copy Profile: Work Shell (work)",
                 "Export Profile: Work Shell (work)",
                 "Hide Profile: Work Shell (work)",
             ]
@@ -28051,8 +28195,9 @@ mod tests {
 
         assert_show_profile_action(&result.results[0], "hidden");
         assert_profile_tab_action(&result.results[1], "work");
-        assert_export_profile_action(&result.results[10], "work");
-        assert_hide_profile_action(&result.results[11], "work");
+        assert_copy_profile_action(&result.results[10], "work");
+        assert_export_profile_action(&result.results[11], "work");
+        assert_hide_profile_action(&result.results[12], "work");
     }
 
     #[test]
@@ -28342,6 +28487,36 @@ mod tests {
     }
 
     #[test]
+    fn terminal_profile_command_palette_searches_profile_copy_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "copy",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+                reference_count: 0,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Copy Profile: Work Shell (work) - Project shell - icon terminal"]
+        );
+        assert_copy_profile_action(&result.results[0], "work");
+    }
+
+    #[test]
     fn terminal_profile_split_directions_cover_full_pane_model() {
         assert_eq!(
             terminal_profile_split_direction_entries()
@@ -28503,6 +28678,18 @@ mod tests {
             .as_any()
             .downcast_ref::<ExportStartupProfile>()
             .expect("expected export startup profile action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_copy_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<CopyStartupProfile>()
+            .expect("expected copy startup profile action");
         assert_eq!(action.profile, expected_profile);
     }
 
@@ -29117,6 +29304,12 @@ mod tests {
         assert_profile_submenu_action::<HideStartupProfile>(
             &items,
             "Hide Profile",
+            "Work Shell (work)",
+            "work",
+        );
+        assert_profile_submenu_action::<CopyStartupProfile>(
+            &items,
+            "Copy Profile",
             "Work Shell (work)",
             "work",
         );
@@ -29973,6 +30166,32 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown startup profile export action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_copy_startup_profile_action_input() {
+        let action = <CopyStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("copy startup profile action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<CopyStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &CopyStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <CopyStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown startup profile copy action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -32616,6 +32835,7 @@ mod tests {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::CopyStartupProfile",
             "zed_terminal::ExportStartupProfile",
             "zed_terminal::ImportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
@@ -33443,6 +33663,13 @@ mod tests {
             .expect("profile export action should be listed");
         assert_eq!(profile_export.input, TerminalKeymapActionInput::Object);
 
+        let profile_copy = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::CopyStartupProfile")
+            .expect("profile copy action should be listed");
+        assert_eq!(profile_copy.input, TerminalKeymapActionInput::Object);
+
         let profile_import = report
             .actions
             .iter()
@@ -33710,6 +33937,15 @@ mod tests {
             TerminalKeymapActionInput::Object
         );
         assert!(profile_export_report.actions[0].default_bindings.is_empty());
+
+        let profile_copy_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::CopyStartupProfile")
+                .expect("profile copy action description should build");
+        assert_eq!(
+            profile_copy_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(profile_copy_report.actions[0].default_bindings.is_empty());
 
         let profile_import_report =
             terminal_keymap_action_description_report(cx, "zed_terminal::ImportStartupProfile")
@@ -42574,6 +42810,110 @@ mod tests {
             !startup_config_file.exists(),
             "copying in a missing startup config should not create terminal.json"
         );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn available_startup_profile_copy_name_uses_non_overwriting_suffixes() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {},
+    "work-copy": {}
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        assert_eq!(
+            available_startup_profile_copy_name(&startup_config_file, " work ")
+                .expect("copy target name should resolve"),
+            "work-copy-2"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn copy_startup_profile_to_available_name_rewrites_self_references() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r##"{
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "env": {
+        "TOKEN": "do-not-log"
+      },
+      "tabs": [
+        { "title": "Nested Self", "profile": "work", "split": "right" }
+      ]
+    },
+    "work-copy": {}
+  }
+}
+"##,
+        )
+        .expect("failed to write startup config");
+
+        let copy = copy_startup_profile_to_available_name(&startup_config_file, "work")
+            .expect("startup profile should copy to an available name");
+
+        assert_eq!(copy.source_profile, "work");
+        assert_eq!(copy.profile, "work-copy-2");
+        assert!(copy.changed);
+        assert_eq!(copy.copied_tab_count, 2);
+        assert_eq!(copy.total_profile_count, 3);
+
+        let content =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read startup config");
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Work")
+        );
+        let copied = &updated_config.profiles["work-copy-2"];
+        assert_eq!(copied.display_name.as_deref(), Some("Work"));
+        assert_eq!(copied.env, test_env(&[("TOKEN", "do-not-log")]));
+        assert_eq!(copied.tabs[0].profile.as_deref(), Some("work-copy-2"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_copy_report_file_redacts_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir.join("logs").join("zed-terminal-profile-copy.json");
+        let copy = TerminalStartupProfileCopy {
+            path: root_dir.join("terminal.json"),
+            source_profile: "work".into(),
+            profile: "work-copy".into(),
+            changed: true,
+            copied_tab_count: 2,
+            total_profile_count: 3,
+        };
+
+        write_startup_profile_copy_report_file(&report_file, &copy)
+            .expect("profile copy report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile copy report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile copy report should parse");
+        assert_eq!(report_json["status"], "ok");
+        assert_eq!(report_json["source_profile"], "work");
+        assert_eq!(report_json["profile"], "work-copy");
+        assert_eq!(report_json["copied_tab_count"], 2);
+        assert!(!report.contains("do-not-log"));
+        assert!(!report.contains("TOKEN"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
