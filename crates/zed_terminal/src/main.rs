@@ -3638,6 +3638,7 @@ struct TerminalStartupProfileDescription {
     description: Option<String>,
     icon: Option<String>,
     color: Option<String>,
+    visible_slot: Option<usize>,
     hidden: bool,
     is_default: bool,
     working_directory: Option<PathBuf>,
@@ -8921,19 +8922,13 @@ impl TerminalStartupConfig {
     }
 
     fn profile_summaries(&self, include_hidden: bool) -> Vec<TerminalStartupProfileSummary> {
-        let mut visible_slot = 0;
+        let visible_slots = self.visible_profile_slots();
         self.profiles
             .iter()
             .filter_map(|(name, profile)| {
                 if profile.hidden && !include_hidden {
                     return None;
                 }
-                let profile_visible_slot = if profile.hidden {
-                    None
-                } else {
-                    visible_slot += 1;
-                    Some(visible_slot)
-                };
 
                 Some(TerminalStartupProfileSummary {
                     name: name.clone(),
@@ -8942,7 +8937,7 @@ impl TerminalStartupConfig {
                     description: normalize_profile_text(profile.description.as_deref()),
                     icon: normalize_profile_text(profile.icon.as_deref()),
                     color: normalize_profile_text(profile.color.as_deref()),
-                    visible_slot: profile_visible_slot,
+                    visible_slot: visible_slots.get(name).copied(),
                     hidden: profile.hidden,
                     is_default: self.default_profile.as_deref() == Some(name.as_str()),
                     tab_count: 1 + profile.tabs.len(),
@@ -8950,6 +8945,20 @@ impl TerminalStartupConfig {
                 })
             })
             .collect()
+    }
+
+    fn visible_profile_slots(&self) -> BTreeMap<String, usize> {
+        let mut visible_slots = BTreeMap::new();
+        let mut slot = 0;
+        for (name, profile) in &self.profiles {
+            if profile.hidden {
+                continue;
+            }
+            slot += 1;
+            visible_slots.insert(name.clone(), slot);
+        }
+
+        visible_slots
     }
 
     fn profile_menu_entries_by_visibility(&self) -> TerminalStartupProfileMenuEntries {
@@ -16998,6 +17007,10 @@ fn startup_profile_description_report(
         description: startup_profile.description.clone(),
         icon: startup_profile.icon.clone(),
         color: startup_profile.color.clone(),
+        visible_slot: startup_config
+            .visible_profile_slots()
+            .get(&profile)
+            .copied(),
         hidden: startup_profile.hidden,
         is_default: startup_config.default_profile.as_deref() == Some(profile.as_str()),
         working_directory: startup_profile.working_directory.clone(),
@@ -17293,6 +17306,10 @@ fn format_startup_profile_description(report: &TerminalStartupProfileDescription
         report.color.as_deref().unwrap_or("none")
     )
     .expect("writing to string should not fail");
+    if let Some(visible_slot) = report.visible_slot {
+        writeln!(&mut output, "visible_slot: {visible_slot}")
+            .expect("writing to string should not fail");
+    }
     writeln!(&mut output, "hidden: {}", report.hidden).expect("writing to string should not fail");
     writeln!(&mut output, "is_default: {}", report.is_default)
         .expect("writing to string should not fail");
@@ -17491,6 +17508,7 @@ fn format_startup_profile_description_json(
         "description": report.description.as_deref(),
         "icon": report.icon.as_deref(),
         "color": report.color.as_deref(),
+        "visible_slot": report.visible_slot,
         "hidden": report.hidden,
         "is_default": report.is_default,
         "working_directory": report
@@ -19233,14 +19251,14 @@ fn terminal_keymap_binding_description_report(
     keystrokes: &str,
 ) -> Result<TerminalKeymapBindingDescriptionReport> {
     let parsed_keystrokes = parse_binding_query_keystrokes(keystrokes)?;
+    let query_variants = binding_query_keystroke_variants(&parsed_keystrokes);
     let default_key_bindings =
         KeymapFile::load_asset(TERMINAL_KEYMAP_PATH, Some(KeybindSource::Default), cx)
             .context("failed to load zed terminal default keymap")?;
     let mut matches = default_key_bindings
         .into_iter()
         .filter_map(|binding| {
-            binding
-                .match_keystrokes(&parsed_keystrokes)
+            match_key_binding_query_variants(&binding, &query_variants)
                 .map(|pending| (binding, pending))
         })
         .map(|(binding, pending)| {
@@ -19285,8 +19303,14 @@ fn terminal_active_keymap_binding_description_report(
     let parsed_keystrokes = parse_binding_query_keystrokes(keystrokes)?;
     let active_keymap = terminal_active_keymap(keymap_file, cx)?;
     let context_stack = active_keymap_binding_context_stack(contexts)?;
-    let (bindings, pending) = Keymap::new(active_keymap.key_bindings)
-        .bindings_for_input(&parsed_keystrokes, &context_stack);
+    let TerminalActiveKeymap {
+        keymap_file,
+        user_keymap_source,
+        key_bindings,
+    } = active_keymap;
+    let keymap = Keymap::new(key_bindings);
+    let (bindings, pending) =
+        active_keymap_bindings_for_query_variants(&keymap, &parsed_keystrokes, &context_stack);
     let matches = bindings
         .into_iter()
         .map(|binding| active_keymap_binding_match(&binding))
@@ -19294,8 +19318,8 @@ fn terminal_active_keymap_binding_description_report(
 
     Ok(TerminalActiveKeymapBindingDescriptionReport {
         default_keymap: TERMINAL_KEYMAP_PATH,
-        keymap_file: active_keymap.keymap_file,
-        user_keymap_source: active_keymap.user_keymap_source,
+        keymap_file,
+        user_keymap_source,
         keystrokes: keystrokes.to_string(),
         parsed_keystrokes: parsed_keystrokes.iter().map(Keystroke::unparse).collect(),
         contexts: context_stack
@@ -19329,7 +19353,8 @@ fn terminal_active_keymap_binding_list_report(
     let mut bindings = Vec::new();
     for keystrokes_label in keystrokes {
         let parsed_keystrokes = parse_binding_query_keystrokes(&keystrokes_label)?;
-        let (matches, pending) = keymap.bindings_for_input(&parsed_keystrokes, &context_stack);
+        let (matches, pending) =
+            active_keymap_bindings_for_query_variants(&keymap, &parsed_keystrokes, &context_stack);
         if pending || matches.is_empty() {
             continue;
         }
@@ -19430,6 +19455,54 @@ fn active_keymap_binding_match(binding: &KeyBinding) -> TerminalActiveKeymapBind
     }
 }
 
+fn match_key_binding_query_variants(
+    binding: &KeyBinding,
+    query_variants: &[Vec<Keystroke>],
+) -> Option<bool> {
+    query_variants
+        .iter()
+        .find_map(|query| binding.match_keystrokes(query))
+}
+
+fn active_keymap_bindings_for_query_variants(
+    keymap: &Keymap,
+    parsed_keystrokes: &[Keystroke],
+    context_stack: &[KeyContext],
+) -> (Vec<KeyBinding>, bool) {
+    let mut bindings = Vec::new();
+    let mut pending = false;
+    let mut seen = BTreeSet::new();
+
+    for query in binding_query_keystroke_variants(parsed_keystrokes) {
+        let (query_bindings, query_pending) = keymap.bindings_for_input(&query, context_stack);
+        pending |= query_pending;
+        for binding in query_bindings {
+            if seen.insert(active_keymap_binding_identity(&binding)) {
+                bindings.push(binding);
+            }
+        }
+    }
+
+    (bindings, pending)
+}
+
+fn active_keymap_binding_identity(binding: &KeyBinding) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}",
+        binding_source_name(binding),
+        format_binding_keystrokes(binding),
+        binding.action().name(),
+        binding
+            .predicate()
+            .map(|predicate| predicate.to_string())
+            .unwrap_or_default(),
+        binding
+            .action_input()
+            .map(|input| input.to_string())
+            .unwrap_or_default()
+    )
+}
+
 fn parse_binding_query_keystrokes(keystrokes: &str) -> Result<Vec<Keystroke>> {
     keystrokes
         .split_whitespace()
@@ -19439,6 +19512,58 @@ fn parse_binding_query_keystrokes(keystrokes: &str) -> Result<Vec<Keystroke>> {
                 .with_context(|| format!("failed to parse keymap binding keystroke {keystroke:?}"))
         })
         .collect()
+}
+
+fn binding_query_keystroke_variants(parsed_keystrokes: &[Keystroke]) -> Vec<Vec<Keystroke>> {
+    let mut variants = vec![Vec::new()];
+    for keystroke in parsed_keystrokes {
+        let alternatives = binding_query_keystroke_alternatives(keystroke);
+        let previous_variants = std::mem::take(&mut variants);
+        for variant in previous_variants {
+            for alternative in &alternatives {
+                let mut next_variant = variant.clone();
+                next_variant.push(alternative.clone());
+                if !variants.contains(&next_variant) {
+                    variants.push(next_variant);
+                }
+            }
+        }
+    }
+
+    variants
+}
+
+fn binding_query_keystroke_alternatives(keystroke: &Keystroke) -> Vec<Keystroke> {
+    let mut alternatives = vec![keystroke.clone()];
+    if keystroke.modifiers.shift {
+        if let Some(shifted_key) = shifted_digit_key(&keystroke.key) {
+            let mut shifted_keystroke = keystroke.clone();
+            shifted_keystroke.modifiers.shift = false;
+            shifted_keystroke.key = shifted_key.into();
+            shifted_keystroke.key_char = None;
+            if !alternatives.contains(&shifted_keystroke) {
+                alternatives.push(shifted_keystroke);
+            }
+        }
+    }
+
+    alternatives
+}
+
+fn shifted_digit_key(key: &str) -> Option<&'static str> {
+    match key {
+        "1" => Some("!"),
+        "2" => Some("@"),
+        "3" => Some("#"),
+        "4" => Some("$"),
+        "5" => Some("%"),
+        "6" => Some("^"),
+        "7" => Some("&"),
+        "8" => Some("*"),
+        "9" => Some("("),
+        "0" => Some(")"),
+        _ => None,
+    }
 }
 
 fn format_keymap_binding_description_report(
@@ -28447,6 +28572,7 @@ mod tests {
             description: Some("Project startup shell".into()),
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
+            visible_slot: None,
             hidden: true,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),
@@ -28493,6 +28619,7 @@ mod tests {
         assert!(output.contains("description: Project startup shell"));
         assert!(output.contains("icon: terminal"));
         assert!(output.contains("color: #0f766e"));
+        assert!(!output.contains("visible_slot:"));
         assert!(output.contains("hidden: true"));
         assert!(output.contains("is_default: true"));
         assert!(output.contains("working_directory: ."));
@@ -28522,6 +28649,7 @@ mod tests {
             description: Some("Project startup shell".into()),
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
+            visible_slot: Some(2),
             hidden: false,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),
@@ -28558,6 +28686,7 @@ mod tests {
         assert_eq!(json["description"], "Project startup shell");
         assert_eq!(json["icon"], "terminal");
         assert_eq!(json["color"], "#0f766e");
+        assert_eq!(json["visible_slot"], 2);
         assert_eq!(json["hidden"], false);
         assert_eq!(json["is_default"], true);
         assert_eq!(json["working_directory"], ".");
@@ -28898,6 +29027,7 @@ mod tests {
 
         assert_eq!(report.profile, "work");
         assert_eq!(report.display_name.as_deref(), Some("Work Shell"));
+        assert_eq!(report.visible_slot, Some(1));
         assert!(report.is_default);
         assert_eq!(report.env_keys, vec!["API_KEY", "ZED_MODE"]);
         assert_eq!(report.tabs.len(), 1);
@@ -28908,6 +29038,7 @@ mod tests {
         );
 
         let text = format_startup_profile_description(&report);
+        assert!(text.contains("visible_slot: 1"));
         assert!(text.contains("  - API_KEY"));
         assert!(text.contains("  - ZED_MODE"));
         assert!(text.contains("  - LOG_TOKEN"));
@@ -28916,6 +29047,9 @@ mod tests {
 
         let json = format_startup_profile_description_json(&report)
             .expect("profile description json should format");
+        let json_value: serde_json::Value =
+            serde_json::from_str(&json).expect("profile description json should parse");
+        assert_eq!(json_value["visible_slot"], 1);
         assert!(json.contains("API_KEY"));
         assert!(json.contains("LOG_TOKEN"));
         assert!(!json.contains("SECRET_VALUE"));
@@ -29036,7 +29170,15 @@ mod tests {
             .expect("hidden profile should be described by explicit name");
 
         assert_eq!(report.profile, "secret");
+        assert_eq!(report.visible_slot, None);
         assert!(report.hidden);
+        let text = format_startup_profile_description(&report);
+        assert!(!text.contains("visible_slot:"));
+        let json = format_startup_profile_description_json(&report)
+            .expect("hidden profile description json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&json).expect("hidden profile description json should parse");
+        assert_eq!(json["visible_slot"], serde_json::Value::Null);
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -30948,6 +31090,18 @@ mod tests {
                 && binding_match.context.as_deref() == Some("Terminal")
         }));
 
+        let profile_slot_report = terminal_keymap_binding_description_report(cx, "ctrl-shift-1")
+            .expect("profile slot keymap binding description should build");
+        assert_eq!(profile_slot_report.keystrokes, "ctrl-shift-1");
+        assert_eq!(profile_slot_report.parsed_keystrokes, vec!["ctrl-shift-1"]);
+        assert!(profile_slot_report.matches.iter().any(|binding_match| {
+            binding_match.match_kind == TerminalKeymapBindingMatchKind::Exact
+                && binding_match.keystrokes == "ctrl-shift-1"
+                && binding_match.action == "zed_terminal::NewTerminalTabWithProfileSlot"
+                && binding_match.context.is_none()
+                && binding_match.input.as_deref() == Some("{\"slot\":1}")
+        }));
+
         let missing_report = terminal_keymap_binding_description_report(cx, "ctrl-alt-shift-f12")
             .expect("missing keymap binding description should build");
         assert!(missing_report.matches.is_empty());
@@ -31054,6 +31208,24 @@ mod tests {
         assert_eq!(paste_report.matches[0].source, "User");
         assert_eq!(paste_report.matches[0].action, "terminal::PasteText");
         assert_eq!(paste_report.matches[0].context.as_deref(), Some("Terminal"));
+
+        let profile_slot_report = terminal_active_keymap_binding_description_report(
+            cx,
+            &keymap_file,
+            "ctrl-shift-1",
+            &[],
+        )
+        .expect("active profile slot keymap binding description should build");
+        assert!(!profile_slot_report.pending);
+        assert_eq!(profile_slot_report.keystrokes, "ctrl-shift-1");
+        assert_eq!(profile_slot_report.parsed_keystrokes, vec!["ctrl-shift-1"]);
+        assert!(profile_slot_report.matches.iter().any(|binding_match| {
+            binding_match.source == "Default"
+                && binding_match.keystrokes == "ctrl-shift-1"
+                && binding_match.action == "zed_terminal::NewTerminalTabWithProfileSlot"
+                && binding_match.context.is_none()
+                && binding_match.input.as_deref() == Some("{\"slot\":1}")
+        }));
 
         let workspace_report = terminal_active_keymap_binding_description_report(
             cx,
@@ -31190,6 +31362,17 @@ mod tests {
             .expect("active list should include ctrl-shift-v");
         assert_eq!(paste.matches[0].source, "User");
         assert_eq!(paste.matches[0].action, "terminal::PasteText");
+
+        let profile_slot = report
+            .bindings
+            .iter()
+            .find(|binding| binding.keystrokes == "ctrl-shift-1")
+            .expect("active list should include ctrl-shift-1 profile slot");
+        assert!(profile_slot.matches.iter().any(|binding_match| {
+            binding_match.source == "Default"
+                && binding_match.action == "zed_terminal::NewTerminalTabWithProfileSlot"
+                && binding_match.input.as_deref() == Some("{\"slot\":1}")
+        }));
 
         assert!(
             report
@@ -31885,6 +32068,7 @@ mod tests {
             description: Some("Project startup shell".into()),
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
+            visible_slot: Some(1),
             hidden: false,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),

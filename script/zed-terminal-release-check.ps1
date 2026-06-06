@@ -2744,6 +2744,9 @@ try {
             if ($profileDescription.profile -ne "work" -or $profileDescription.display_name -ne "Work Shell" -or -not $profileDescription.is_default) {
                 throw "Profile description did not report the expected work profile metadata."
             }
+            if ([int64]$profileDescription.visible_slot -ne 1) {
+                throw "Profile description did not report the expected visible profile slot."
+            }
             $profileEnvKeys = @($profileDescription.env_keys)
             $profileTabEnvKeys = @($profileDescription.tabs[0].env_keys)
             if ($profileEnvKeys -notcontains "ZED_TERMINAL_RELEASE_SECRET" -or $profileTabEnvKeys -notcontains "LOG_TOKEN") {
@@ -2756,6 +2759,15 @@ try {
             $profileDescriptionText = $profileDescription | ConvertTo-Json -Depth 10
             if ($profileDescriptionText -match "do-not-log") {
                 throw "Profile description leaked an environment variable value."
+            }
+            $hiddenProfileDescription = Invoke-NativeJsonCommandResult "describe-profile-secret" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-profile", "secret",
+                "--describe-profile-format", "json"
+            )
+            if ($hiddenProfileDescription.profile -ne "secret" -or -not $hiddenProfileDescription.hidden -or $null -ne $hiddenProfileDescription.visible_slot) {
+                throw "Hidden profile description unexpectedly reported a visible profile slot."
             }
         }
     }

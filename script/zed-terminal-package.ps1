@@ -895,6 +895,7 @@ function Assert-StartupDiscoveryJson {
     param(
         [Parameter(Mandatory = $true)]$StartupDescription,
         [Parameter(Mandatory = $true)]$ProfileList,
+        $ProfileDescription,
         [Parameter(Mandatory = $true)][string]$ExpectedStartupConfigFile
     )
 
@@ -927,6 +928,20 @@ function Assert-StartupDiscoveryJson {
         $profile = $profiles[$index]
         if ($profile.hidden -eq $true -or [int64]$profile.visible_slot -ne ($index + 1)) {
             throw "zed-terminal --list-profiles did not report stable visible profile slot metadata"
+        }
+    }
+
+    if ($profiles.Count -gt 0) {
+        $firstVisibleProfile = $profiles[0]
+        if (
+            $null -eq $ProfileDescription -or
+            $ProfileDescription.status -ne "ok" -or
+            $ProfileDescription.profile -ne $firstVisibleProfile.name -or
+            $ProfileDescription.startup_config_file -ne $ExpectedStartupConfigFile -or
+            $ProfileDescription.hidden -eq $true -or
+            [int64]$ProfileDescription.visible_slot -ne [int64]$firstVisibleProfile.visible_slot
+        ) {
+            throw "zed-terminal --describe-profile did not report stable visible profile slot metadata"
         }
     }
 
@@ -1579,9 +1594,23 @@ function Invoke-StartupDiscoverySmoke {
         "--list-profiles-format", "json"
     ) -WorkingDirectory $WorkingDirectory
 
+    $profileListJson = $profileList.Stdout | ConvertFrom-Json
+    $firstVisibleProfile = @($profileListJson.profiles) | Select-Object -First 1
+    $profileDescriptionJson = $null
+    if ($null -ne $firstVisibleProfile) {
+        $profileDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+            "--user-data-dir", $DataDir,
+            "--config-dir", $ConfigDir,
+            "--describe-profile", $firstVisibleProfile.name,
+            "--describe-profile-format", "json"
+        ) -WorkingDirectory $WorkingDirectory
+        $profileDescriptionJson = $profileDescription.Stdout | ConvertFrom-Json
+    }
+
     Assert-StartupDiscoveryJson `
         -StartupDescription ($startupDescription.Stdout | ConvertFrom-Json) `
-        -ProfileList ($profileList.Stdout | ConvertFrom-Json) `
+        -ProfileList $profileListJson `
+        -ProfileDescription $profileDescriptionJson `
         -ExpectedStartupConfigFile $startupConfigFile
 }
 
