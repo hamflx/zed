@@ -2078,9 +2078,22 @@ try {
             if (-not (@($activePasteBindingDescription.matches) | Where-Object { $_.source -eq "User" -and $_.keystrokes -eq "ctrl-shift-V" -and $_.action -eq "terminal::Paste" -and $_.context -eq "Terminal" })) {
                 throw "Active keymap binding description is missing the user terminal Paste binding."
             }
+            $activeProfileSlotBindingDescription = Invoke-NativeJsonCommandResult "describe-active-keymap-binding-profile-slot" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--describe-active-keymap-binding", "ctrl-shift-1",
+                "--describe-active-keymap-binding-format", "json"
+            )
+            if ($activeProfileSlotBindingDescription.status -ne "ok" -or $activeProfileSlotBindingDescription.keystrokes -ne "ctrl-shift-1" -or $activeProfileSlotBindingDescription.pending) {
+                throw "Active keymap binding description did not report the expected profile slot query contract."
+            }
+            if (-not (@($activeProfileSlotBindingDescription.matches) | Where-Object { $_.source -eq "Default" -and $_.keystrokes -eq "ctrl-shift-1" -and $_.action -eq "zed_terminal::NewTerminalTabWithProfileSlot" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
+                throw "Active keymap binding description is missing the bundled profile slot binding."
+            }
             $activeKeymapBindingDescriptionText = @(
                 $activeNewTabBindingDescription,
-                $activePasteBindingDescription
+                $activePasteBindingDescription,
+                $activeProfileSlotBindingDescription
             ) | ConvertTo-Json -Depth 20
             if ($activeKeymapBindingDescriptionText -match "do-not-log-keymap") {
                 throw "Active keymap binding description output leaked keymap file contents."
@@ -2104,6 +2117,10 @@ try {
             $activePasteListEntry = @($activeKeymapBindings.bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-V" } | Select-Object -First 1
             if (-not $activePasteListEntry -or -not (@($activePasteListEntry.matches) | Where-Object { $_.source -eq "User" -and $_.action -eq "terminal::Paste" -and $_.context -eq "Terminal" })) {
                 throw "Active keymap binding list is missing the user terminal Paste binding."
+            }
+            $activeProfileSlotListEntry = @($activeKeymapBindings.bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-1" } | Select-Object -First 1
+            if (-not $activeProfileSlotListEntry -or -not (@($activeProfileSlotListEntry.matches) | Where-Object { $_.source -eq "Default" -and $_.action -eq "zed_terminal::NewTerminalTabWithProfileSlot" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
+                throw "Active keymap binding list is missing the bundled profile slot binding."
             }
             $activeKeymapBindingsText = $activeKeymapBindings | ConvertTo-Json -Depth 20
             if ($activeKeymapBindingsText -match "do-not-log-keymap") {
