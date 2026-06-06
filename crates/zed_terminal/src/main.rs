@@ -81,6 +81,7 @@ actions!(
         OpenStartupProfileSlotsReport,
         OpenStartupProfileReferencesReport,
         OpenStartupProfileExportsDirectory,
+        CreateStartupProfile,
         ImportStartupProfile,
         OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
@@ -246,6 +247,7 @@ const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json"
 const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
 const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
     "zed-terminal-profile-references.json";
+const TERMINAL_PROFILE_CREATION_REPORT_FILE: &str = "zed-terminal-profile-creation.json";
 const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json";
 const TERMINAL_PROFILE_REMOVAL_REPORT_FILE: &str = "zed-terminal-profile-removal.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
@@ -13165,6 +13167,39 @@ fn create_startup_profile(
     })
 }
 
+fn create_startup_profile_with_available_name(
+    path: &Path,
+) -> Result<TerminalStartupProfileCreation> {
+    let (profile, display_name) = available_startup_profile_creation_name(path)?;
+    create_startup_profile(
+        path,
+        &profile,
+        &TerminalStartupProfileCreationMetadata {
+            display_name: Some(display_name),
+            ..TerminalStartupProfileCreationMetadata::default()
+        },
+    )
+}
+
+fn available_startup_profile_creation_name(path: &Path) -> Result<(String, String)> {
+    let startup_config = TerminalStartupConfig::load(path)?;
+    let base_profile = "new-profile";
+    let base_display_name = "New Profile";
+
+    if !startup_config.profiles.contains_key(base_profile) {
+        return Ok((base_profile.into(), base_display_name.into()));
+    }
+
+    for suffix in 2.. {
+        let candidate = format!("{base_profile}-{suffix}");
+        if !startup_config.profiles.contains_key(&candidate) {
+            return Ok((candidate, format!("{base_display_name} {suffix}")));
+        }
+    }
+
+    unreachable!("unbounded startup profile creation suffix iterator should always return")
+}
+
 fn update_startup_profile_metadata(
     path: &Path,
     profile: &str,
@@ -21911,6 +21946,28 @@ fn write_startup_profile_description_report_file(
     })
 }
 
+fn write_startup_profile_creation_report_file(
+    path: &Path,
+    creation: &TerminalStartupProfileCreation,
+) -> Result<()> {
+    let report = format_startup_profile_creation_json(creation)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile creation report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile creation report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_copy_report_file(
     path: &Path,
     copy: &TerminalStartupProfileCopy,
@@ -24285,6 +24342,10 @@ fn active_terminal_startup_profile_references_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE)
 }
 
+fn active_terminal_profile_creation_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_CREATION_REPORT_FILE)
+}
+
 fn active_terminal_profile_copy_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_COPY_REPORT_FILE)
 }
@@ -24440,6 +24501,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_startup_profile_references_report);
     cx.on_action(open_startup_profile_exports_directory);
+    cx.on_action(create_startup_profile_action);
     cx.on_action(import_startup_profile_action);
     cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
@@ -24656,6 +24718,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<CloseTerminalWindow>(),
         TerminalActionSurface::new::<CopySupportInfoToClipboard>(),
         TerminalActionSurface::new::<CopyStartupProfile>(),
+        TerminalActionSurface::new::<CreateStartupProfile>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitAuto>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitDown>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitLeft>(),
@@ -25126,6 +25189,7 @@ fn shell_menu_items_with_visibility(
         MenuItem::action("Reopen Closed Tab", workspace::pane::ReopenClosedItem),
         MenuItem::separator(),
         MenuItem::action("Open Profile Picker...", OpenStartupProfilePicker),
+        MenuItem::action("Create Profile", CreateStartupProfile),
         MenuItem::separator(),
         MenuItem::action("Duplicate Split Auto", DuplicateTerminalSplitAuto),
         MenuItem::action("Duplicate Split Right", DuplicateTerminalSplitRight),
@@ -26952,6 +27016,39 @@ fn open_startup_profile_exports_directory(_: &OpenStartupProfileExportsDirectory
         "startup profile exports",
         cx,
     );
+}
+
+fn create_startup_profile_action(_: &CreateStartupProfile, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_spawn(async move {
+                let creation = create_startup_profile_with_available_name(
+                    &active_terminal_startup_config_file(),
+                )?;
+                write_startup_profile_creation_report_file(
+                    &active_terminal_profile_creation_report_file(),
+                    &creation,
+                )?;
+                anyhow::Ok(creation)
+            })
+            .await;
+        cx.update(|cx| match result {
+            Ok(creation) => {
+                log::info!(
+                    "created startup profile {:?} (display name {:?}, total profiles {})",
+                    creation.profile,
+                    creation.display_name,
+                    creation.total_profile_count
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_creation_report_file());
+            }
+            Err(error) => {
+                log::warn!("failed to create startup profile: {error:#}");
+            }
+        });
+    })
+    .detach();
 }
 
 fn import_startup_profile_action(_: &ImportStartupProfile, cx: &mut App) {
@@ -29223,6 +29320,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Create Profile",
+            "zed_terminal::CreateStartupProfile",
+        );
+        assert_menu_action(
+            &items,
             "Import Profile...",
             "zed_terminal::ImportStartupProfile",
         );
@@ -30433,6 +30535,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<ImportStartupProfile>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_create_startup_profile_action_input() {
+        let action = <CreateStartupProfile as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("create startup profile action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<CreateStartupProfile>()
                 .is_some()
         );
     }
@@ -33063,6 +33178,7 @@ mod tests {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::CreateStartupProfile",
             "zed_terminal::CopyStartupProfile",
             "zed_terminal::RemoveStartupProfile",
             "zed_terminal::ExportStartupProfile",
@@ -33878,6 +33994,13 @@ mod tests {
             "profile slot action should expose its default binding"
         );
 
+        let profile_create = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::CreateStartupProfile")
+            .expect("profile create action should be listed");
+        assert_eq!(profile_create.input, TerminalKeymapActionInput::None);
+
         let profile_config = report
             .actions
             .iter()
@@ -34164,6 +34287,15 @@ mod tests {
             profile_config_report.actions[0].input,
             TerminalKeymapActionInput::Object
         );
+
+        let profile_create_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::CreateStartupProfile")
+                .expect("profile create action description should build");
+        assert_eq!(
+            profile_create_report.actions[0].input,
+            TerminalKeymapActionInput::None
+        );
+        assert!(profile_create_report.actions[0].default_bindings.is_empty());
 
         let profile_export_report =
             terminal_keymap_action_description_report(cx, "zed_terminal::ExportStartupProfile")
@@ -43060,6 +43192,58 @@ mod tests {
     }
 
     #[test]
+    fn create_startup_profile_with_available_name_initializes_missing_config() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        let creation = create_startup_profile_with_available_name(&startup_config_file)
+            .expect("startup profile should create with an available name");
+
+        assert_eq!(creation.profile, "new-profile");
+        assert_eq!(creation.display_name.as_deref(), Some("New Profile"));
+        assert!(creation.changed);
+        assert_eq!(creation.total_profile_count, 1);
+
+        let content =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read startup config");
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(
+            updated_config.profiles["new-profile"]
+                .display_name
+                .as_deref(),
+            Some("New Profile")
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn available_startup_profile_creation_name_uses_non_overwriting_suffixes() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "new-profile": {},
+    "new-profile-2": {}
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        assert_eq!(
+            available_startup_profile_creation_name(&startup_config_file)
+                .expect("creation name should resolve"),
+            ("new-profile-3".into(), "New Profile 3".into())
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn available_startup_profile_copy_name_uses_non_overwriting_suffixes() {
         let root_dir = temp_test_dir();
         let startup_config_file = root_dir.join("terminal.json");
@@ -43129,6 +43313,41 @@ mod tests {
         assert_eq!(copied.display_name.as_deref(), Some("Work"));
         assert_eq!(copied.env, test_env(&[("TOKEN", "do-not-log")]));
         assert_eq!(copied.tabs[0].profile.as_deref(), Some("work-copy-2"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_creation_report_file_redacts_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join("zed-terminal-profile-creation.json");
+        let creation = TerminalStartupProfileCreation {
+            path: root_dir.join("terminal.json"),
+            profile: "new-profile".into(),
+            display_name: Some("New Profile".into()),
+            description: None,
+            icon: None,
+            color: None,
+            hidden: false,
+            changed: true,
+            total_profile_count: 1,
+        };
+
+        write_startup_profile_creation_report_file(&report_file, &creation)
+            .expect("profile creation report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile creation report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile creation report should parse");
+        assert_eq!(report_json["status"], "ok");
+        assert_eq!(report_json["profile"], "new-profile");
+        assert_eq!(report_json["display_name"], "New Profile");
+        assert_eq!(report_json["total_profile_count"], 1);
+        assert!(!report.contains("do-not-log"));
+        assert!(!report.contains("TOKEN"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }
