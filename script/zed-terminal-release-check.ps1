@@ -949,6 +949,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
+            "zed_terminal::OpenSupportBundleManifestFile",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "zed_terminal::OpenActiveKeymapBindingsReport",
@@ -1958,6 +1959,7 @@ try {
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupProfileSlotsReport",
+                "zed_terminal::OpenSupportBundleManifestFile",
                 "zed_terminal::OpenSupportToolsPicker",
                 "zed_terminal::OpenStartupToolsPicker",
                 "zed_terminal::OpenActiveKeymapBindingsReport",
@@ -2040,6 +2042,10 @@ try {
             $supportToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportToolsPicker" } | Select-Object -First 1
             if (-not $supportToolsPickerAction -or $supportToolsPickerAction.namespace -ne "zed_terminal" -or $supportToolsPickerAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenSupportToolsPicker no-input metadata."
+            }
+            $supportBundleManifestFileAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportBundleManifestFile" } | Select-Object -First 1
+            if (-not $supportBundleManifestFileAction -or $supportBundleManifestFileAction.namespace -ne "zed_terminal" -or $supportBundleManifestFileAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenSupportBundleManifestFile no-input metadata."
             }
             $settingsToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSettingsToolsPicker" } | Select-Object -First 1
             if (-not $settingsToolsPickerAction -or $settingsToolsPickerAction.namespace -ne "zed_terminal" -or $settingsToolsPickerAction.input -ne "none") {
@@ -2203,6 +2209,15 @@ try {
             if ($supportToolsPickerActionDescription.action.name -ne "zed_terminal::OpenSupportToolsPicker" -or $supportToolsPickerActionDescription.action.namespace -ne "zed_terminal" -or $supportToolsPickerActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected support tools picker action contract."
             }
+            $supportBundleManifestFileActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-support-bundle-manifest-file" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenSupportBundleManifestFile",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($supportBundleManifestFileActionDescription.action.name -ne "zed_terminal::OpenSupportBundleManifestFile" -or $supportBundleManifestFileActionDescription.action.namespace -ne "zed_terminal" -or $supportBundleManifestFileActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected support bundle manifest file action contract."
+            }
             $settingsToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-settings-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2289,6 +2304,7 @@ try {
                 $startupToolsPickerActionDescription,
                 $startupProfileSlotsReportActionDescription,
                 $supportToolsPickerActionDescription,
+                $supportBundleManifestFileActionDescription,
                 $settingsToolsPickerActionDescription,
                 $keymapToolsPickerActionDescription,
                 $activeBindingsReportActionDescription,

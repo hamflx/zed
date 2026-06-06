@@ -70,6 +70,7 @@ actions!(
         OpenVersionInfoReport,
         OpenSupportInfoReport,
         OpenSupportBundleDirectory,
+        OpenSupportBundleManifestFile,
         OpenStartupLayoutReport,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
@@ -22830,6 +22831,10 @@ fn active_terminal_support_bundle_dir() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SUPPORT_BUNDLE_DIR)
 }
 
+fn active_terminal_support_bundle_manifest_file() -> PathBuf {
+    active_terminal_support_bundle_dir().join(TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE)
+}
+
 fn active_terminal_config_initialization_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
 }
@@ -23006,6 +23011,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_version_info_report);
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
+    cx.on_action(open_support_bundle_manifest_file);
     cx.on_action(open_config_initialization_report);
     cx.on_action(open_config_bundle_backup_directory);
     cx.on_action(open_config_bundle_backups_directory);
@@ -23263,6 +23269,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenLogsDirectory>(),
         TerminalActionSurface::new::<OpenProfileDescriptionReport>(),
         TerminalActionSurface::new::<OpenSupportBundleDirectory>(),
+        TerminalActionSurface::new::<OpenSupportBundleManifestFile>(),
         TerminalActionSurface::new::<OpenSupportInfoReport>(),
         TerminalActionSurface::new::<OpenSettingsToolsPicker>(),
         TerminalActionSurface::new::<OpenSettingsSchemaFile>(),
@@ -23998,6 +24005,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Version Info Report", OpenVersionInfoReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
         MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
+        MenuItem::action(
+            "Open Support Bundle Manifest File",
+            OpenSupportBundleManifestFile,
+        ),
         MenuItem::action("Copy Support Info", CopySupportInfoToClipboard),
         MenuItem::separator(),
         MenuItem::action("Open Config Directory", OpenConfigDirectory),
@@ -25078,6 +25089,22 @@ fn open_support_bundle_directory(_: &OpenSupportBundleDirectory, cx: &mut App) {
     }
 
     cx.open_with_system(&support_bundle_dir);
+}
+
+fn open_support_bundle_manifest_file(_: &OpenSupportBundleManifestFile, cx: &mut App) {
+    let support_bundle_dir = active_terminal_support_bundle_dir();
+    let support_bundle_manifest_file = active_terminal_support_bundle_manifest_file();
+    if let Err(error) = generate_support_bundle(
+        env!("CARGO_PKG_VERSION"),
+        &active_terminal_path_options(),
+        &support_bundle_dir,
+        cx,
+    ) {
+        log::warn!("failed to generate support bundle manifest file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&support_bundle_manifest_file);
 }
 
 fn open_config_bundle_backup_directory(_: &OpenConfigBundleBackupDirectory, cx: &mut App) {
@@ -26237,6 +26264,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenVersionInfoReport);
         assert_command_palette_action_visible(&filter, &OpenSupportInfoReport);
         assert_command_palette_action_visible(&filter, &OpenSupportBundleDirectory);
+        assert_command_palette_action_visible(&filter, &OpenSupportBundleManifestFile);
         assert_command_palette_action_visible(&filter, &OpenSupportToolsPicker);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
         assert_command_palette_action_visible(&filter, &OpenSettingsToolsPicker);
@@ -27672,6 +27700,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Support Bundle Manifest File",
+            "zed_terminal::OpenSupportBundleManifestFile",
+        );
+        assert_menu_action(
+            &items,
             "Copy Support Info",
             "zed_terminal::CopySupportInfoToClipboard",
         );
@@ -27728,6 +27761,7 @@ mod tests {
                 "Open Version Info Report",
                 "Open Support Info Report",
                 "Open Support Bundle Directory",
+                "Open Support Bundle Manifest File",
                 "Copy Support Info",
                 "---",
                 "Open Config Directory",
@@ -28824,6 +28858,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenSupportBundleDirectory>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_support_bundle_manifest_file_action_input() {
+        let action =
+            <OpenSupportBundleManifestFile as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open support bundle manifest file action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSupportBundleManifestFile>()
                 .is_some()
         );
     }
@@ -30697,6 +30745,7 @@ mod tests {
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
+            "zed_terminal::OpenSupportBundleManifestFile",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "terminal::Paste",
@@ -31404,6 +31453,16 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenSupportToolsPicker")
             .expect("support tools picker action should be listed");
         assert_eq!(support_tools_picker.input, TerminalKeymapActionInput::None);
+
+        let support_bundle_manifest_file = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenSupportBundleManifestFile")
+            .expect("support bundle manifest file action should be listed");
+        assert_eq!(
+            support_bundle_manifest_file.input,
+            TerminalKeymapActionInput::None
+        );
 
         let settings_tools_picker = report
             .actions
@@ -32190,6 +32249,20 @@ mod tests {
         assert!(report_text.contains("diagnostics:\n"));
 
         std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn support_bundle_manifest_file_lives_under_support_bundle_directory() {
+        let manifest_file = active_terminal_support_bundle_manifest_file();
+
+        assert_eq!(
+            manifest_file.file_name().and_then(|name| name.to_str()),
+            Some(TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE)
+        );
+        assert_eq!(
+            manifest_file.parent().and_then(Path::file_name),
+            Some(std::ffi::OsStr::new(TERMINAL_SUPPORT_BUNDLE_DIR))
+        );
     }
 
     #[gpui::test]
