@@ -22,9 +22,9 @@ use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
     Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, KeyContext,
-    Keymap, Keystroke, Menu, MenuItem, Pixels, SharedString, SystemWindowTabController, Task,
-    TaskExt, WeakEntity, Window, WindowBounds, WindowOptions, actions, is_no_action, is_unbind, px,
-    size,
+    Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, SharedString,
+    SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds, WindowOptions,
+    actions, is_no_action, is_unbind, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -81,6 +81,7 @@ actions!(
         OpenStartupProfileSlotsReport,
         OpenStartupProfileReferencesReport,
         OpenStartupProfileExportsDirectory,
+        ImportStartupProfile,
         OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -231,6 +232,7 @@ const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json"
 const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
 const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
     "zed-terminal-profile-references.json";
+const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
@@ -14981,6 +14983,77 @@ fn import_startup_profile(
     })
 }
 
+fn import_startup_profile_without_overwrite(
+    path: &Path,
+    import_file: &Path,
+) -> Result<TerminalStartupProfileImport> {
+    let imported = read_startup_profile_import_file(import_file)?;
+    let preferred_profile = imported
+        .source_profile
+        .as_deref()
+        .map(normalize_startup_profile_name)
+        .transpose()?
+        .unwrap_or_else(|| {
+            import_file
+                .file_stem()
+                .and_then(|file_name| file_name.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| "imported".into())
+        });
+    let profile = available_startup_profile_import_name(path, &preferred_profile)?;
+    import_startup_profile(path, &profile, import_file, false)
+}
+
+fn import_startup_profile_from_selected_file(
+    import_file: PathBuf,
+) -> Result<TerminalStartupProfileImport> {
+    let import = import_startup_profile_without_overwrite(
+        &active_terminal_startup_config_file(),
+        &import_file,
+    )?;
+    write_startup_profile_import_report_file(
+        &active_terminal_profile_import_report_file(),
+        &import,
+    )?;
+    Ok(import)
+}
+
+fn available_startup_profile_import_name(path: &Path, preferred_profile: &str) -> Result<String> {
+    let preferred_profile = normalize_startup_profile_name(preferred_profile)?;
+    let existing_profiles = match std_fs::read_to_string(path) {
+        Ok(text) => settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+            .with_context(|| format!("failed to parse terminal startup config {}", path.display()))?
+            .profiles
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read terminal startup config {}", path.display())
+            });
+        }
+    };
+
+    if !existing_profiles.contains(&preferred_profile) {
+        return Ok(preferred_profile);
+    }
+
+    let base_profile = format!("{preferred_profile}-imported");
+    if !existing_profiles.contains(&base_profile) {
+        return Ok(base_profile);
+    }
+
+    for suffix in 2.. {
+        let candidate = format!("{base_profile}-{suffix}");
+        if !existing_profiles.contains(&candidate) {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("unbounded startup profile import suffix iterator should always return")
+}
+
 fn read_startup_profile_import_file(path: &Path) -> Result<TerminalStartupProfileImportFile> {
     let text = std_fs::read_to_string(path)
         .with_context(|| format!("failed to read profile import file {}", path.display()))?;
@@ -21781,6 +21854,28 @@ fn write_startup_profile_description_report_file(
     })
 }
 
+fn write_startup_profile_import_report_file(
+    path: &Path,
+    import: &TerminalStartupProfileImport,
+) -> Result<()> {
+    let report = format_startup_profile_import_json(import)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile import report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile import report {}",
+            path.display()
+        )
+    })
+}
+
 fn format_config_initialization(initialization: &TerminalConfigInitialization) -> String {
     let mut output = String::new();
     writeln!(&mut output, "status: ok").expect("writing to string should not fail");
@@ -24089,6 +24184,10 @@ fn active_terminal_startup_profile_references_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE)
 }
 
+fn active_terminal_profile_import_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_IMPORT_REPORT_FILE)
+}
+
 fn active_terminal_settings_validation_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SETTINGS_VALIDATION_REPORT_FILE)
 }
@@ -24232,6 +24331,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_startup_profile_references_report);
     cx.on_action(open_startup_profile_exports_directory);
+    cx.on_action(import_startup_profile_action);
     cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
@@ -24453,6 +24553,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<DuplicateTerminalTab>(),
         TerminalActionSurface::new::<ExportStartupProfile>(),
         TerminalActionSurface::new::<HideStartupProfile>(),
+        TerminalActionSurface::new::<ImportStartupProfile>(),
         TerminalActionSurface::new::<MinimizeTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindowWithProfile>(),
@@ -24986,6 +25087,7 @@ fn shell_menu_items_with_visibility(
         "Clear Default Profile",
         ClearDefaultStartupProfile,
     ));
+    shell_items.push(MenuItem::action("Import Profile...", ImportStartupProfile));
     shell_items.push(MenuItem::action(
         "Open Profile Exports Directory",
         OpenStartupProfileExportsDirectory,
@@ -26661,6 +26763,53 @@ fn open_startup_profile_exports_directory(_: &OpenStartupProfileExportsDirectory
     );
 }
 
+fn import_startup_profile_action(_: &ImportStartupProfile, cx: &mut App) {
+    let paths = cx.prompt_for_paths(PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: Some("Import Profile".into()),
+    });
+    cx.spawn(async move |cx| {
+        let import_file = match paths.await {
+            Ok(Ok(Some(mut paths))) => paths.pop(),
+            Ok(Ok(None)) => None,
+            Ok(Err(error)) => {
+                log::warn!("failed to open startup profile import picker: {error:#}");
+                return;
+            }
+            Err(_) => {
+                log::warn!("startup profile import picker was canceled before returning");
+                return;
+            }
+        };
+        let Some(import_file) = import_file else {
+            return;
+        };
+        let result = cx
+            .background_spawn(async move { import_startup_profile_from_selected_file(import_file) })
+            .await;
+        cx.update(|cx| match result {
+            Ok(import) => {
+                log::info!(
+                    "imported startup profile {:?} from {} (source {:?}, {} tabs, {} env keys)",
+                    import.profile,
+                    import.import_file.display(),
+                    import.source_profile,
+                    import.tab_count,
+                    import.env_keys.len()
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_import_report_file());
+            }
+            Err(error) => {
+                log::warn!("failed to import startup profile: {error:#}");
+            }
+        });
+    })
+    .detach();
+}
+
 fn open_settings_validation_report(_: &OpenSettingsValidationReport, cx: &mut App) {
     let validation_report_file = active_terminal_settings_validation_report_file();
     let report = validate_terminal_settings_files(
@@ -27637,6 +27786,7 @@ mod tests {
                 profile: "work".into(),
             },
         );
+        assert_command_palette_action_visible(&filter, &ImportStartupProfile);
         assert_command_palette_action_visible(&filter, &ToggleFullScreen);
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
@@ -28693,6 +28843,11 @@ mod tests {
             &items,
             "Open Profile Picker...",
             "zed_terminal::OpenStartupProfilePicker",
+        );
+        assert_menu_action(
+            &items,
+            "Import Profile...",
+            "zed_terminal::ImportStartupProfile",
         );
         assert_menu_action(
             &items,
@@ -29820,6 +29975,19 @@ mod tests {
         .expect_err("unknown startup profile export action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_import_startup_profile_action_input() {
+        let action = <ImportStartupProfile as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("import startup profile action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<ImportStartupProfile>()
+                .is_some()
+        );
     }
 
     #[test]
@@ -32449,6 +32617,7 @@ mod tests {
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::ExportStartupProfile",
+            "zed_terminal::ImportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::OpenKeymapToolsPicker",
@@ -33274,6 +33443,13 @@ mod tests {
             .expect("profile export action should be listed");
         assert_eq!(profile_export.input, TerminalKeymapActionInput::Object);
 
+        let profile_import = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::ImportStartupProfile")
+            .expect("profile import action should be listed");
+        assert_eq!(profile_import.input, TerminalKeymapActionInput::None);
+
         let config_bundle_backup_file = report
             .actions
             .iter()
@@ -33534,6 +33710,15 @@ mod tests {
             TerminalKeymapActionInput::Object
         );
         assert!(profile_export_report.actions[0].default_bindings.is_empty());
+
+        let profile_import_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::ImportStartupProfile")
+                .expect("profile import action description should build");
+        assert_eq!(
+            profile_import_report.actions[0].input,
+            TerminalKeymapActionInput::None
+        );
+        assert!(profile_import_report.actions[0].default_bindings.is_empty());
 
         let paste_report = terminal_keymap_action_description_report(cx, "terminal::Paste")
             .expect("paste keymap action description should build");
@@ -42554,6 +42739,138 @@ mod tests {
         let summary_json = format_startup_profile_import_json(&import)
             .expect("profile import summary json should serialize");
         assert!(!summary_json.contains("do-not-log"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn available_startup_profile_import_name_uses_non_overwriting_suffixes() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+
+        assert_eq!(
+            available_startup_profile_import_name(&startup_config_file, " work ")
+                .expect("missing startup config should allow preferred profile"),
+            "work"
+        );
+
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {},
+    "work-imported": {}
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+
+        assert_eq!(
+            available_startup_profile_import_name(&startup_config_file, "work")
+                .expect("existing profile should get import suffix"),
+            "work-imported-2"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn import_startup_profile_without_overwrite_renames_existing_profile_import() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let import_file = root_dir.join("work-profile.json");
+        std_fs::write(
+            &startup_config_file,
+            r#"{
+  "profiles": {
+    "work": {
+      "display_name": "Existing Work"
+    },
+    "work-imported": {
+      "display_name": "Previous Import"
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write startup config");
+        std_fs::write(
+            &import_file,
+            r##"{
+  "format": "zed-terminal-startup-profile",
+  "version": 1,
+  "profile": "work",
+  "config": {
+    "display_name": "Imported Work",
+    "env": {
+      "TOKEN": "do-not-log"
+    },
+    "tabs": [
+      { "title": "Nested Self", "profile": "work", "split": "right" }
+    ]
+  }
+}
+"##,
+        )
+        .expect("failed to write profile import file");
+
+        let import = import_startup_profile_without_overwrite(&startup_config_file, &import_file)
+            .expect("startup profile should import with a suffix");
+
+        assert_eq!(import.source_profile.as_deref(), Some("work"));
+        assert_eq!(import.profile, "work-imported-2");
+        assert!(!import.replaced);
+        assert!(import.changed);
+        assert_eq!(import.env_keys, vec!["TOKEN"]);
+        assert_eq!(import.tab_count, 1);
+        assert_eq!(import.total_profile_count, 3);
+
+        let content =
+            std_fs::read_to_string(&startup_config_file).expect("failed to read startup config");
+        let updated_config: TerminalStartupConfig =
+            settings::parse_json_with_comments(&content).expect("updated config should parse");
+        assert_eq!(
+            updated_config.profiles["work"].display_name.as_deref(),
+            Some("Existing Work")
+        );
+        let imported = &updated_config.profiles["work-imported-2"];
+        assert_eq!(imported.display_name.as_deref(), Some("Imported Work"));
+        assert_eq!(imported.tabs[0].profile.as_deref(), Some("work-imported-2"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_import_report_file_redacts_env_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join("zed-terminal-profile-import.json");
+        let import = TerminalStartupProfileImport {
+            path: root_dir.join("terminal.json"),
+            import_file: root_dir.join("work-profile.json"),
+            source_profile: Some("work".into()),
+            profile: "work-imported".into(),
+            replaced: false,
+            changed: true,
+            env_keys: vec!["TOKEN".into()],
+            tab_count: 1,
+            total_profile_count: 2,
+        };
+
+        write_startup_profile_import_report_file(&report_file, &import)
+            .expect("profile import report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile import report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile import report should parse");
+        assert_eq!(report_json["status"], "ok");
+        assert_eq!(report_json["source_profile"], "work");
+        assert_eq!(report_json["profile"], "work-imported");
+        assert_eq!(report_json["env_keys"], serde_json::json!(["TOKEN"]));
+        assert!(!report.contains("do-not-log"));
 
         std_fs::remove_dir_all(root_dir).ok();
     }

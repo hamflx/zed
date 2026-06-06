@@ -941,6 +941,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::ExportStartupProfile",
+            "zed_terminal::ImportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
@@ -1964,6 +1965,7 @@ try {
                 "zed_terminal::NewTerminalWindowWithProfileSlot",
                 "zed_terminal::NewTerminalSplitWithProfileSlot",
                 "zed_terminal::ExportStartupProfile",
+                "zed_terminal::ImportStartupProfile",
                 "zed_terminal::OpenConfigBundleBackupFile",
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
@@ -2057,6 +2059,10 @@ try {
             $profileExportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::ExportStartupProfile" } | Select-Object -First 1
             if (-not $profileExportAction -or $profileExportAction.namespace -ne "zed_terminal" -or $profileExportAction.input -ne "object") {
                 throw "Keymap action list did not report the expected ExportStartupProfile object-input metadata."
+            }
+            $profileImportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::ImportStartupProfile" } | Select-Object -First 1
+            if (-not $profileImportAction -or $profileImportAction.namespace -ne "zed_terminal" -or $profileImportAction.input -ne "none") {
+                throw "Keymap action list did not report the expected ImportStartupProfile no-input metadata."
             }
             $profilePickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfilePicker" } | Select-Object -First 1
             if (-not $profilePickerAction -or $profilePickerAction.namespace -ne "zed_terminal" -or $profilePickerAction.input -ne "none") {
@@ -2243,6 +2249,15 @@ try {
             if ($profileExportActionDescription.action.name -ne "zed_terminal::ExportStartupProfile" -or $profileExportActionDescription.action.namespace -ne "zed_terminal" -or $profileExportActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile export action contract."
             }
+            $profileImportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-import" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::ImportStartupProfile",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileImportActionDescription.action.name -ne "zed_terminal::ImportStartupProfile" -or $profileImportActionDescription.action.namespace -ne "zed_terminal" -or $profileImportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected profile import action contract."
+            }
             $profilePickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-picker" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2400,6 +2415,7 @@ try {
                 $configInitializationReportActionDescription,
                 $profileConfigActionDescription,
                 $profileExportActionDescription,
+                $profileImportActionDescription,
                 $profilePickerActionDescription,
                 $startupToolsPickerActionDescription,
                 $startupProfileSlotsReportActionDescription,
