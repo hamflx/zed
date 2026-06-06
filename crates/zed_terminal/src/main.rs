@@ -81,6 +81,8 @@ actions!(
         OpenStartupProfileSlotsReport,
         OpenStartupProfileReferencesReport,
         OpenStartupProfileExportsDirectory,
+        OpenStartupProfileMutationBackupsDirectory,
+        OpenStartupProfileMutationBackupsReport,
         CreateStartupProfile,
         ImportStartupProfile,
         OpenSettingsValidationReport,
@@ -252,6 +254,8 @@ const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json"
 const TERMINAL_PROFILE_REMOVAL_REPORT_FILE: &str = "zed-terminal-profile-removal.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
 const TERMINAL_PROFILE_MUTATION_BACKUP_DIR: &str = "zed-terminal-profile-mutation-backups";
+const TERMINAL_PROFILE_MUTATION_BACKUPS_REPORT_FILE: &str =
+    "zed-terminal-profile-mutation-backups.json";
 const TERMINAL_PROFILE_MUTATION_BACKUP_FILE_PREFIX: &str = "terminal-before-profile-";
 const TERMINAL_PROFILE_MUTATION_BACKUP_FILE_EXTENSION: &str = ".json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
@@ -4286,6 +4290,34 @@ struct TerminalStartupProfileMutationBackup {
     backup_file: PathBuf,
     profile: Option<String>,
     byte_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileMutationBackupsReport {
+    backup_dir: PathBuf,
+    status: &'static str,
+    backup_count: usize,
+    valid_count: usize,
+    invalid_count: usize,
+    total_byte_count: u64,
+    backups: Vec<TerminalStartupProfileMutationBackupEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileMutationBackupEntry {
+    path: PathBuf,
+    file_name: String,
+    action: Option<String>,
+    profile_stem: Option<String>,
+    timestamp_unix_seconds: Option<u64>,
+    suffix: Option<u32>,
+    byte_count: u64,
+    modified_unix_seconds: Option<u64>,
+    valid: bool,
+    layout_count: Option<usize>,
+    tab_count: Option<usize>,
+    profile_count: Option<usize>,
+    message: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16038,6 +16070,238 @@ fn backup_startup_config_before_profile_mutation_at(
     }))
 }
 
+fn list_startup_profile_mutation_backups(
+    backup_dir: &Path,
+) -> Result<TerminalStartupProfileMutationBackupsReport> {
+    let mut backups = Vec::new();
+    match std_fs::read_dir(backup_dir) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| {
+                    format!(
+                        "failed to read startup profile mutation backup directory {}",
+                        backup_dir.display()
+                    )
+                })?;
+                let path = entry.path();
+                let metadata = entry.metadata().with_context(|| {
+                    format!(
+                        "failed to inspect startup profile mutation backup {}",
+                        path.display()
+                    )
+                })?;
+                if metadata.is_file() {
+                    backups.push(startup_profile_mutation_backup_entry(path, &metadata));
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect startup profile mutation backup directory {}",
+                    backup_dir.display()
+                )
+            });
+        }
+    }
+
+    backups.sort_by(|left, right| {
+        right
+            .modified_unix_seconds
+            .cmp(&left.modified_unix_seconds)
+            .then_with(|| right.file_name.cmp(&left.file_name))
+    });
+    let backup_count = backups.len();
+    let valid_count = backups.iter().filter(|backup| backup.valid).count();
+    let invalid_count = backup_count - valid_count;
+    let total_byte_count = backups.iter().map(|backup| backup.byte_count).sum();
+
+    Ok(TerminalStartupProfileMutationBackupsReport {
+        backup_dir: backup_dir.to_path_buf(),
+        status: if invalid_count == 0 { "ok" } else { "warning" },
+        backup_count,
+        valid_count,
+        invalid_count,
+        total_byte_count,
+        backups,
+    })
+}
+
+fn startup_profile_mutation_backup_entry(
+    path: PathBuf,
+    metadata: &std_fs::Metadata,
+) -> TerminalStartupProfileMutationBackupEntry {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let byte_count = metadata.len();
+    let modified_unix_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+    let parsed_name = parse_startup_profile_mutation_backup_file_name(&file_name);
+
+    match startup_profile_mutation_backup_summary(&path) {
+        Ok(validation) => TerminalStartupProfileMutationBackupEntry {
+            path,
+            file_name,
+            action: parsed_name.action,
+            profile_stem: parsed_name.profile_stem,
+            timestamp_unix_seconds: parsed_name.timestamp_unix_seconds,
+            suffix: parsed_name.suffix,
+            byte_count,
+            modified_unix_seconds,
+            valid: true,
+            layout_count: Some(validation.layout_count),
+            tab_count: Some(validation.tab_count),
+            profile_count: Some(validation.profile_count),
+            message: None,
+        },
+        Err(error) => TerminalStartupProfileMutationBackupEntry {
+            path,
+            file_name,
+            action: parsed_name.action,
+            profile_stem: parsed_name.profile_stem,
+            timestamp_unix_seconds: parsed_name.timestamp_unix_seconds,
+            suffix: parsed_name.suffix,
+            byte_count,
+            modified_unix_seconds,
+            valid: false,
+            layout_count: None,
+            tab_count: None,
+            profile_count: None,
+            message: Some(format!("{error:#}")),
+        },
+    }
+}
+
+struct TerminalStartupProfileMutationBackupName {
+    action: Option<String>,
+    profile_stem: Option<String>,
+    timestamp_unix_seconds: Option<u64>,
+    suffix: Option<u32>,
+}
+
+fn parse_startup_profile_mutation_backup_file_name(
+    file_name: &str,
+) -> TerminalStartupProfileMutationBackupName {
+    let Some(stem) = file_name
+        .strip_prefix(TERMINAL_PROFILE_MUTATION_BACKUP_FILE_PREFIX)
+        .and_then(|name| name.strip_suffix(TERMINAL_PROFILE_MUTATION_BACKUP_FILE_EXTENSION))
+    else {
+        return TerminalStartupProfileMutationBackupName {
+            action: None,
+            profile_stem: None,
+            timestamp_unix_seconds: None,
+            suffix: None,
+        };
+    };
+
+    let parts = stem.split('-').collect::<Vec<_>>();
+    let Some(mut timestamp_index) = parts.len().checked_sub(1) else {
+        return TerminalStartupProfileMutationBackupName {
+            action: None,
+            profile_stem: None,
+            timestamp_unix_seconds: None,
+            suffix: None,
+        };
+    };
+    let mut suffix = None;
+    if parts.len() >= 2
+        && let Ok(candidate_suffix) = parts[timestamp_index].parse::<u32>()
+        && parts[timestamp_index - 1].parse::<u64>().is_ok()
+    {
+        suffix = Some(candidate_suffix);
+        timestamp_index -= 1;
+    }
+    let Ok(timestamp_unix_seconds) = parts[timestamp_index].parse::<u64>() else {
+        return TerminalStartupProfileMutationBackupName {
+            action: None,
+            profile_stem: None,
+            timestamp_unix_seconds: None,
+            suffix: None,
+        };
+    };
+    let action_and_profile = parts[..timestamp_index].join("-");
+    for action in terminal_profile_mutation_backup_action_stems() {
+        if action_and_profile == *action {
+            return TerminalStartupProfileMutationBackupName {
+                action: Some((*action).into()),
+                profile_stem: None,
+                timestamp_unix_seconds: Some(timestamp_unix_seconds),
+                suffix,
+            };
+        }
+        if let Some(profile_stem) = action_and_profile.strip_prefix(&format!("{action}-")) {
+            return TerminalStartupProfileMutationBackupName {
+                action: Some((*action).into()),
+                profile_stem: Some(profile_stem.into()),
+                timestamp_unix_seconds: Some(timestamp_unix_seconds),
+                suffix,
+            };
+        }
+    }
+
+    TerminalStartupProfileMutationBackupName {
+        action: None,
+        profile_stem: None,
+        timestamp_unix_seconds: None,
+        suffix: None,
+    }
+}
+
+fn terminal_profile_mutation_backup_action_stems() -> &'static [&'static str] {
+    &[
+        "clear-default-profile",
+        "set-default-profile",
+        "create-profile",
+        "import-profile",
+        "remove-profile",
+        "copy-profile",
+        "hide-profile",
+        "show-profile",
+    ]
+}
+
+struct TerminalStartupProfileMutationBackupSummary {
+    layout_count: usize,
+    tab_count: usize,
+    profile_count: usize,
+}
+
+fn startup_profile_mutation_backup_summary(
+    backup_file: &Path,
+) -> Result<TerminalStartupProfileMutationBackupSummary> {
+    let text = std_fs::read_to_string(backup_file).with_context(|| {
+        format!(
+            "failed to read startup profile mutation backup {}",
+            backup_file.display()
+        )
+    })?;
+    let startup_config = settings::parse_json_with_comments::<TerminalStartupConfig>(&text)
+        .with_context(|| {
+            format!(
+                "failed to parse startup profile mutation backup {}",
+                backup_file.display()
+            )
+        })?;
+    let validation = startup_config.validate().with_context(|| {
+        format!(
+            "failed to validate startup profile mutation backup {}",
+            backup_file.display()
+        )
+    })?;
+    Ok(TerminalStartupProfileMutationBackupSummary {
+        layout_count: validation.layout_count,
+        tab_count: validation.tab_count,
+        profile_count: startup_config.profiles.len(),
+    })
+}
+
 fn restore_startup_config(
     path: &Path,
     restore_file: &Path,
@@ -19784,6 +20048,138 @@ fn config_bundle_backup_entry_json(backup: &TerminalConfigBundleBackupEntry) -> 
     })
 }
 
+#[cfg(test)]
+fn format_startup_profile_mutation_backups(
+    report: &TerminalStartupProfileMutationBackupsReport,
+) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "backup_dir: {}", report.backup_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "status: {}", report.status).expect("writing to string should not fail");
+    writeln!(&mut output, "backups: {}", report.backup_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "valid: {}", report.valid_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "invalid: {}", report.invalid_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "total_bytes: {}", report.total_byte_count)
+        .expect("writing to string should not fail");
+    for backup in &report.backups {
+        writeln!(&mut output, "- {}", backup.file_name).expect("writing to string should not fail");
+        writeln!(&mut output, "  path: {}", backup.path.display())
+            .expect("writing to string should not fail");
+        writeln!(&mut output, "  bytes: {}", backup.byte_count)
+            .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "  modified_unix_seconds: {}",
+            backup
+                .modified_unix_seconds
+                .map(|seconds| seconds.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        )
+        .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "  action: {}",
+            backup.action.as_deref().unwrap_or("unknown")
+        )
+        .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "  profile_stem: {}",
+            backup.profile_stem.as_deref().unwrap_or("unknown")
+        )
+        .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "  timestamp_unix_seconds: {}",
+            backup
+                .timestamp_unix_seconds
+                .map(|seconds| seconds.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        )
+        .expect("writing to string should not fail");
+        writeln!(&mut output, "  valid: {}", backup.valid)
+            .expect("writing to string should not fail");
+        if backup.valid {
+            writeln!(
+                &mut output,
+                "  layouts: {}",
+                backup
+                    .layout_count
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )
+            .expect("writing to string should not fail");
+            writeln!(
+                &mut output,
+                "  tabs: {}",
+                backup
+                    .tab_count
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )
+            .expect("writing to string should not fail");
+            writeln!(
+                &mut output,
+                "  profiles: {}",
+                backup
+                    .profile_count
+                    .map(|count| count.to_string())
+                    .unwrap_or_else(|| "unknown".into())
+            )
+            .expect("writing to string should not fail");
+        } else if let Some(message) = &backup.message {
+            writeln!(&mut output, "  message: {message}")
+                .expect("writing to string should not fail");
+        }
+    }
+    output
+}
+
+fn format_startup_profile_mutation_backups_json(
+    report: &TerminalStartupProfileMutationBackupsReport,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "backup_dir": report.backup_dir.display().to_string(),
+        "status": report.status,
+        "backup_count": report.backup_count,
+        "valid_count": report.valid_count,
+        "invalid_count": report.invalid_count,
+        "total_byte_count": report.total_byte_count,
+        "backups": report
+            .backups
+            .iter()
+            .map(startup_profile_mutation_backup_entry_json)
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize startup profile mutation backups as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_mutation_backup_entry_json(
+    backup: &TerminalStartupProfileMutationBackupEntry,
+) -> serde_json::Value {
+    serde_json::json!({
+        "path": backup.path.display().to_string(),
+        "file_name": backup.file_name,
+        "action": backup.action.as_deref(),
+        "profile_stem": backup.profile_stem.as_deref(),
+        "timestamp_unix_seconds": backup.timestamp_unix_seconds,
+        "suffix": backup.suffix,
+        "byte_count": backup.byte_count,
+        "modified_unix_seconds": backup.modified_unix_seconds,
+        "valid": backup.valid,
+        "layout_count": backup.layout_count,
+        "tab_count": backup.tab_count,
+        "profile_count": backup.profile_count,
+        "message": backup.message.as_deref(),
+    })
+}
+
 fn format_config_bundle_startup_summary(
     output: &mut String,
     summary: &TerminalStartupConfigBackupFileSummary,
@@ -21775,6 +22171,28 @@ fn write_config_bundle_backups_report_file(
     std_fs::write(path, report).with_context(|| {
         format!(
             "failed to write config bundle backups report {}",
+            path.display()
+        )
+    })
+}
+
+fn write_startup_profile_mutation_backups_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileMutationBackupsReport,
+) -> Result<()> {
+    let report = format_startup_profile_mutation_backups_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile mutation backups report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile mutation backups report {}",
             path.display()
         )
     })
@@ -24458,6 +24876,10 @@ fn active_terminal_profile_mutation_backup_dir() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
 }
 
+fn active_terminal_profile_mutation_backups_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_MUTATION_BACKUPS_REPORT_FILE)
+}
+
 fn terminal_profile_mutation_backup_file_name(
     action: &str,
     profile: Option<&str>,
@@ -24673,6 +25095,8 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_startup_profile_references_report);
     cx.on_action(open_startup_profile_exports_directory);
+    cx.on_action(open_startup_profile_mutation_backups_directory);
+    cx.on_action(open_startup_profile_mutation_backups_report);
     cx.on_action(create_startup_profile_action);
     cx.on_action(import_startup_profile_action);
     cx.on_action(open_settings_validation_report);
@@ -24948,6 +25372,8 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
         TerminalActionSurface::new::<OpenStartupProfileConfig>(),
         TerminalActionSurface::new::<OpenStartupProfileExportsDirectory>(),
+        TerminalActionSurface::new::<OpenStartupProfileMutationBackupsDirectory>(),
+        TerminalActionSurface::new::<OpenStartupProfileMutationBackupsReport>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
@@ -25493,6 +25919,14 @@ fn shell_menu_items_with_visibility(
     shell_items.push(MenuItem::action(
         "Open Profile Exports Directory",
         OpenStartupProfileExportsDirectory,
+    ));
+    shell_items.push(MenuItem::action(
+        "Open Profile Mutation Backups Directory",
+        OpenStartupProfileMutationBackupsDirectory,
+    ));
+    shell_items.push(MenuItem::action(
+        "Open Profile Mutation Backups Report",
+        OpenStartupProfileMutationBackupsReport,
     ));
     shell_items.extend([
         MenuItem::action(
@@ -27190,6 +27624,39 @@ fn open_startup_profile_exports_directory(_: &OpenStartupProfileExportsDirectory
     );
 }
 
+fn open_startup_profile_mutation_backups_directory(
+    _: &OpenStartupProfileMutationBackupsDirectory,
+    cx: &mut App,
+) {
+    open_directory(
+        &active_terminal_profile_mutation_backup_dir(),
+        "startup profile mutation backups",
+        cx,
+    );
+}
+
+fn open_startup_profile_mutation_backups_report(
+    _: &OpenStartupProfileMutationBackupsReport,
+    cx: &mut App,
+) {
+    let report_file = active_terminal_profile_mutation_backups_report_file();
+    let report =
+        match list_startup_profile_mutation_backups(&active_terminal_profile_mutation_backup_dir())
+        {
+            Ok(report) => report,
+            Err(error) => {
+                log::warn!("failed to list startup profile mutation backups: {error:#}");
+                return;
+            }
+        };
+    if let Err(error) = write_startup_profile_mutation_backups_report_file(&report_file, &report) {
+        log::warn!("failed to write startup profile mutation backups report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&report_file);
+}
+
 fn create_startup_profile_action(_: &CreateStartupProfile, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
@@ -28455,6 +28922,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupProfileSlotsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileReferencesReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileExportsDirectory);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileMutationBackupsDirectory);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileMutationBackupsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupToolsPicker);
         assert_command_palette_action_visible(
             &filter,
@@ -29902,6 +30371,16 @@ mod tests {
         assert_eq!(
             submenu_action_labels(&items, "Hide Profile"),
             vec!["Work Shell (work)"]
+        );
+        assert_menu_action(
+            &items,
+            "Open Profile Mutation Backups Directory",
+            "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+        );
+        assert_menu_action(
+            &items,
+            "Open Profile Mutation Backups Report",
+            "zed_terminal::OpenStartupProfileMutationBackupsReport",
         );
     }
 
@@ -31384,6 +31863,36 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenConfigBundleBackupsReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_profile_mutation_backups_directory_action_input() {
+        let action = <OpenStartupProfileMutationBackupsDirectory as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open startup profile mutation backups directory action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfileMutationBackupsDirectory>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_profile_mutation_backups_report_action_input() {
+        let action = <OpenStartupProfileMutationBackupsReport as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open startup profile mutation backups report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfileMutationBackupsReport>()
                 .is_some()
         );
     }
@@ -33441,6 +33950,8 @@ mod tests {
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfileExportsDirectory",
+            "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+            "zed_terminal::OpenStartupProfileMutationBackupsReport",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
@@ -34361,6 +34872,28 @@ mod tests {
             TerminalKeymapActionInput::None
         );
 
+        let startup_profile_mutation_backups_directory = report
+            .actions
+            .iter()
+            .find(|action| {
+                action.name == "zed_terminal::OpenStartupProfileMutationBackupsDirectory"
+            })
+            .expect("startup profile mutation backups directory action should be listed");
+        assert_eq!(
+            startup_profile_mutation_backups_directory.input,
+            TerminalKeymapActionInput::None
+        );
+
+        let startup_profile_mutation_backups_report = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileMutationBackupsReport")
+            .expect("startup profile mutation backups report action should be listed");
+        assert_eq!(
+            startup_profile_mutation_backups_report.input,
+            TerminalKeymapActionInput::None
+        );
+
         let support_tools_picker = report
             .actions
             .iter()
@@ -34583,6 +35116,36 @@ mod tests {
             TerminalKeymapActionInput::None
         );
         assert!(profile_import_report.actions[0].default_bindings.is_empty());
+
+        let profile_mutation_backups_directory_report = terminal_keymap_action_description_report(
+            cx,
+            "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+        )
+        .expect("profile mutation backups directory action description should build");
+        assert_eq!(
+            profile_mutation_backups_directory_report.actions[0].input,
+            TerminalKeymapActionInput::None
+        );
+        assert!(
+            profile_mutation_backups_directory_report.actions[0]
+                .default_bindings
+                .is_empty()
+        );
+
+        let profile_mutation_backups_report = terminal_keymap_action_description_report(
+            cx,
+            "zed_terminal::OpenStartupProfileMutationBackupsReport",
+        )
+        .expect("profile mutation backups report action description should build");
+        assert_eq!(
+            profile_mutation_backups_report.actions[0].input,
+            TerminalKeymapActionInput::None
+        );
+        assert!(
+            profile_mutation_backups_report.actions[0]
+                .default_bindings
+                .is_empty()
+        );
 
         let paste_report = terminal_keymap_action_description_report(cx, "terminal::Paste")
             .expect("paste keymap action description should build");
@@ -44991,6 +45554,137 @@ mod tests {
                 .and_then(|file_name| file_name.to_str()),
             Some("terminal-before-profile-copy-profile-work-42-1.json")
         );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn lists_startup_profile_mutation_backups_without_printing_config_contents() {
+        let root_dir = temp_test_dir();
+        let backup_dir = root_dir
+            .join("logs")
+            .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR);
+        std_fs::create_dir_all(&backup_dir).expect("failed to create backup dir");
+        let valid_backup =
+            backup_dir.join("terminal-before-profile-copy-profile-work-profile-42-1.json");
+        std_fs::write(
+            &valid_backup,
+            r#"// keep rollback comment
+{
+  "profiles": {
+    "work-profile": {
+      "display_name": "Private Work",
+      "env": {
+        "TOKEN": "do-not-log"
+      }
+    }
+  }
+}
+"#,
+        )
+        .expect("failed to write valid backup");
+        std_fs::write(backup_dir.join("not-a-startup-backup.json"), "{ broken")
+            .expect("failed to write invalid backup");
+
+        let report = list_startup_profile_mutation_backups(&backup_dir)
+            .expect("mutation backups report should build");
+
+        assert_eq!(report.backup_count, 2);
+        assert_eq!(report.valid_count, 1);
+        assert_eq!(report.invalid_count, 1);
+        assert_eq!(report.status, "warning");
+        let valid = report
+            .backups
+            .iter()
+            .find(|backup| backup.file_name.contains("copy-profile"))
+            .expect("valid backup should be listed");
+        assert!(valid.valid);
+        assert_eq!(valid.action.as_deref(), Some("copy-profile"));
+        assert_eq!(valid.profile_stem.as_deref(), Some("work-profile"));
+        assert_eq!(valid.timestamp_unix_seconds, Some(42));
+        assert_eq!(valid.suffix, Some(1));
+        assert_eq!(valid.profile_count, Some(1));
+        let invalid = report
+            .backups
+            .iter()
+            .find(|backup| backup.file_name == "not-a-startup-backup.json")
+            .expect("invalid backup should be listed");
+        assert!(!invalid.valid);
+        assert!(invalid.action.is_none());
+        assert!(invalid.message.as_deref().is_some_and(|message| {
+            message.contains("failed to parse startup profile mutation backup")
+        }));
+
+        let output = format_startup_profile_mutation_backups(&report);
+        let output_json = format_startup_profile_mutation_backups_json(&report)
+            .expect("mutation backups json should format");
+        for output in [&output, &output_json] {
+            assert!(output.contains("terminal-before-profile-copy-profile-work-profile-42-1.json"));
+            assert!(output.contains("not-a-startup-backup.json"));
+            assert!(!output.contains("Private Work"));
+            assert!(!output.contains("TOKEN"));
+            assert!(!output.contains("do-not-log"));
+            assert!(!output.contains("keep rollback comment"));
+        }
+        let json: serde_json::Value =
+            serde_json::from_str(&output_json).expect("mutation backups json should parse");
+        assert_eq!(json["status"], "warning");
+        assert_eq!(json["backup_count"], 2);
+        assert_eq!(json["valid_count"], 1);
+        assert_eq!(json["invalid_count"], 1);
+        assert!(output_json.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profile_mutation_backups_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_PROFILE_MUTATION_BACKUPS_REPORT_FILE);
+        let report = TerminalStartupProfileMutationBackupsReport {
+            backup_dir: root_dir
+                .join("logs")
+                .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR),
+            status: "ok",
+            backup_count: 1,
+            valid_count: 1,
+            invalid_count: 0,
+            total_byte_count: 123,
+            backups: vec![TerminalStartupProfileMutationBackupEntry {
+                path: PathBuf::from("terminal-before-profile-create-profile-new-profile-42.json"),
+                file_name: "terminal-before-profile-create-profile-new-profile-42.json".into(),
+                action: Some("create-profile".into()),
+                profile_stem: Some("new-profile".into()),
+                timestamp_unix_seconds: Some(42),
+                suffix: None,
+                byte_count: 123,
+                modified_unix_seconds: Some(43),
+                valid: true,
+                layout_count: Some(1),
+                tab_count: Some(1),
+                profile_count: Some(1),
+                message: None,
+            }],
+        };
+
+        write_startup_profile_mutation_backups_report_file(&report_file, &report)
+            .expect("mutation backups report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read mutation backups report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("mutation backups report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["backup_count"], 1);
+        assert_eq!(
+            json["backups"][0]["file_name"],
+            "terminal-before-profile-create-profile-new-profile-42.json"
+        );
+        assert_eq!(json["backups"][0]["action"], "create-profile");
+        assert_eq!(json["backups"][0]["profile_stem"], "new-profile");
+        assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
     }

@@ -955,6 +955,8 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfileExportsDirectory",
+            "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+            "zed_terminal::OpenStartupProfileMutationBackupsReport",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportBundleManifestFile",
@@ -1982,6 +1984,8 @@ try {
                 "zed_terminal::OpenSettingsToolsPicker",
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfileExportsDirectory",
+                "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+                "zed_terminal::OpenStartupProfileMutationBackupsReport",
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupProfileSlotsReport",
                 "zed_terminal::OpenStartupProfileReferencesReport",
@@ -2101,6 +2105,14 @@ try {
             $startupProfileExportsDirectoryAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileExportsDirectory" } | Select-Object -First 1
             if (-not $startupProfileExportsDirectoryAction -or $startupProfileExportsDirectoryAction.namespace -ne "zed_terminal" -or $startupProfileExportsDirectoryAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfileExportsDirectory no-input metadata."
+            }
+            $startupProfileMutationBackupsDirectoryAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileMutationBackupsDirectory" } | Select-Object -First 1
+            if (-not $startupProfileMutationBackupsDirectoryAction -or $startupProfileMutationBackupsDirectoryAction.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsDirectoryAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfileMutationBackupsDirectory no-input metadata."
+            }
+            $startupProfileMutationBackupsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileMutationBackupsReport" } | Select-Object -First 1
+            if (-not $startupProfileMutationBackupsReportAction -or $startupProfileMutationBackupsReportAction.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsReportAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfileMutationBackupsReport no-input metadata."
             }
             $supportToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportToolsPicker" } | Select-Object -First 1
             if (-not $supportToolsPickerAction -or $supportToolsPickerAction.namespace -ne "zed_terminal" -or $supportToolsPickerAction.input -ne "none") {
@@ -2348,6 +2360,24 @@ try {
             if ($startupProfileExportsDirectoryActionDescription.action.name -ne "zed_terminal::OpenStartupProfileExportsDirectory" -or $startupProfileExportsDirectoryActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileExportsDirectoryActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected startup profile exports directory action contract."
             }
+            $startupProfileMutationBackupsDirectoryActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-mutation-backups-directory" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupProfileMutationBackupsDirectoryActionDescription.action.name -ne "zed_terminal::OpenStartupProfileMutationBackupsDirectory" -or $startupProfileMutationBackupsDirectoryActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsDirectoryActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup profile mutation backups directory action contract."
+            }
+            $startupProfileMutationBackupsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-mutation-backups-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileMutationBackupsReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupProfileMutationBackupsReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileMutationBackupsReport" -or $startupProfileMutationBackupsReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup profile mutation backups report action contract."
+            }
             $supportToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-support-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2467,6 +2497,8 @@ try {
                 $startupToolsPickerActionDescription,
                 $startupProfileSlotsReportActionDescription,
                 $startupProfileExportsDirectoryActionDescription,
+                $startupProfileMutationBackupsDirectoryActionDescription,
+                $startupProfileMutationBackupsReportActionDescription,
                 $supportToolsPickerActionDescription,
                 $supportBundleManifestFileActionDescription,
                 $settingsToolsPickerActionDescription,
