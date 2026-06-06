@@ -665,6 +665,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigInitializationReport",
@@ -1020,6 +1021,7 @@ function Invoke-KeymapDiscoverySmoke {
     }
     foreach ($actionName in @(
         "zed_terminal::OpenActiveKeymapBindingsReport",
+        "zed_terminal::OpenConfigBundleBackupFile",
         "zed_terminal::OpenKeymapActionCatalogReport",
         "zed_terminal::OpenStartupProfileSlotsReport",
         "zed_terminal::OpenSupportBundleManifestFile",
