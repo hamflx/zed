@@ -364,6 +364,13 @@ Validate key bindings without opening a terminal window:
 .\{{BINARY}} --validate-keymap --validate-keymap-format json
 ```
 
+Validate startup configuration without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --validate-startup-config
+.\{{BINARY}} --validate-startup-config --validate-startup-config-format json
+```
+
 Back up and restore settings without opening a terminal window:
 
 ```powershell
@@ -432,6 +439,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
         ".\$BinaryFileName --validate-keymap",
         ".\$BinaryFileName --validate-keymap --validate-keymap-format json",
+        ".\$BinaryFileName --validate-startup-config",
+        ".\$BinaryFileName --validate-startup-config --validate-startup-config-format json",
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
@@ -670,6 +679,22 @@ function Assert-KeymapValidationJson {
         [int64]$Report.user_binding_count -lt 0
     ) {
         throw "zed-terminal --validate-keymap did not report expected keymap validation status"
+    }
+}
+
+function Assert-StartupConfigValidationJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$ExpectedStartupConfigFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $ExpectedStartupConfigFile -or
+        [int64]$Report.layout_count -le 0 -or
+        [int64]$Report.tab_count -le 0
+    ) {
+        throw "zed-terminal --validate-startup-config did not report expected startup config validation status"
     }
 }
 
@@ -1065,6 +1090,7 @@ function Assert-PackageManifest {
         "startup_schema",
         "keymap_schema",
         "default_keymap",
+        "startup_validation",
         "settings_validation",
         "keymap_validation",
         "settings_backup",
@@ -1263,6 +1289,16 @@ function Assert-PackageZipArchive {
         "--validate-settings-format", "json"
     ) -WorkingDirectory $extractedPackageDir
     Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
+
+    $startupValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--validate-startup-config",
+        "--validate-startup-config-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    Assert-StartupConfigValidationJson `
+        -Report ($startupValidation.Stdout | ConvertFrom-Json) `
+        -ExpectedStartupConfigFile (Join-Path $extractedConfigDir "terminal.json")
 
     $keymapValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
@@ -1486,6 +1522,16 @@ $settingsValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments
 ) -WorkingDirectory $packageDir
 Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
+$startupValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--validate-startup-config",
+    "--validate-startup-config-format", "json"
+) -WorkingDirectory $packageDir
+Assert-StartupConfigValidationJson `
+    -Report ($startupValidation.Stdout | ConvertFrom-Json) `
+    -ExpectedStartupConfigFile (Join-Path $configTemplateDir "terminal.json")
+
 $keymapValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -1570,6 +1616,7 @@ $manifest = [pscustomobject]@{
         startup_schema = "ok"
         keymap_schema = "ok"
         default_keymap = "ok"
+        startup_validation = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
