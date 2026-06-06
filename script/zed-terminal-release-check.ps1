@@ -940,6 +940,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::ExportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
@@ -949,6 +950,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
+            "zed_terminal::OpenStartupProfileExportsDirectory",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportBundleManifestFile",
@@ -1759,7 +1761,8 @@ try {
                 "--list-active-keymap-conflicts-context <CONTEXT>",
                 "--list-active-keymap-conflicts-format <text\|json>",
                 "--list-profile-references",
-                "--list-profile-references-format <text\|json>",
+                "--list-profile-references-format <LIST_PROFILE_REFERENCES_FORMAT>",
+                "Set the output format for --list-profile-references \[possible values: text, json\]",
                 "--version-info",
                 "--paths",
                 "--paths-format <text\|json>",
@@ -1960,6 +1963,7 @@ try {
                 "zed_terminal::NewTerminalTabWithProfileSlot",
                 "zed_terminal::NewTerminalWindowWithProfileSlot",
                 "zed_terminal::NewTerminalSplitWithProfileSlot",
+                "zed_terminal::ExportStartupProfile",
                 "zed_terminal::OpenConfigBundleBackupFile",
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
@@ -1969,6 +1973,7 @@ try {
                 "zed_terminal::OpenSettingsSchemaFile",
                 "zed_terminal::OpenSettingsToolsPicker",
                 "zed_terminal::OpenStartupProfileConfig",
+                "zed_terminal::OpenStartupProfileExportsDirectory",
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupProfileSlotsReport",
                 "zed_terminal::OpenStartupProfileReferencesReport",
@@ -2049,6 +2054,10 @@ try {
             if (-not $profileConfigAction -or $profileConfigAction.namespace -ne "zed_terminal" -or $profileConfigAction.input -ne "object") {
                 throw "Keymap action list did not report the expected OpenStartupProfileConfig object-input metadata."
             }
+            $profileExportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::ExportStartupProfile" } | Select-Object -First 1
+            if (-not $profileExportAction -or $profileExportAction.namespace -ne "zed_terminal" -or $profileExportAction.input -ne "object") {
+                throw "Keymap action list did not report the expected ExportStartupProfile object-input metadata."
+            }
             $profilePickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfilePicker" } | Select-Object -First 1
             if (-not $profilePickerAction -or $profilePickerAction.namespace -ne "zed_terminal" -or $profilePickerAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfilePicker no-input metadata."
@@ -2064,6 +2073,10 @@ try {
             $startupProfileReferencesReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileReferencesReport" } | Select-Object -First 1
             if (-not $startupProfileReferencesReportAction -or $startupProfileReferencesReportAction.namespace -ne "zed_terminal" -or $startupProfileReferencesReportAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfileReferencesReport no-input metadata."
+            }
+            $startupProfileExportsDirectoryAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileExportsDirectory" } | Select-Object -First 1
+            if (-not $startupProfileExportsDirectoryAction -or $startupProfileExportsDirectoryAction.namespace -ne "zed_terminal" -or $startupProfileExportsDirectoryAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfileExportsDirectory no-input metadata."
             }
             $supportToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportToolsPicker" } | Select-Object -First 1
             if (-not $supportToolsPickerAction -or $supportToolsPickerAction.namespace -ne "zed_terminal" -or $supportToolsPickerAction.input -ne "none") {
@@ -2221,6 +2234,15 @@ try {
             if ($profileConfigActionDescription.action.name -ne "zed_terminal::OpenStartupProfileConfig" -or $profileConfigActionDescription.action.namespace -ne "zed_terminal" -or $profileConfigActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile config action contract."
             }
+            $profileExportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-export" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::ExportStartupProfile",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileExportActionDescription.action.name -ne "zed_terminal::ExportStartupProfile" -or $profileExportActionDescription.action.namespace -ne "zed_terminal" -or $profileExportActionDescription.action.input -ne "object") {
+                throw "Keymap action description did not report the expected profile export action contract."
+            }
             $profilePickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-picker" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2256,6 +2278,15 @@ try {
             )
             if ($startupProfileReferencesReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileReferencesReport" -or $startupProfileReferencesReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileReferencesReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected startup profile references report action contract."
+            }
+            $startupProfileExportsDirectoryActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-exports-directory" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileExportsDirectory",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupProfileExportsDirectoryActionDescription.action.name -ne "zed_terminal::OpenStartupProfileExportsDirectory" -or $startupProfileExportsDirectoryActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileExportsDirectoryActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup profile exports directory action contract."
             }
             $supportToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-support-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
@@ -2368,9 +2399,11 @@ try {
                 $configBundleBackupsReportActionDescription,
                 $configInitializationReportActionDescription,
                 $profileConfigActionDescription,
+                $profileExportActionDescription,
                 $profilePickerActionDescription,
                 $startupToolsPickerActionDescription,
                 $startupProfileSlotsReportActionDescription,
+                $startupProfileExportsDirectoryActionDescription,
                 $supportToolsPickerActionDescription,
                 $supportBundleManifestFileActionDescription,
                 $settingsToolsPickerActionDescription,

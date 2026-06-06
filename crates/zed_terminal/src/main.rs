@@ -80,6 +80,7 @@ actions!(
         OpenStartupProfilesReport,
         OpenStartupProfileSlotsReport,
         OpenStartupProfileReferencesReport,
+        OpenStartupProfileExportsDirectory,
         OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -192,6 +193,13 @@ struct OpenStartupProfileConfig {
     profile: String,
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
+struct ExportStartupProfile {
+    profile: String,
+}
+
 const WINDOW_WIDTH: f32 = 1100.0;
 const WINDOW_HEIGHT: f32 = 720.0;
 const APP_TITLE: &str = TERMINAL_APP_NAME;
@@ -234,6 +242,9 @@ const TERMINAL_ACTIVE_KEYMAP_CONFLICTS_REPORT_FILE: &str =
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
+const TERMINAL_PROFILE_EXPORT_DIR: &str = "zed-terminal-profile-exports";
+const TERMINAL_PROFILE_EXPORT_FILE_PREFIX: &str = "zed-terminal-profile-";
+const TERMINAL_PROFILE_EXPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
 const TERMINAL_PROFILE_SLOT_SHORTCUT_COUNT: usize = 9;
 const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
@@ -24111,6 +24122,19 @@ fn active_terminal_profile_description_report_file(profile: &str) -> Result<Path
     )))
 }
 
+fn active_terminal_profile_export_dir() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_EXPORT_DIR)
+}
+
+fn active_terminal_profile_export_file(profile: &str) -> Result<PathBuf> {
+    Ok(active_terminal_profile_export_dir().join(format!(
+        "{}{}{}",
+        TERMINAL_PROFILE_EXPORT_FILE_PREFIX,
+        startup_profile_description_report_file_stem(profile)?,
+        TERMINAL_PROFILE_EXPORT_FILE_EXTENSION
+    )))
+}
+
 fn startup_profile_description_report_file_stem(profile: &str) -> Result<String> {
     let profile = normalize_startup_profile_name(profile)?;
     let mut stem = String::new();
@@ -24207,6 +24231,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_profiles_report);
     cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_startup_profile_references_report);
+    cx.on_action(open_startup_profile_exports_directory);
     cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
@@ -24216,6 +24241,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(copy_support_info_to_clipboard);
     cx.on_action(open_profile_description_report);
     cx.on_action(open_startup_profile_config);
+    cx.on_action(export_startup_profile_action);
     cx.on_action(open_log_file);
     cx.on_action(open_logs_directory);
     cx.on_action(open_themes_directory);
@@ -24425,6 +24451,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<DuplicateTerminalSplitRight>(),
         TerminalActionSurface::new::<DuplicateTerminalSplitUp>(),
         TerminalActionSurface::new::<DuplicateTerminalTab>(),
+        TerminalActionSurface::new::<ExportStartupProfile>(),
         TerminalActionSurface::new::<HideStartupProfile>(),
         TerminalActionSurface::new::<MinimizeTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindow>(),
@@ -24473,6 +24500,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupLayoutReport>(),
         TerminalActionSurface::new::<OpenStartupDescriptionReport>(),
         TerminalActionSurface::new::<OpenStartupProfileConfig>(),
+        TerminalActionSurface::new::<OpenStartupProfileExportsDirectory>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
@@ -24653,6 +24681,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Open Description Report For Profile: {label}"),
             OpenProfileDescriptionReport {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Export Profile: {label}"),
+            ExportStartupProfile {
                 profile: profile_name.clone(),
             }
             .boxed_clone(),
@@ -24923,6 +24959,16 @@ fn shell_menu_items_with_visibility(
                 )
             }),
         )));
+        shell_items.push(MenuItem::submenu(Menu::new("Export Profile").items(
+            visible_profile_entries.iter().cloned().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    ExportStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
     }
     if !hidden_profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("Show Profile").items(
@@ -24939,6 +24985,10 @@ fn shell_menu_items_with_visibility(
     shell_items.push(MenuItem::action(
         "Clear Default Profile",
         ClearDefaultStartupProfile,
+    ));
+    shell_items.push(MenuItem::action(
+        "Open Profile Exports Directory",
+        OpenStartupProfileExportsDirectory,
     ));
     shell_items.extend([
         MenuItem::action(
@@ -26603,6 +26653,14 @@ fn open_startup_profile_references_report(_: &OpenStartupProfileReferencesReport
     cx.open_with_system(&startup_profile_references_report_file);
 }
 
+fn open_startup_profile_exports_directory(_: &OpenStartupProfileExportsDirectory, cx: &mut App) {
+    open_directory(
+        &active_terminal_profile_export_dir(),
+        "startup profile exports",
+        cx,
+    );
+}
+
 fn open_settings_validation_report(_: &OpenSettingsValidationReport, cx: &mut App) {
     let validation_report_file = active_terminal_settings_validation_report_file();
     let report = validate_terminal_settings_files(
@@ -26663,6 +26721,41 @@ fn open_profile_description_report(action: &OpenProfileDescriptionReport, cx: &m
     }
 
     cx.open_with_system(&profile_description_report_file);
+}
+
+fn export_startup_profile_action(action: &ExportStartupProfile, cx: &mut App) {
+    let export_file = match active_terminal_profile_export_file(&action.profile) {
+        Ok(path) => path,
+        Err(error) => {
+            log::warn!(
+                "failed to resolve startup profile export file for {:?}: {error:#}",
+                action.profile
+            );
+            return;
+        }
+    };
+    match export_startup_profile(
+        &active_terminal_startup_config_file(),
+        &action.profile,
+        &export_file,
+    ) {
+        Ok(export) => {
+            log::info!(
+                "exported startup profile {:?} to {} ({} tabs, {} env keys)",
+                export.profile,
+                export.export_file.display(),
+                export.tab_count,
+                export.env_keys.len()
+            );
+            cx.open_with_system(&export.export_file);
+        }
+        Err(error) => {
+            log::warn!(
+                "failed to export startup profile {:?}: {error:#}",
+                action.profile
+            );
+        }
+    }
 }
 
 fn open_config_directory(_: &OpenConfigDirectory, cx: &mut App) {
@@ -27035,6 +27128,8 @@ mod tests {
         } else if let Some(action) = action.as_any().downcast_ref::<SetDefaultStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<HideStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<ExportStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<ShowStartupProfile>() {
             &action.profile
@@ -27536,6 +27631,12 @@ mod tests {
                 profile: "work".into(),
             },
         );
+        assert_command_palette_action_visible(
+            &filter,
+            &ExportStartupProfile {
+                profile: "work".into(),
+            },
+        );
         assert_command_palette_action_visible(&filter, &ToggleFullScreen);
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
@@ -27572,6 +27673,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileSlotsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileReferencesReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileExportsDirectory);
         assert_command_palette_action_visible(&filter, &OpenStartupToolsPicker);
         assert_command_palette_action_visible(
             &filter,
@@ -27712,6 +27814,7 @@ mod tests {
                 "Set Default Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Export Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Hide Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
@@ -27741,7 +27844,8 @@ mod tests {
         assert_set_default_profile_action(&result.results[6], "work");
         assert_open_profile_config_action(&result.results[7], "work");
         assert_open_profile_description_report_action(&result.results[8], "work");
-        assert_hide_profile_action(&result.results[9], "work");
+        assert_export_profile_action(&result.results[9], "work");
+        assert_hide_profile_action(&result.results[10], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -27790,13 +27894,15 @@ mod tests {
                 "Set Default Profile: Work Shell (work)",
                 "Open Config For Profile: Work Shell (work)",
                 "Open Description Report For Profile: Work Shell (work)",
+                "Export Profile: Work Shell (work)",
                 "Hide Profile: Work Shell (work)",
             ]
         );
 
         assert_show_profile_action(&result.results[0], "hidden");
         assert_profile_tab_action(&result.results[1], "work");
-        assert_hide_profile_action(&result.results[10], "work");
+        assert_export_profile_action(&result.results[10], "work");
+        assert_hide_profile_action(&result.results[11], "work");
     }
 
     #[test]
@@ -27937,7 +28043,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 10);
+        assert_eq!(result.results.len(), 11);
         assert!(
             result
                 .results
@@ -27964,7 +28070,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 10);
+        assert_eq!(description_result.results.len(), 11);
         assert!(
             description_result
                 .results
@@ -27974,7 +28080,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 10);
+        assert_eq!(icon_result.results.len(), 11);
         assert!(
             icon_result
                 .results
@@ -27984,7 +28090,7 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 10);
+        assert_eq!(color_result.results.len(), 11);
         assert!(
             color_result
                 .results
@@ -28053,6 +28159,36 @@ mod tests {
             ]
         );
         assert_open_profile_description_report_action(&result.results[0], "work");
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_searches_profile_export_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "export",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+                reference_count: 0,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Export Profile: Work Shell (work) - Project shell - icon terminal"]
+        );
+        assert_export_profile_action(&result.results[0], "work");
     }
 
     #[test]
@@ -28205,6 +28341,18 @@ mod tests {
             .as_any()
             .downcast_ref::<OpenProfileDescriptionReport>()
             .expect("expected open profile description report action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_export_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<ExportStartupProfile>()
+            .expect("expected export startup profile action");
         assert_eq!(action.profile, expected_profile);
     }
 
@@ -28546,6 +28694,11 @@ mod tests {
             "Open Profile Picker...",
             "zed_terminal::OpenStartupProfilePicker",
         );
+        assert_menu_action(
+            &items,
+            "Open Profile Exports Directory",
+            "zed_terminal::OpenStartupProfileExportsDirectory",
+        );
     }
 
     #[test]
@@ -28809,6 +28962,12 @@ mod tests {
         assert_profile_submenu_action::<HideStartupProfile>(
             &items,
             "Hide Profile",
+            "Work Shell (work)",
+            "work",
+        );
+        assert_profile_submenu_action::<ExportStartupProfile>(
+            &items,
+            "Export Profile",
             "Work Shell (work)",
             "work",
         );
@@ -29633,6 +29792,32 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown startup profile config action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_export_startup_profile_action_input() {
+        let action = <ExportStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("export startup profile action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<ExportStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &ExportStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <ExportStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown startup profile export action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -30834,6 +31019,24 @@ mod tests {
             "-{:08x}",
             startup_profile_description_report_file_hash(&long_profile)
         )));
+    }
+
+    #[test]
+    fn startup_profile_export_files_use_dedicated_export_names() {
+        let export_file = active_terminal_profile_export_dir().join(format!(
+            "{}{}{}",
+            TERMINAL_PROFILE_EXPORT_FILE_PREFIX,
+            startup_profile_description_report_file_stem(" prod/env ")
+                .expect("profile file stem should resolve"),
+            TERMINAL_PROFILE_EXPORT_FILE_EXTENSION
+        ));
+
+        assert!(
+            export_file.ends_with(Path::new(TERMINAL_PROFILE_EXPORT_DIR).join(format!(
+                "zed-terminal-profile-prod_env-{:08x}.json",
+                startup_profile_description_report_file_hash("prod/env")
+            )))
+        );
     }
 
     #[test]
@@ -32245,12 +32448,14 @@ mod tests {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::ExportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
+            "zed_terminal::OpenStartupProfileExportsDirectory",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
@@ -33062,6 +33267,13 @@ mod tests {
             .expect("profile config action should be listed");
         assert_eq!(profile_config.input, TerminalKeymapActionInput::Object);
 
+        let profile_export = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::ExportStartupProfile")
+            .expect("profile export action should be listed");
+        assert_eq!(profile_export.input, TerminalKeymapActionInput::Object);
+
         let config_bundle_backup_file = report
             .actions
             .iter()
@@ -33123,6 +33335,16 @@ mod tests {
             .expect("startup profile references report action should be listed");
         assert_eq!(
             startup_profile_references_report.input,
+            TerminalKeymapActionInput::None
+        );
+
+        let startup_profile_exports_directory = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileExportsDirectory")
+            .expect("startup profile exports directory action should be listed");
+        assert_eq!(
+            startup_profile_exports_directory.input,
             TerminalKeymapActionInput::None
         );
 
@@ -33303,6 +33525,15 @@ mod tests {
             profile_config_report.actions[0].input,
             TerminalKeymapActionInput::Object
         );
+
+        let profile_export_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::ExportStartupProfile")
+                .expect("profile export action description should build");
+        assert_eq!(
+            profile_export_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(profile_export_report.actions[0].default_bindings.is_empty());
 
         let paste_report = terminal_keymap_action_description_report(cx, "terminal::Paste")
             .expect("paste keymap action description should build");
