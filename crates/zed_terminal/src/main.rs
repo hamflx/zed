@@ -359,6 +359,16 @@ Startup config backup and restore options:
       --print-settings-schema
           Print the JSON Schema for settings.json without opening a terminal window
 
+Profile mutation backup options:
+      --list-profile-mutation-backups
+          List startup profile mutation rollback backups in the active logs directory without opening a terminal window
+      --list-profile-mutation-backups-format <text|json>
+          Set the output format for --list-profile-mutation-backups
+      --restore-latest-profile-mutation-backup
+          Restore terminal.json from the newest valid startup profile mutation backup without opening a terminal window
+      --restore-latest-profile-mutation-backup-format <text|json>
+          Set the output format for --restore-latest-profile-mutation-backup
+
 Settings backup and restore options:
       --backup-settings --backup-settings-file <FILE>
           Back up settings.json and global_settings.json to a portable backup file without opening a terminal window
@@ -439,7 +449,7 @@ Version metadata options:
       --portable
           Use config and data directories next to the zed-terminal binary
 
-Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined with --user-data-dir and --config-dir only."
+Profile transfer, startup config file, profile mutation backup, keymap file, version metadata, and path inspection options may be combined with --user-data-dir and --config-dir only."
 )]
 #[command(group(
     ArgGroup::new("default_profile_command")
@@ -3359,6 +3369,12 @@ enum TerminalConfigBundleCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalProfileMutationBackupCommand {
+    List(TerminalProfileMutationBackupsCommand),
+    RestoreLatest(TerminalProfileMutationBackupRestoreCommand),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalSupportBundleCommand {
     path_options: TerminalPathOptions,
     bundle_dir: PathBuf,
@@ -3397,6 +3413,18 @@ struct TerminalConfigBundleRestoreCommand {
 struct TerminalConfigBundleBackupsCommand {
     path_options: TerminalPathOptions,
     format: TerminalConfigBundleBackupsOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalProfileMutationBackupsCommand {
+    path_options: TerminalPathOptions,
+    format: TerminalProfileMutationBackupsOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalProfileMutationBackupRestoreCommand {
+    path_options: TerminalPathOptions,
+    format: TerminalProfileMutationRestoreOutputFormat,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5550,6 +5578,20 @@ enum TerminalConfigBundleBackupsOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalProfileMutationBackupsOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalProfileMutationRestoreOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalSupportBundleOutputFormat {
     #[default]
     Text,
@@ -7089,6 +7131,72 @@ impl TerminalStartupConfigFileCommand {
             Self::CheckBackup(command) => &command.path_options,
             Self::DiffBackup(command) => &command.path_options,
             Self::Restore(command) => &command.path_options,
+        }
+    }
+}
+
+impl TerminalProfileMutationBackupCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalProfileMutationBackupParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--list-profile-mutation-backups" => {
+                    if inline_value.is_some() {
+                        bail!("--list-profile-mutation-backups does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--list-profile-mutation-backups")?);
+                }
+                "--list-profile-mutation-backups-format" => {
+                    parser.list_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_profile_mutation_backup_option = true;
+                }
+                "--restore-latest-profile-mutation-backup" => {
+                    if inline_value.is_some() {
+                        bail!("--restore-latest-profile-mutation-backup does not accept a value");
+                    }
+                    parser.mode =
+                        Some(parser.mode_name("--restore-latest-profile-mutation-backup")?);
+                }
+                "--restore-latest-profile-mutation-backup-format" => {
+                    parser.restore_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_profile_mutation_backup_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::List(command) => &command.path_options,
+            Self::RestoreLatest(command) => &command.path_options,
         }
     }
 }
@@ -8712,6 +8820,102 @@ impl TerminalStartupConfigFileParser {
 }
 
 #[derive(Default)]
+struct TerminalProfileMutationBackupParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_profile_mutation_backup_option: bool,
+    pre_profile_mutation_backup_arg: Option<String>,
+    list_format: Option<String>,
+    restore_format: Option<String>,
+}
+
+impl TerminalProfileMutationBackupParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_profile_mutation_backup_option = true;
+        if let Some(arg) = &self.pre_profile_mutation_backup_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_profile_mutation_backup_option {
+            let mode = self
+                .mode
+                .unwrap_or("terminal profile mutation backup command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_profile_mutation_backup_arg.is_none() {
+            self.pre_profile_mutation_backup_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalProfileMutationBackupCommand>> {
+        if !self.seen_profile_mutation_backup_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--list-profile-mutation-backups") => {
+                if self.restore_format.is_some() {
+                    bail!(
+                        "--list-profile-mutation-backups cannot be used with other profile mutation backup options"
+                    );
+                }
+                Ok(Some(TerminalProfileMutationBackupCommand::List(
+                    TerminalProfileMutationBackupsCommand {
+                        path_options,
+                        format: parse_profile_mutation_backups_output_format(
+                            "--list-profile-mutation-backups-format",
+                            self.list_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some("--restore-latest-profile-mutation-backup") => {
+                if self.list_format.is_some() {
+                    bail!(
+                        "--restore-latest-profile-mutation-backup cannot be used with other profile mutation backup options"
+                    );
+                }
+                Ok(Some(TerminalProfileMutationBackupCommand::RestoreLatest(
+                    TerminalProfileMutationBackupRestoreCommand {
+                        path_options,
+                        format: parse_profile_mutation_restore_output_format(
+                            "--restore-latest-profile-mutation-backup-format",
+                            self.restore_format.as_deref(),
+                        )?,
+                    },
+                )))
+            }
+            Some(mode) => bail!("unsupported terminal profile mutation backup mode: {mode}"),
+            None => {
+                if self.list_format.is_some() {
+                    bail!(
+                        "--list-profile-mutation-backups-format requires --list-profile-mutation-backups"
+                    );
+                }
+                if self.restore_format.is_some() {
+                    bail!(
+                        "--restore-latest-profile-mutation-backup-format requires --restore-latest-profile-mutation-backup"
+                    );
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
 struct TerminalProfileTransferParser {
     path_options: TerminalPathCliOptions,
     mode: Option<&'static str>,
@@ -9812,6 +10016,18 @@ fn main() {
         }
     }
 
+    match TerminalProfileMutationBackupCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_profile_mutation_backup_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalKeymapDiscoveryCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_keymap_discovery_command(command);
@@ -10223,6 +10439,28 @@ fn run_terminal_startup_config_file_command(command: TerminalStartupConfigFileCo
             if let Err(error) = print_startup_config_restore(&command.restore_file, command.format)
             {
                 eprintln!("failed to restore terminal startup config: {error:#}");
+                process::exit(2);
+            }
+        }
+    }
+}
+
+fn run_terminal_profile_mutation_backup_command(command: TerminalProfileMutationBackupCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    match command {
+        TerminalProfileMutationBackupCommand::List(command) => {
+            if let Err(error) = print_startup_profile_mutation_backups(command.format) {
+                eprintln!("failed to list startup profile mutation backups: {error:#}");
+                process::exit(2);
+            }
+        }
+        TerminalProfileMutationBackupCommand::RestoreLatest(command) => {
+            if let Err(error) = print_startup_profile_mutation_restore_latest(command.format) {
+                eprintln!("failed to restore latest startup profile mutation backup: {error:#}");
                 process::exit(2);
             }
         }
@@ -11393,6 +11631,43 @@ fn print_startup_profile_import(
         }
         TerminalStartupProfileImportOutputFormat::Json => {
             print!("{}", format_startup_profile_import_json(&import)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_mutation_backups(
+    format: TerminalProfileMutationBackupsOutputFormat,
+) -> Result<()> {
+    let report =
+        list_startup_profile_mutation_backups(&active_terminal_profile_mutation_backup_dir())?;
+    match format {
+        TerminalProfileMutationBackupsOutputFormat::Text => {
+            print!("{}", format_startup_profile_mutation_backups(&report))
+        }
+        TerminalProfileMutationBackupsOutputFormat::Json => {
+            print!("{}", format_startup_profile_mutation_backups_json(&report)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_mutation_restore_latest(
+    format: TerminalProfileMutationRestoreOutputFormat,
+) -> Result<()> {
+    let restore = restore_latest_startup_profile_mutation_backup(
+        &active_terminal_startup_config_file(),
+        &active_terminal_profile_mutation_backup_dir(),
+    )?;
+    match format {
+        TerminalProfileMutationRestoreOutputFormat::Text => {
+            print!("{}", format_startup_profile_mutation_restore(&restore))
+        }
+        TerminalProfileMutationRestoreOutputFormat::Json => {
+            print!(
+                "{}",
+                format_startup_profile_mutation_restore_json(&restore)?
+            )
         }
     }
     Ok(())
@@ -12654,6 +12929,28 @@ fn parse_config_bundle_backups_output_format(
     match format.unwrap_or("text") {
         "text" => Ok(TerminalConfigBundleBackupsOutputFormat::Text),
         "json" => Ok(TerminalConfigBundleBackupsOutputFormat::Json),
+        format => bail!("unsupported {flag} {format:?}; expected text or json"),
+    }
+}
+
+fn parse_profile_mutation_backups_output_format(
+    flag: &str,
+    format: Option<&str>,
+) -> Result<TerminalProfileMutationBackupsOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalProfileMutationBackupsOutputFormat::Text),
+        "json" => Ok(TerminalProfileMutationBackupsOutputFormat::Json),
+        format => bail!("unsupported {flag} {format:?}; expected text or json"),
+    }
+}
+
+fn parse_profile_mutation_restore_output_format(
+    flag: &str,
+    format: Option<&str>,
+) -> Result<TerminalProfileMutationRestoreOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalProfileMutationRestoreOutputFormat::Text),
+        "json" => Ok(TerminalProfileMutationRestoreOutputFormat::Json),
         format => bail!("unsupported {flag} {format:?}; expected text or json"),
     }
 }
@@ -20105,7 +20402,6 @@ fn config_bundle_backup_entry_json(backup: &TerminalConfigBundleBackupEntry) -> 
     })
 }
 
-#[cfg(test)]
 fn format_startup_profile_mutation_backups(
     report: &TerminalStartupProfileMutationBackupsReport,
 ) -> String {
@@ -20235,6 +20531,58 @@ fn startup_profile_mutation_backup_entry_json(
         "profile_count": backup.profile_count,
         "message": backup.message.as_deref(),
     })
+}
+
+fn format_startup_profile_mutation_restore(
+    restore: &TerminalStartupProfileMutationRestore,
+) -> String {
+    let mut output = String::new();
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        restore.restore.path.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "restore_file: {}",
+        restore.restore.restore_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "bytes: {}", restore.restore.byte_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "layouts: {}", restore.restore.layout_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "tabs: {}", restore.restore.tab_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "profiles: {}", restore.restore.profile_count)
+        .expect("writing to string should not fail");
+    match restore.pre_restore_backup.as_ref() {
+        Some(backup) => {
+            writeln!(&mut output, "pre_restore_backup: yes")
+                .expect("writing to string should not fail");
+            writeln!(&mut output, "  action: {}", backup.action)
+                .expect("writing to string should not fail");
+            writeln!(
+                &mut output,
+                "  startup_config_file: {}",
+                backup.path.display()
+            )
+            .expect("writing to string should not fail");
+            writeln!(
+                &mut output,
+                "  backup_file: {}",
+                backup.backup_file.display()
+            )
+            .expect("writing to string should not fail");
+            writeln!(&mut output, "  bytes: {}", backup.byte_count)
+                .expect("writing to string should not fail");
+        }
+        None => writeln!(&mut output, "pre_restore_backup: none")
+            .expect("writing to string should not fail"),
+    }
+    output
 }
 
 fn format_startup_profile_mutation_restore_json(
@@ -49356,6 +49704,11 @@ mod tests {
         assert!(help.contains("--validate-settings"));
         assert!(help.contains("--validate-settings-format <text|json>"));
         assert!(help.contains("--print-settings-schema"));
+        assert!(help.contains("Profile mutation backup options:"));
+        assert!(help.contains("--list-profile-mutation-backups"));
+        assert!(help.contains("--list-profile-mutation-backups-format <text|json>"));
+        assert!(help.contains("--restore-latest-profile-mutation-backup"));
+        assert!(help.contains("--restore-latest-profile-mutation-backup-format <text|json>"));
         assert!(help.contains("Settings backup and restore options:"));
         assert!(help.contains("--backup-settings --backup-settings-file <FILE>"));
         assert!(help.contains("--backup-settings-format <text|json>"));
@@ -49399,7 +49752,7 @@ mod tests {
         assert!(help.contains("Use config and data directories next to the zed-terminal binary"));
         let normalized_help = help.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(normalized_help.contains(
-            "Profile transfer, startup config file, keymap file, version metadata, and path inspection options may be combined"
+            "Profile transfer, startup config file, profile mutation backup, keymap file, version metadata, and path inspection options may be combined"
         ));
         assert!(help.contains("--user-data-dir"));
         assert!(help.contains("and --config-dir only."));
@@ -49626,6 +49979,140 @@ mod tests {
             command.format,
             TerminalStartupConfigBackupDiffOutputFormat::Json
         );
+    }
+
+    #[test]
+    fn profile_mutation_backup_cli_formats_are_parsed_early() {
+        let data_dir = PathBuf::from("data");
+        let config_dir = PathBuf::from("config");
+
+        let command = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--list-profile-mutation-backups",
+            "--list-profile-mutation-backups-format",
+            "json",
+        ])
+        .expect("list profile mutation backups json mode should parse")
+        .expect("list profile mutation backups json mode should resolve");
+        let TerminalProfileMutationBackupCommand::List(command) = command else {
+            panic!("expected list profile mutation backups mode");
+        };
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+        assert_eq!(
+            command.format,
+            TerminalProfileMutationBackupsOutputFormat::Json
+        );
+
+        let command = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--restore-latest-profile-mutation-backup",
+            "--restore-latest-profile-mutation-backup-format=json",
+        ])
+        .expect("restore latest profile mutation backup json mode should parse")
+        .expect("restore latest profile mutation backup json mode should resolve");
+        let TerminalProfileMutationBackupCommand::RestoreLatest(command) = command else {
+            panic!("expected restore latest profile mutation backup mode");
+        };
+        assert_eq!(
+            command.format,
+            TerminalProfileMutationRestoreOutputFormat::Json
+        );
+
+        let command = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--restore-latest-profile-mutation-backup",
+        ])
+        .expect("restore latest profile mutation backup text mode should parse")
+        .expect("restore latest profile mutation backup text mode should resolve");
+        let TerminalProfileMutationBackupCommand::RestoreLatest(command) = command else {
+            panic!("expected restore latest profile mutation backup mode");
+        };
+        assert_eq!(
+            command.format,
+            TerminalProfileMutationRestoreOutputFormat::Text
+        );
+    }
+
+    #[test]
+    fn profile_mutation_backup_cli_rejects_startup_only_and_other_modes() {
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--list-profile-mutation-backups-format",
+            "json",
+        ])
+        .expect_err("list profile mutation backups format should require list mode");
+        assert!(format!("{error:#}").contains(
+            "--list-profile-mutation-backups-format requires --list-profile-mutation-backups"
+        ));
+
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--restore-latest-profile-mutation-backup-format",
+            "json",
+        ])
+        .expect_err("restore latest profile mutation backup format should require restore mode");
+        assert!(format!("{error:#}").contains(
+            "--restore-latest-profile-mutation-backup-format requires --restore-latest-profile-mutation-backup"
+        ));
+
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--list-profile-mutation-backups",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with profile mutation backups");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--list-profile-mutation-backups",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile mutation backups");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--list-profile-mutation-backups",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup command should conflict with profile mutation backups");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--list-profile-mutation-backups",
+            "--restore-latest-profile-mutation-backup",
+        ])
+        .expect_err("list and restore profile mutation backup modes should conflict");
+        assert!(
+            format!("{error:#}").contains(
+                "--list-profile-mutation-backups cannot be used with --restore-latest-profile-mutation-backup"
+            )
+        );
+
+        let error = TerminalProfileMutationBackupCommand::from_args([
+            "zed-terminal",
+            "--restore-latest-profile-mutation-backup",
+            "--list-profile-mutation-backups-format",
+            "json",
+        ])
+        .expect_err("restore profile mutation backup should reject list format");
+        assert!(
+            format!("{error:#}")
+                .contains("cannot be used with other profile mutation backup options")
+        );
+
+        std_fs::remove_dir_all(dir).ok();
     }
 
     #[test]

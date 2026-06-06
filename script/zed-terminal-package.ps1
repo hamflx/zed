@@ -455,6 +455,13 @@ Back up, compare, and restore startup configuration without opening a terminal w
 .\{{BINARY}} --restore-startup-config --restore-startup-config-file terminal.backup.json
 ```
 
+Inspect and restore profile mutation rollback backups without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --list-profile-mutation-backups --list-profile-mutation-backups-format json
+.\{{BINARY}} --restore-latest-profile-mutation-backup --restore-latest-profile-mutation-backup-format json
+```
+
 Back up, compare, and restore key bindings without opening a terminal window:
 
 ```powershell
@@ -489,7 +496,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore/list, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, profile mutation backup list/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore/list, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -548,6 +555,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --check-startup-config-backup --check-startup-config-backup-file terminal.backup.json",
         ".\$BinaryFileName --diff-startup-config-backup --diff-startup-config-backup-file terminal.backup.json",
         ".\$BinaryFileName --restore-startup-config --restore-startup-config-file terminal.backup.json",
+        ".\$BinaryFileName --list-profile-mutation-backups --list-profile-mutation-backups-format json",
+        ".\$BinaryFileName --restore-latest-profile-mutation-backup --restore-latest-profile-mutation-backup-format json",
         ".\$BinaryFileName --backup-keymap --backup-keymap-file keymap.backup.json",
         ".\$BinaryFileName --check-keymap-backup --check-keymap-backup-file keymap.backup.json",
         ".\$BinaryFileName --diff-keymap-backup --diff-keymap-backup-file keymap.backup.json",
@@ -1508,6 +1517,19 @@ function Assert-StartupConfigRestoreJson {
     }
 }
 
+function Assert-ProfileMutationBackupOutputRedacted {
+    param(
+        [Parameter(Mandatory = $true)][string]$Output,
+        [Parameter(Mandatory = $true)][string[]]$SensitiveText
+    )
+
+    foreach ($text in $SensitiveText) {
+        if ($Output.Contains($text)) {
+            throw "zed-terminal profile mutation backup output leaked config contents: $text"
+        }
+    }
+}
+
 function Assert-KeymapBackupJson {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -2106,6 +2128,93 @@ function Invoke-StartupConfigBackupSmoke {
     Assert-StartupConfigBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile $true
 }
 
+function Invoke-ProfileMutationBackupSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $backupDir = Join-Path $DataDir "logs\zed-terminal-profile-mutation-backups"
+    New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+
+    $originalStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
+    $backupFile = Join-Path $backupDir "terminal-before-profile-copy-profile-package-smoke-42.json"
+    $backupPayload = @'
+{
+  "profiles": {
+    "package-smoke": {
+      "display_name": "Package Secret Profile",
+      "env": {
+        "PACKAGE_PROFILE_MUTATION_SECRET": "do-not-log"
+      }
+    }
+  }
+}
+'@
+    Set-Content -LiteralPath $backupFile -Value $backupPayload -Encoding ascii -NoNewline
+
+    $list = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-profile-mutation-backups",
+        "--list-profile-mutation-backups-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $listJson = $list.Stdout | ConvertFrom-Json
+    $listBackups = @($listJson.backups)
+    $listBackup = $listBackups | Where-Object { $_.path -eq $backupFile } | Select-Object -First 1
+    if (
+        ($listJson.status -ne "ok" -and $listJson.status -ne "warning") -or
+        [int64]$listJson.backup_count -lt 1 -or
+        [int64]$listJson.valid_count -lt 1 -or
+        -not $listBackup -or
+        $listBackup.valid -ne $true -or
+        $listBackup.file_name -ne "terminal-before-profile-copy-profile-package-smoke-42.json" -or
+        $listBackup.action -ne "copy-profile" -or
+        $listBackup.profile_stem -ne "package-smoke" -or
+        [int64]$listBackup.profile_count -ne 1
+    ) {
+        throw "zed-terminal --list-profile-mutation-backups did not report the expected rollback backup metadata"
+    }
+    Assert-ProfileMutationBackupOutputRedacted `
+        -Output $list.Stdout `
+        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log")
+
+    Set-Content -LiteralPath $startupConfigFile -Value "{ broken startup config" -NoNewline
+    $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-latest-profile-mutation-backup",
+        "--restore-latest-profile-mutation-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $restoreJson = $restore.Stdout | ConvertFrom-Json
+    if (
+        $restoreJson.status -ne "ok" -or
+        $restoreJson.startup_config_file -ne $startupConfigFile -or
+        $restoreJson.restore_file -ne $backupFile -or
+        [int64]$restoreJson.byte_count -le 0 -or
+        [int64]$restoreJson.profile_count -ne 1 -or
+        -not $restoreJson.pre_restore_backup -or
+        $restoreJson.pre_restore_backup.action -ne "restore-profile-mutation-backup" -or
+        $restoreJson.pre_restore_backup.startup_config_file -ne $startupConfigFile -or
+        [int64]$restoreJson.pre_restore_backup.byte_count -le 0
+    ) {
+        throw "zed-terminal --restore-latest-profile-mutation-backup did not report the expected restore metadata"
+    }
+    Assert-ProfileMutationBackupOutputRedacted `
+        -Output $restore.Stdout `
+        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log")
+
+    $restoredStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
+    if ($restoredStartupConfigText -ne $backupPayload) {
+        throw "zed-terminal --restore-latest-profile-mutation-backup did not restore terminal.json from the rollback backup"
+    }
+
+    Set-Content -LiteralPath $startupConfigFile -Value $originalStartupConfigText -NoNewline
+}
+
 function Invoke-KeymapBackupSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
@@ -2477,6 +2586,7 @@ function Assert-PackageManifest {
         "active_keymap_discovery",
         "settings_backup",
         "startup_backup",
+        "profile_mutation_backup",
         "keymap_backup",
         "config_bundle",
         "doctor",
@@ -2741,6 +2851,12 @@ function Assert-PackageZipArchive {
         -DataDir $extractedDataDir `
         -ConfigDir $extractedConfigDir `
         -BackupFile (Join-Path $ValidationRoot "zip-terminal.backup.json") `
+        -WorkingDirectory $extractedPackageDir
+
+    Invoke-ProfileMutationBackupSmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
         -WorkingDirectory $extractedPackageDir
 
     Invoke-KeymapBackupSmoke `
@@ -3035,6 +3151,12 @@ Invoke-StartupConfigBackupSmoke `
     -BackupFile (Join-Path $runDir "terminal.backup.json") `
     -WorkingDirectory $packageDir
 
+Invoke-ProfileMutationBackupSmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -WorkingDirectory $packageDir
+
 Invoke-KeymapBackupSmoke `
     -Binary $packagedBinary `
     -DataDir $validationDataDir `
@@ -3123,6 +3245,7 @@ $manifest = [pscustomobject]@{
         active_keymap_discovery = "ok"
         settings_backup = "ok"
         startup_backup = "ok"
+        profile_mutation_backup = "ok"
         keymap_backup = "ok"
         config_bundle = "ok"
         doctor = "ok"
