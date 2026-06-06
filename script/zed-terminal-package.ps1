@@ -923,6 +923,13 @@ function Assert-StartupDiscoveryJson {
         throw "zed-terminal --list-profiles did not report expected startup profile discovery status"
     }
 
+    for ($index = 0; $index -lt $profiles.Count; $index++) {
+        $profile = $profiles[$index]
+        if ($profile.hidden -eq $true -or [int64]$profile.visible_slot -ne ($index + 1)) {
+            throw "zed-terminal --list-profiles did not report stable visible profile slot metadata"
+        }
+    }
+
     if (
         [int64]$StartupDescription.profile_count -ne [int64]$ProfileList.total_count -or
         [int64]$StartupDescription.visible_profile_count -ne [int64]$ProfileList.visible_count -or

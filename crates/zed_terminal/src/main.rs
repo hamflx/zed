@@ -3613,6 +3613,7 @@ struct TerminalStartupProfileSummary {
     description: Option<String>,
     icon: Option<String>,
     color: Option<String>,
+    visible_slot: Option<usize>,
     hidden: bool,
     is_default: bool,
     tab_count: usize,
@@ -8920,12 +8921,19 @@ impl TerminalStartupConfig {
     }
 
     fn profile_summaries(&self, include_hidden: bool) -> Vec<TerminalStartupProfileSummary> {
+        let mut visible_slot = 0;
         self.profiles
             .iter()
             .filter_map(|(name, profile)| {
                 if profile.hidden && !include_hidden {
                     return None;
                 }
+                let profile_visible_slot = if profile.hidden {
+                    None
+                } else {
+                    visible_slot += 1;
+                    Some(visible_slot)
+                };
 
                 Some(TerminalStartupProfileSummary {
                     name: name.clone(),
@@ -8934,6 +8942,7 @@ impl TerminalStartupConfig {
                     description: normalize_profile_text(profile.description.as_deref()),
                     icon: normalize_profile_text(profile.icon.as_deref()),
                     color: normalize_profile_text(profile.color.as_deref()),
+                    visible_slot: profile_visible_slot,
                     hidden: profile.hidden,
                     is_default: self.default_profile.as_deref() == Some(name.as_str()),
                     tab_count: 1 + profile.tabs.len(),
@@ -17190,6 +17199,10 @@ fn format_startup_profiles_report(report: &TerminalStartupProfileListReport) -> 
 
         writeln!(&mut output, "- {}{}", profile.name, badges)
             .expect("writing to string should not fail");
+        if let Some(visible_slot) = profile.visible_slot {
+            writeln!(&mut output, "  visible_slot: {visible_slot}")
+                .expect("writing to string should not fail");
+        }
         writeln!(&mut output, "  display_name: {}", profile.display_name)
             .expect("writing to string should not fail");
         if let Some(description) = &profile.description {
@@ -17237,6 +17250,7 @@ fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serd
         "description": profile.description.as_deref(),
         "icon": profile.icon.as_deref(),
         "color": profile.color.as_deref(),
+        "visible_slot": profile.visible_slot,
         "hidden": profile.hidden,
         "is_default": profile.is_default,
         "tab_count": profile.tab_count,
@@ -25867,6 +25881,7 @@ mod tests {
                 description: Some("Project shell".into()),
                 icon: Some("terminal".into()),
                 color: Some("#0f766e".into()),
+                visible_slot: Some(1),
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
@@ -26063,6 +26078,7 @@ mod tests {
                 description: None,
                 icon: None,
                 color: None,
+                visible_slot: Some(1),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26074,6 +26090,7 @@ mod tests {
                 description: None,
                 icon: None,
                 color: None,
+                visible_slot: Some(2),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26100,6 +26117,7 @@ mod tests {
             description: Some("Production deploy".into()),
             icon: Some("rocket".into()),
             color: Some("#dc2626".into()),
+            visible_slot: Some(1),
             hidden: false,
             is_default: false,
             tab_count: 1,
@@ -26147,6 +26165,7 @@ mod tests {
                 description: Some("Project shell".into()),
                 icon: Some("terminal".into()),
                 color: None,
+                visible_slot: Some(1),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26175,6 +26194,7 @@ mod tests {
                 description: Some("Project shell".into()),
                 icon: Some("terminal".into()),
                 color: None,
+                visible_slot: Some(1),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26583,6 +26603,7 @@ mod tests {
                 description: Some("Project startup shell".into()),
                 icon: Some("terminal".into()),
                 color: Some("#0f766e".into()),
+                visible_slot: Some(1),
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
@@ -26593,11 +26614,18 @@ mod tests {
             config
                 .profile_summaries(true)
                 .into_iter()
-                .map(|profile| (profile.name, profile.display_name, profile.hidden))
+                .map(|profile| {
+                    (
+                        profile.name,
+                        profile.display_name,
+                        profile.hidden,
+                        profile.visible_slot,
+                    )
+                })
                 .collect::<Vec<_>>(),
             vec![
-                ("hidden".into(), "hidden".into(), true),
-                ("work".into(), "Work Shell".into(), false),
+                ("hidden".into(), "hidden".into(), true, None),
+                ("work".into(), "Work Shell".into(), false, Some(1)),
             ]
         );
     }
@@ -28331,6 +28359,7 @@ mod tests {
         assert!(visible.contains("startup_config_file: terminal.json"));
         assert!(visible.contains("profiles: 1 visible, 1 hidden"));
         assert!(visible.contains("- work (default)"));
+        assert!(visible.contains("  visible_slot: 1"));
         assert!(visible.contains("  display_name: Work Shell"));
         assert!(visible.contains("  description: Project startup shell"));
         assert!(visible.contains("  icon: terminal"));
@@ -28342,6 +28371,7 @@ mod tests {
         let all = format_startup_profiles(&config, Path::new("terminal.json"), true);
 
         assert!(all.contains("- secret (hidden)"));
+        assert!(!all.contains("- secret (hidden)\n  visible_slot:"));
         assert!(all.contains("  display_name: Secret"));
         assert!(all.contains("  references: 0"));
     }
@@ -28362,12 +28392,14 @@ mod tests {
         assert_eq!(json["hidden_count"], 1);
         assert_eq!(json["profiles"][0]["name"], "secret");
         assert_eq!(json["profiles"][0]["display_name"], "Secret");
+        assert_eq!(json["profiles"][0]["visible_slot"], serde_json::Value::Null);
         assert_eq!(json["profiles"][0]["hidden"], true);
         assert_eq!(json["profiles"][0]["is_default"], false);
         assert_eq!(json["profiles"][0]["tab_count"], 1);
         assert_eq!(json["profiles"][0]["reference_count"], 0);
         assert_eq!(json["profiles"][1]["name"], "work");
         assert_eq!(json["profiles"][1]["display_name"], "Work Shell");
+        assert_eq!(json["profiles"][1]["visible_slot"], 1);
         assert_eq!(json["profiles"][1]["description"], "Project startup shell");
         assert_eq!(json["profiles"][1]["icon"], "terminal");
         assert_eq!(json["profiles"][1]["color"], "#0f766e");
@@ -49617,6 +49649,7 @@ mod tests {
                 description: None,
                 icon: None,
                 color: None,
+                visible_slot: None,
                 hidden: true,
                 is_default: false,
                 tab_count: 1,

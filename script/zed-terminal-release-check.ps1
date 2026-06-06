@@ -2718,6 +2718,9 @@ try {
             if ($visibleProfileEntries.Count -ne 1 -or $visibleProfileEntries[0].name -ne "work" -or -not $visibleProfileEntries[0].is_default -or $visibleProfileEntries[0].reference_count -ne 1) {
                 throw "Visible profile list did not report only the referenced default work profile."
             }
+            if ([int64]$visibleProfileEntries[0].visible_slot -ne 1) {
+                throw "Visible profile list did not report the expected visible profile slot."
+            }
             $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2728,6 +2731,9 @@ try {
             $hiddenProfileEntries = @($allProfiles.profiles | Where-Object { $_.name -eq "secret" })
             if ($hiddenProfileEntries.Count -ne 1 -or -not $hiddenProfileEntries[0].hidden -or $hiddenProfileEntries[0].reference_count -ne 0) {
                 throw "All-profile list did not include the unreferenced hidden secret profile."
+            }
+            if ($null -ne $hiddenProfileEntries[0].visible_slot) {
+                throw "All-profile list assigned a visible slot to a hidden profile."
             }
             $profileDescription = Invoke-NativeJsonCommandResult "describe-profile-work" @(
                 "--user-data-dir", $cliDataDir,
