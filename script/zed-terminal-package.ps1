@@ -700,6 +700,9 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::RestoreConfigBundle",
+            "zed_terminal::RestoreSettingsBackup",
+            "zed_terminal::RestoreStartupConfigBackup",
+            "zed_terminal::RestoreKeymapBackup",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -1064,6 +1067,9 @@ function Invoke-KeymapDiscoverySmoke {
         "zed_terminal::OpenConfigBundleBackupFile",
         "zed_terminal::OpenConfigBundleBackupsReport",
         "zed_terminal::RestoreConfigBundle",
+        "zed_terminal::RestoreSettingsBackup",
+        "zed_terminal::RestoreStartupConfigBackup",
+        "zed_terminal::RestoreKeymapBackup",
         "zed_terminal::CreateStartupProfile",
         "zed_terminal::CopyStartupProfile",
         "zed_terminal::RemoveStartupProfile",
@@ -1157,6 +1163,30 @@ function Invoke-KeymapDiscoverySmoke {
         @($restoreConfigBundleActionDescriptionJson.action.default_bindings).Count -ne 0
     ) {
         throw "zed-terminal --describe-keymap-action did not report the expected restore config bundle action contract"
+    }
+
+    foreach ($focusedRestoreActionName in @(
+        "zed_terminal::RestoreSettingsBackup",
+        "zed_terminal::RestoreStartupConfigBackup",
+        "zed_terminal::RestoreKeymapBackup"
+    )) {
+        $focusedRestoreActionDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+            "--user-data-dir", $DataDir,
+            "--config-dir", $ConfigDir,
+            "--describe-keymap-action", $focusedRestoreActionName,
+            "--describe-keymap-action-format", "json"
+        ) -WorkingDirectory $WorkingDirectory
+        $focusedRestoreActionDescriptionJson = $focusedRestoreActionDescription.Stdout | ConvertFrom-Json
+        if (
+            $focusedRestoreActionDescriptionJson.status -ne "ok" -or
+            $focusedRestoreActionDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+            $focusedRestoreActionDescriptionJson.action.name -ne $focusedRestoreActionName -or
+            $focusedRestoreActionDescriptionJson.action.namespace -ne "zed_terminal" -or
+            $focusedRestoreActionDescriptionJson.action.input -ne "none" -or
+            @($focusedRestoreActionDescriptionJson.action.default_bindings).Count -ne 0
+        ) {
+            throw "zed-terminal --describe-keymap-action did not report the expected focused restore action contract for $focusedRestoreActionName"
+        }
     }
 
     $bindingDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(

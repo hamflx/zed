@@ -971,6 +971,9 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::RestoreConfigBundle",
+            "zed_terminal::RestoreSettingsBackup",
+            "zed_terminal::RestoreStartupConfigBackup",
+            "zed_terminal::RestoreKeymapBackup",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -2021,6 +2024,9 @@ try {
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
                 "zed_terminal::OpenConfigBundleBackupsReport",
                 "zed_terminal::RestoreConfigBundle",
+                "zed_terminal::RestoreSettingsBackup",
+                "zed_terminal::RestoreStartupConfigBackup",
+                "zed_terminal::RestoreKeymapBackup",
                 "zed_terminal::OpenConfigInitializationReport",
                 "zed_terminal::OpenKeymapToolsPicker",
                 "zed_terminal::OpenSettingsSchemaFile",
@@ -2106,6 +2112,16 @@ try {
             $restoreConfigBundleAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::RestoreConfigBundle" } | Select-Object -First 1
             if (-not $restoreConfigBundleAction -or $restoreConfigBundleAction.namespace -ne "zed_terminal" -or $restoreConfigBundleAction.input -ne "none") {
                 throw "Keymap action list is missing the RestoreConfigBundle action metadata."
+            }
+            foreach ($focusedRestoreActionName in @(
+                "zed_terminal::RestoreSettingsBackup",
+                "zed_terminal::RestoreStartupConfigBackup",
+                "zed_terminal::RestoreKeymapBackup"
+            )) {
+                $focusedRestoreAction = $keymapActions.actions | Where-Object { $_.name -eq $focusedRestoreActionName } | Select-Object -First 1
+                if (-not $focusedRestoreAction -or $focusedRestoreAction.namespace -ne "zed_terminal" -or $focusedRestoreAction.input -ne "none" -or @($focusedRestoreAction.default_bindings).Count -ne 0) {
+                    throw "Keymap action list did not report the expected focused restore action metadata for $focusedRestoreActionName."
+                }
             }
             $configInitializationReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigInitializationReport" } | Select-Object -First 1
             if (-not $configInitializationReportAction -or $configInitializationReportAction.namespace -ne "zed_terminal" -or $configInitializationReportAction.input -ne "none") {
@@ -2317,6 +2333,21 @@ try {
             )
             if ($restoreConfigBundleActionDescription.action.name -ne "zed_terminal::RestoreConfigBundle" -or $restoreConfigBundleActionDescription.action.namespace -ne "zed_terminal" -or $restoreConfigBundleActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected config bundle restore action contract."
+            }
+            foreach ($focusedRestoreActionName in @(
+                "zed_terminal::RestoreSettingsBackup",
+                "zed_terminal::RestoreStartupConfigBackup",
+                "zed_terminal::RestoreKeymapBackup"
+            )) {
+                $focusedRestoreActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-focused-restore" @(
+                    "--user-data-dir", $cliDataDir,
+                    "--config-dir", $cliConfigDir,
+                    "--describe-keymap-action", $focusedRestoreActionName,
+                    "--describe-keymap-action-format", "json"
+                )
+                if ($focusedRestoreActionDescription.action.name -ne $focusedRestoreActionName -or $focusedRestoreActionDescription.action.namespace -ne "zed_terminal" -or $focusedRestoreActionDescription.action.input -ne "none" -or @($focusedRestoreActionDescription.action.default_bindings).Count -ne 0) {
+                    throw "Keymap action description did not report the expected focused restore action contract for $focusedRestoreActionName."
+                }
             }
             $configInitializationReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-initialization-report" @(
                 "--user-data-dir", $cliDataDir,

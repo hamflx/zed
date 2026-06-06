@@ -64,6 +64,9 @@ actions!(
         OpenConfigBundleBackupsDirectory,
         OpenConfigBundleBackupsReport,
         RestoreConfigBundle,
+        RestoreSettingsBackup,
+        RestoreStartupConfigBackup,
+        RestoreKeymapBackup,
         OpenKeymapActionCatalogReport,
         OpenActiveKeymapBindingsReport,
         OpenActiveKeymapConflictsReport,
@@ -247,6 +250,9 @@ const TERMINAL_CONFIG_BUNDLE_BACKUPS_REPORT_FILE: &str = "zed-terminal-config-bu
 const TERMINAL_CONFIG_BUNDLE_RESTORE_REPORT_FILE: &str = "zed-terminal-config-bundle-restore.json";
 const TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_PREFIX: &str = "zed-terminal-config-bundle-";
 const TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION: &str = ".json";
+const TERMINAL_SETTINGS_RESTORE_REPORT_FILE: &str = "zed-terminal-settings-restore.json";
+const TERMINAL_STARTUP_CONFIG_RESTORE_REPORT_FILE: &str = "zed-terminal-startup-restore.json";
+const TERMINAL_KEYMAP_RESTORE_REPORT_FILE: &str = "zed-terminal-keymap-restore.json";
 const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
@@ -22769,6 +22775,61 @@ fn write_config_bundle_restore_report_file(
     })
 }
 
+fn write_settings_restore_report_file(
+    path: &Path,
+    restore: &TerminalSettingsRestore,
+) -> Result<()> {
+    let report = format_settings_restore_json(restore)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create settings restore report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write settings restore report {}", path.display()))
+}
+
+fn write_startup_config_restore_report_file(
+    path: &Path,
+    restore: &TerminalStartupConfigRestore,
+) -> Result<()> {
+    let report = format_startup_config_restore_json(restore)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup config restore report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup config restore report {}",
+            path.display()
+        )
+    })
+}
+
+fn write_keymap_restore_report_file(path: &Path, restore: &TerminalKeymapRestore) -> Result<()> {
+    let report = format_keymap_restore_json(restore)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create keymap restore report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write keymap restore report {}", path.display()))
+}
+
 fn write_startup_profile_mutation_backups_report_file(
     path: &Path,
     report: &TerminalStartupProfileMutationBackupsReport,
@@ -25453,6 +25514,18 @@ fn active_terminal_config_bundle_restore_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_BUNDLE_RESTORE_REPORT_FILE)
 }
 
+fn active_terminal_settings_restore_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_SETTINGS_RESTORE_REPORT_FILE)
+}
+
+fn active_terminal_startup_config_restore_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_CONFIG_RESTORE_REPORT_FILE)
+}
+
+fn active_terminal_keymap_restore_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_KEYMAP_RESTORE_REPORT_FILE)
+}
+
 fn terminal_config_bundle_backup_file_name(timestamp_seconds: u64, suffix: Option<u32>) -> String {
     match suffix {
         Some(suffix) => format!(
@@ -25970,6 +26043,9 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenConfigBundleBackupsDirectory>(),
         TerminalActionSurface::new::<OpenConfigBundleBackupsReport>(),
         TerminalActionSurface::new::<RestoreConfigBundle>(),
+        TerminalActionSurface::new::<RestoreSettingsBackup>(),
+        TerminalActionSurface::new::<RestoreStartupConfigBackup>(),
+        TerminalActionSurface::new::<RestoreKeymapBackup>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -26766,6 +26842,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Settings Validation Report",
             OpenSettingsValidationReport,
         ),
+        MenuItem::action("Restore Settings Backup...", RestoreSettingsBackup),
         MenuItem::action(
             "Open Config Initialization Report",
             OpenConfigInitializationReport,
@@ -26792,6 +26869,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             "Open Startup Config Validation Report",
             OpenStartupConfigValidationReport,
         ),
+        MenuItem::action(
+            "Restore Startup Config Backup...",
+            RestoreStartupConfigBackup,
+        ),
         MenuItem::action("Open Startup Layout Report", OpenStartupLayoutReport),
         MenuItem::action(
             "Open Startup Description Report",
@@ -26815,6 +26896,7 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenDefaultKeymapReferenceFile,
         ),
         MenuItem::action("Open Keymap Validation Report", OpenKeymapValidationReport),
+        MenuItem::action("Restore Keymap Backup...", RestoreKeymapBackup),
         MenuItem::action(
             "Open Keymap Action Catalog Report",
             OpenKeymapActionCatalogReport,
@@ -26902,6 +26984,60 @@ fn terminal_auto_split_direction_for_size(
     } else {
         TerminalStartupSplitDirection::Down
     }
+}
+
+fn prompt_for_restore_file(
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    title: &'static str,
+    detail: &'static str,
+    choose_label: &'static str,
+    picker_prompt: &'static str,
+    log_label: &'static str,
+    restore_action: fn(PathBuf, &mut App),
+) {
+    let prompt = window.prompt(
+        PromptLevel::Warning,
+        title,
+        Some(detail),
+        &[choose_label, "Cancel"],
+        cx,
+    );
+    cx.spawn(async move |_, cx| {
+        match prompt.await {
+            Ok(0) => {
+                let paths = cx.update(|cx| {
+                    cx.prompt_for_paths(PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some(picker_prompt.into()),
+                    })
+                });
+                let restore_file = match paths.await {
+                    Ok(Ok(Some(mut paths))) => paths.pop(),
+                    Ok(Ok(None)) => None,
+                    Ok(Err(error)) => {
+                        log::warn!("failed to open {log_label}: {error:#}");
+                        return anyhow::Ok(());
+                    }
+                    Err(_) => {
+                        log::warn!("{log_label} was canceled before returning");
+                        return anyhow::Ok(());
+                    }
+                };
+                if let Some(restore_file) = restore_file {
+                    cx.update(|cx| restore_action(restore_file, cx));
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                log::warn!("failed to confirm {log_label}: {error:?}");
+            }
+        }
+        anyhow::Ok(())
+    })
+    .detach_and_log_err(cx);
 }
 
 fn open_terminal_window(
@@ -26996,54 +27132,52 @@ fn open_terminal_window(
                     command_palette::CommandPalette::toggle(workspace, "keymap", window, cx);
                 });
                 workspace.register_action(|_, _: &RestoreConfigBundle, window, cx| {
-                    let prompt = window.prompt(
-                        PromptLevel::Warning,
-                        "Restore config bundle from file?",
-                        Some("This opens a file picker, replaces terminal.json, keymap.json, settings.json, and global_settings.json with the selected valid config bundle, reloads the restored settings and keymap, refreshes profile menus, and writes a restore report."),
-                        &["Choose Bundle", "Cancel"],
+                    prompt_for_restore_file(
+                        window,
                         cx,
+                        "Restore config bundle from file?",
+                        "This opens a file picker, replaces terminal.json, keymap.json, settings.json, and global_settings.json with the selected valid config bundle, reloads the restored settings and keymap, refreshes profile menus, and writes a restore report.",
+                        "Choose Bundle",
+                        "Restore Config Bundle",
+                        "config bundle restore picker",
+                        restore_config_bundle_action,
                     );
-                    cx.spawn(async move |_, cx| {
-                        match prompt.await {
-                            Ok(0) => {
-                                let paths = cx.update(|cx| {
-                                    cx.prompt_for_paths(PathPromptOptions {
-                                        files: true,
-                                        directories: false,
-                                        multiple: false,
-                                        prompt: Some("Restore Config Bundle".into()),
-                                    })
-                                });
-                                let restore_file = match paths.await {
-                                    Ok(Ok(Some(mut paths))) => paths.pop(),
-                                    Ok(Ok(None)) => None,
-                                    Ok(Err(error)) => {
-                                        log::warn!(
-                                            "failed to open config bundle restore picker: {error:#}"
-                                        );
-                                        return anyhow::Ok(());
-                                    }
-                                    Err(_) => {
-                                        log::warn!(
-                                            "config bundle restore picker was canceled before returning"
-                                        );
-                                        return anyhow::Ok(());
-                                    }
-                                };
-                                if let Some(restore_file) = restore_file {
-                                    cx.update(|cx| restore_config_bundle_action(restore_file, cx));
-                                }
-                            }
-                            Ok(_) => {}
-                            Err(error) => {
-                                log::warn!(
-                                    "failed to confirm config bundle restore: {error:?}"
-                                );
-                            }
-                        }
-                        anyhow::Ok(())
-                    })
-                    .detach_and_log_err(cx);
+                });
+                workspace.register_action(|_, _: &RestoreSettingsBackup, window, cx| {
+                    prompt_for_restore_file(
+                        window,
+                        cx,
+                        "Restore settings backup from file?",
+                        "This opens a file picker, replaces settings.json and global_settings.json with the selected valid settings backup, reloads restored settings, and writes a restore report.",
+                        "Choose Backup",
+                        "Restore Settings Backup",
+                        "settings backup restore picker",
+                        restore_settings_backup_action,
+                    );
+                });
+                workspace.register_action(|_, _: &RestoreStartupConfigBackup, window, cx| {
+                    prompt_for_restore_file(
+                        window,
+                        cx,
+                        "Restore startup config backup from file?",
+                        "This opens a file picker, replaces terminal.json with the selected valid startup config backup, refreshes profile menus, and writes a restore report.",
+                        "Choose Backup",
+                        "Restore Startup Config Backup",
+                        "startup config backup restore picker",
+                        restore_startup_config_backup_action,
+                    );
+                });
+                workspace.register_action(|_, _: &RestoreKeymapBackup, window, cx| {
+                    prompt_for_restore_file(
+                        window,
+                        cx,
+                        "Restore keymap backup from file?",
+                        "This opens a file picker, replaces keymap.json with the selected valid keymap backup, reloads restored key bindings, refreshes menus, and writes a restore report.",
+                        "Choose Backup",
+                        "Restore Keymap Backup",
+                        "keymap backup restore picker",
+                        restore_keymap_backup_action,
+                    );
                 });
                 workspace.register_action(|_, action: &RemoveStartupProfile, window, cx| {
                     let profile = action.profile.clone();
@@ -28194,24 +28328,129 @@ fn restore_config_bundle_action(restore_file: PathBuf, cx: &mut App) {
     }
 }
 
+fn restore_settings_backup_action(restore_file: PathBuf, cx: &mut App) {
+    let settings_file = paths::settings_file().clone();
+    let global_settings_file = paths::global_settings_file().clone();
+    let report_file = active_terminal_settings_restore_report_file();
+    match restore_settings(&settings_file, &global_settings_file, &restore_file, cx) {
+        Ok(restore) => {
+            log::info!(
+                "restored zed terminal settings backup {}",
+                restore.restore_file.display()
+            );
+            let report_written = match write_settings_restore_report_file(&report_file, &restore) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("failed to write settings restore report file: {error:#}");
+                    false
+                }
+            };
+            if let Err(error) =
+                reload_settings_restored_runtime_state(&settings_file, &global_settings_file, cx)
+            {
+                log::warn!(
+                    "restored settings backup but failed to reload runtime state: {error:#}"
+                );
+            }
+            if report_written {
+                cx.open_with_system(&report_file);
+            }
+        }
+        Err(error) => {
+            log::warn!("failed to restore terminal settings backup: {error:#}");
+        }
+    }
+}
+
+fn restore_startup_config_backup_action(restore_file: PathBuf, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let report_file = active_terminal_startup_config_restore_report_file();
+    match restore_startup_config(&startup_config_file, &restore_file) {
+        Ok(restore) => {
+            log::info!(
+                "restored zed terminal startup config backup {} ({} layouts, {} tabs, {} profiles)",
+                restore.restore_file.display(),
+                restore.layout_count,
+                restore.tab_count,
+                restore.profile_count
+            );
+            let report_written =
+                match write_startup_config_restore_report_file(&report_file, &restore) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        log::warn!("failed to write startup config restore report file: {error:#}");
+                        false
+                    }
+                };
+            set_app_menus(cx);
+            if report_written {
+                cx.open_with_system(&report_file);
+            }
+        }
+        Err(error) => {
+            log::warn!("failed to restore terminal startup config backup: {error:#}");
+        }
+    }
+}
+
+fn restore_keymap_backup_action(restore_file: PathBuf, cx: &mut App) {
+    let keymap_file = paths::keymap_file().clone();
+    let report_file = active_terminal_keymap_restore_report_file();
+    match restore_keymap(&keymap_file, &restore_file, cx) {
+        Ok(restore) => {
+            log::info!(
+                "restored zed terminal keymap backup {} ({} bindings)",
+                restore.restore_file.display(),
+                restore.binding_count
+            );
+            let report_written = match write_keymap_restore_report_file(&report_file, &restore) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::warn!("failed to write keymap restore report file: {error:#}");
+                    false
+                }
+            };
+            if let Err(error) = reload_keymap_restored_runtime_state(&keymap_file, cx) {
+                log::warn!("restored keymap backup but failed to reload runtime state: {error:#}");
+            }
+            if report_written {
+                cx.open_with_system(&report_file);
+            }
+        }
+        Err(error) => {
+            log::warn!("failed to restore terminal keymap backup: {error:#}");
+        }
+    }
+}
+
 fn reload_config_bundle_restored_runtime_state(
     file_paths: &TerminalConfigFilePaths,
     cx: &mut App,
 ) -> Result<()> {
-    reload_restored_settings_file(
-        TerminalSettingsFileKind::User,
+    reload_settings_restored_runtime_state(
         &file_paths.settings_file,
-        cx,
-    )?;
-    reload_restored_settings_file(
-        TerminalSettingsFileKind::Global,
         &file_paths.global_settings_file,
         cx,
     )?;
-    let (user_keymap_content, _) = read_user_keymap_content(&file_paths.keymap_file)?;
+    reload_keymap_restored_runtime_state(&file_paths.keymap_file, cx)?;
+    set_app_menus(cx);
+    Ok(())
+}
+
+fn reload_settings_restored_runtime_state(
+    settings_file: &Path,
+    global_settings_file: &Path,
+    cx: &mut App,
+) -> Result<()> {
+    reload_restored_settings_file(TerminalSettingsFileKind::User, settings_file, cx)?;
+    reload_restored_settings_file(TerminalSettingsFileKind::Global, global_settings_file, cx)?;
+    Ok(())
+}
+
+fn reload_keymap_restored_runtime_state(keymap_file: &Path, cx: &mut App) -> Result<()> {
+    let (user_keymap_content, _) = read_user_keymap_content(keymap_file)?;
     load_user_keymap(&user_keymap_content, cx)
         .context("failed to reload restored terminal keymap")?;
-    set_app_menus(cx);
     Ok(())
 }
 
@@ -29833,6 +30072,9 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupsDirectory);
         assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupsReport);
         assert_command_palette_action_visible(&filter, &RestoreConfigBundle);
+        assert_command_palette_action_visible(&filter, &RestoreSettingsBackup);
+        assert_command_palette_action_visible(&filter, &RestoreStartupConfigBackup);
+        assert_command_palette_action_visible(&filter, &RestoreKeymapBackup);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -31408,6 +31650,21 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Restore Settings Backup...",
+            "zed_terminal::RestoreSettingsBackup",
+        );
+        assert_menu_action(
+            &items,
+            "Restore Startup Config Backup...",
+            "zed_terminal::RestoreStartupConfigBackup",
+        );
+        assert_menu_action(
+            &items,
+            "Restore Keymap Backup...",
+            "zed_terminal::RestoreKeymapBackup",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
         );
@@ -31543,16 +31800,19 @@ mod tests {
                 "Open Settings File",
                 "Open Settings Schema File",
                 "Open Settings Validation Report",
+                "Restore Settings Backup...",
                 "Open Config Initialization Report",
                 "Back Up Config Bundle File...",
                 "Back Up Config Bundle...",
                 "Open Config Bundle Backups Directory",
                 "Open Config Bundle Backups Report",
+                "Restore Config Bundle...",
                 "---",
                 "Open Startup Tools...",
                 "Open Startup Config File",
                 "Open Startup Config Schema File",
                 "Open Startup Config Validation Report",
+                "Restore Startup Config Backup...",
                 "Open Startup Layout Report",
                 "Open Startup Description Report",
                 "Open Startup Profiles Report",
@@ -31564,6 +31824,7 @@ mod tests {
                 "Open Keymap Schema File",
                 "Open Default Keymap Reference File",
                 "Open Keymap Validation Report",
+                "Restore Keymap Backup...",
                 "Open Keymap Action Catalog Report",
                 "Open Active Keymap Bindings Report",
                 "Open Active Keymap Conflicts Report",
@@ -32832,6 +33093,46 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<RestoreConfigBundle>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_restore_settings_backup_action_input() {
+        let action = <RestoreSettingsBackup as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("restore settings backup action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<RestoreSettingsBackup>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_restore_startup_config_backup_action_input() {
+        let action =
+            <RestoreStartupConfigBackup as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("restore startup config backup action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<RestoreStartupConfigBackup>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_restore_keymap_backup_action_input() {
+        let action = <RestoreKeymapBackup as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("restore keymap backup action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<RestoreKeymapBackup>()
                 .is_some()
         );
     }
@@ -34945,6 +35246,9 @@ mod tests {
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::RestoreConfigBundle",
+            "zed_terminal::RestoreSettingsBackup",
+            "zed_terminal::RestoreStartupConfigBackup",
+            "zed_terminal::RestoreKeymapBackup",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
@@ -35724,6 +36028,147 @@ mod tests {
         std_fs::remove_dir_all(root_dir).ok();
     }
 
+    #[test]
+    fn writes_settings_restore_report_file_as_json_without_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_SETTINGS_RESTORE_REPORT_FILE);
+        let restore = TerminalSettingsRestore {
+            settings_file: TerminalSettingsRestoreFileSummary {
+                label: TerminalSettingsFileKind::User.label(),
+                path: root_dir.join("config").join("settings.json"),
+                restored_exists: true,
+                byte_count: Some(456),
+            },
+            global_settings_file: TerminalSettingsRestoreFileSummary {
+                label: TerminalSettingsFileKind::Global.label(),
+                path: root_dir.join("config").join("global_settings.json"),
+                restored_exists: false,
+                byte_count: None,
+            },
+            restore_file: root_dir.join("logs").join("settings.backup.json"),
+        };
+
+        write_settings_restore_report_file(&report_file, &restore)
+            .expect("settings restore report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read settings restore report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("settings restore report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(
+            json["restore_file"],
+            restore.restore_file.display().to_string()
+        );
+        assert_eq!(json["files"].as_array().unwrap().len(), 2);
+        assert_eq!(json["files"][0]["label"], "settings_file");
+        assert_eq!(json["files"][0]["restored_exists"], true);
+        assert_eq!(json["files"][0]["byte_count"], 456);
+        assert_eq!(json["files"][1]["label"], "global_settings_file");
+        assert_eq!(json["files"][1]["restored_exists"], false);
+        assert!(json["files"][1]["byte_count"].is_null());
+        assert!(report_text.ends_with('\n'));
+        for secret in ["TOKEN", "do-not-log", "One Dark", "Private Project"] {
+            assert!(
+                !report_text.contains(secret),
+                "settings restore report should not expose {secret}: {report_text}"
+            );
+        }
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_config_restore_report_file_as_json_without_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_CONFIG_RESTORE_REPORT_FILE);
+        let restore = TerminalStartupConfigRestore {
+            path: root_dir.join("config").join("terminal.json"),
+            restore_file: root_dir.join("logs").join("startup.backup.json"),
+            byte_count: 321,
+            layout_count: 2,
+            tab_count: 3,
+            profile_count: 4,
+        };
+
+        write_startup_config_restore_report_file(&report_file, &restore)
+            .expect("startup config restore report should write");
+
+        let report_text = std_fs::read_to_string(&report_file)
+            .expect("failed to read startup config restore report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("startup config restore report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(
+            json["startup_config_file"],
+            restore.path.display().to_string()
+        );
+        assert_eq!(
+            json["restore_file"],
+            restore.restore_file.display().to_string()
+        );
+        assert_eq!(json["byte_count"], 321);
+        assert_eq!(json["layout_count"], 2);
+        assert_eq!(json["tab_count"], 3);
+        assert_eq!(json["profile_count"], 4);
+        assert!(report_text.ends_with('\n'));
+        for secret in ["TOKEN", "do-not-log", "One Dark", "Private Project"] {
+            assert!(
+                !report_text.contains(secret),
+                "startup config restore report should not expose {secret}: {report_text}"
+            );
+        }
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_keymap_restore_report_file_as_json_without_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_KEYMAP_RESTORE_REPORT_FILE);
+        let restore = TerminalKeymapRestore {
+            path: root_dir.join("config").join("keymap.json"),
+            restore_file: root_dir.join("logs").join("keymap.backup.json"),
+            byte_count: 123,
+            section_count: 2,
+            binding_count: 3,
+            unbind_count: 4,
+        };
+
+        write_keymap_restore_report_file(&report_file, &restore)
+            .expect("keymap restore report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read keymap restore report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("keymap restore report should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["keymap_file"], restore.path.display().to_string());
+        assert_eq!(
+            json["restore_file"],
+            restore.restore_file.display().to_string()
+        );
+        assert_eq!(json["byte_count"], 123);
+        assert_eq!(json["section_count"], 2);
+        assert_eq!(json["binding_count"], 3);
+        assert_eq!(json["unbind_count"], 4);
+        assert!(report_text.ends_with('\n'));
+        for secret in ["TOKEN", "do-not-log", "One Dark", "Private Project"] {
+            assert!(
+                !report_text.contains(secret),
+                "keymap restore report should not expose {secret}: {report_text}"
+            );
+        }
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
     #[gpui::test]
     fn writes_settings_schema_file_by_refreshing_existing_content(cx: &mut App) {
         let root_dir = temp_test_dir();
@@ -35891,6 +36336,20 @@ mod tests {
             .find(|action| action.name == "zed_terminal::RestoreConfigBundle")
             .expect("config bundle restore action should be listed");
         assert_eq!(restore_config_bundle.input, TerminalKeymapActionInput::None);
+
+        for action_name in [
+            "zed_terminal::RestoreSettingsBackup",
+            "zed_terminal::RestoreStartupConfigBackup",
+            "zed_terminal::RestoreKeymapBackup",
+        ] {
+            let action = report
+                .actions
+                .iter()
+                .find(|action| action.name == action_name)
+                .unwrap_or_else(|| panic!("{action_name} action should be listed"));
+            assert_eq!(action.input, TerminalKeymapActionInput::None);
+            assert!(action.default_bindings.is_empty());
+        }
 
         let active_keymap_conflicts_report = report
             .actions
@@ -36284,6 +36743,17 @@ mod tests {
                 .default_bindings
                 .is_empty()
         );
+
+        for action_name in [
+            "zed_terminal::RestoreSettingsBackup",
+            "zed_terminal::RestoreStartupConfigBackup",
+            "zed_terminal::RestoreKeymapBackup",
+        ] {
+            let report = terminal_keymap_action_description_report(cx, action_name)
+                .unwrap_or_else(|_| panic!("{action_name} action description should build"));
+            assert_eq!(report.actions[0].input, TerminalKeymapActionInput::None);
+            assert!(report.actions[0].default_bindings.is_empty());
+        }
 
         let paste_report = terminal_keymap_action_description_report(cx, "terminal::Paste")
             .expect("paste keymap action description should build");
