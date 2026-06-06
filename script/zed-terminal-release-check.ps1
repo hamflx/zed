@@ -955,6 +955,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "zed_terminal::OpenActiveKeymapBindingsReport",
+            "zed_terminal::OpenActiveKeymapConflictsReport",
             "zed_terminal::OpenStartupLayoutReport",
             "zed_terminal::OpenPathsReport",
             "zed_terminal::OpenVersionInfoReport",
@@ -1754,6 +1755,9 @@ try {
                 "--list-active-keymap-bindings",
                 "--list-active-keymap-bindings-context <CONTEXT>",
                 "--list-active-keymap-bindings-format <text\|json>",
+                "--list-active-keymap-conflicts",
+                "--list-active-keymap-conflicts-context <CONTEXT>",
+                "--list-active-keymap-conflicts-format <text\|json>",
                 "--version-info",
                 "--paths",
                 "--paths-format <text\|json>",
@@ -1969,6 +1973,7 @@ try {
                 "zed_terminal::OpenSupportToolsPicker",
                 "zed_terminal::OpenStartupToolsPicker",
                 "zed_terminal::OpenActiveKeymapBindingsReport",
+                "zed_terminal::OpenActiveKeymapConflictsReport",
                 "zed_terminal::OpenStartupLayoutReport",
                 "zed_terminal::OpenPathsReport",
                 "zed_terminal::OpenVersionInfoReport",
@@ -2076,6 +2081,10 @@ try {
             $activeBindingsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenActiveKeymapBindingsReport" } | Select-Object -First 1
             if (-not $activeBindingsReportAction -or $activeBindingsReportAction.namespace -ne "zed_terminal" -or $activeBindingsReportAction.input -ne "none") {
                 throw "Keymap action list is missing the OpenActiveKeymapBindingsReport action metadata."
+            }
+            $activeConflictsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenActiveKeymapConflictsReport" } | Select-Object -First 1
+            if (-not $activeConflictsReportAction -or $activeConflictsReportAction.namespace -ne "zed_terminal" -or $activeConflictsReportAction.input -ne "none") {
+                throw "Keymap action list is missing the OpenActiveKeymapConflictsReport action metadata."
             }
             $startupLayoutReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupLayoutReport" } | Select-Object -First 1
             if (-not $startupLayoutReportAction -or $startupLayoutReportAction.namespace -ne "zed_terminal" -or $startupLayoutReportAction.input -ne "none") {
@@ -2286,6 +2295,15 @@ try {
             if ($activeBindingsReportActionDescription.action.name -ne "zed_terminal::OpenActiveKeymapBindingsReport" -or $activeBindingsReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected active bindings report action contract."
             }
+            $activeConflictsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-active-conflicts-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenActiveKeymapConflictsReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($activeConflictsReportActionDescription.action.name -ne "zed_terminal::OpenActiveKeymapConflictsReport" -or $activeConflictsReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected active conflicts report action contract."
+            }
             $startupLayoutReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-layout-report" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2342,6 +2360,7 @@ try {
                 $settingsToolsPickerActionDescription,
                 $keymapToolsPickerActionDescription,
                 $activeBindingsReportActionDescription,
+                $activeConflictsReportActionDescription,
                 $startupLayoutReportActionDescription,
                 $pathsReportActionDescription,
                 $versionInfoReportActionDescription,
@@ -2510,6 +2529,26 @@ try {
             $activeKeymapBindingsText = $activeKeymapBindings | ConvertTo-Json -Depth 20
             if ($activeKeymapBindingsText -match "do-not-log-keymap") {
                 throw "Active keymap binding list output leaked keymap file contents."
+            }
+            $activeKeymapConflicts = Invoke-NativeJsonCommandResult "list-active-keymap-conflicts" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--list-active-keymap-conflicts",
+                "--list-active-keymap-conflicts-format", "json"
+            )
+            if ($activeKeymapConflicts.status -ne "ok" -or $activeKeymapConflicts.default_keymap -ne "keymaps/zed-terminal.json" -or $activeKeymapConflicts.keymap_file -ne $mutationKeymapFile -or $activeKeymapConflicts.user_keymap_source -ne "file" -or $activeKeymapConflicts.conflict_count -lt 1) {
+                throw "Active keymap conflict list did not report the expected active keymap conflict contract."
+            }
+            if (-not $activeKeymapConflicts.contexts -or $activeKeymapConflicts.contexts[0] -notmatch "Terminal") {
+                throw "Active keymap conflict list did not report the expected Terminal context."
+            }
+            $activeNewTabConflictEntry = @($activeKeymapConflicts.conflicts) | Where-Object { $_.keystrokes -eq "ctrl-shift-T" } | Select-Object -First 1
+            if (-not $activeNewTabConflictEntry -or @($activeNewTabConflictEntry.matches).Count -lt 2 -or $activeNewTabConflictEntry.matches[0].source -ne "User" -or $activeNewTabConflictEntry.matches[0].action -ne "zed_terminal::DuplicateTerminalTab" -or $activeNewTabConflictEntry.matches[1].source -ne "Default" -or $activeNewTabConflictEntry.matches[1].action -ne "zed_terminal::NewTerminalTab") {
+                throw "Active keymap conflict list did not report the expected user/default ctrl-shift-t conflict."
+            }
+            $activeKeymapConflictsText = $activeKeymapConflicts | ConvertTo-Json -Depth 20
+            if ($activeKeymapConflictsText -match "do-not-log-keymap") {
+                throw "Active keymap conflict list output leaked keymap file contents."
             }
             $mutationSettingsFile = Join-Path $mutationCliConfigDir "settings.json"
             Set-Content -LiteralPath $mutationSettingsFile -Value @'

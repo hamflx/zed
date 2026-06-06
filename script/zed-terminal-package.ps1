@@ -418,6 +418,7 @@ Inspect active key bindings after user overrides without opening a terminal wind
 ```powershell
 .\{{BINARY}} --describe-active-keymap-binding ctrl-shift-1 --describe-active-keymap-binding-format json
 .\{{BINARY}} --list-active-keymap-bindings --list-active-keymap-bindings-format json
+.\{{BINARY}} --list-active-keymap-conflicts --list-active-keymap-conflicts-format json
 ```
 
 Validate startup configuration without opening a terminal window:
@@ -526,6 +527,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --describe-keymap-binding ctrl-shift-1 --describe-keymap-binding-format json",
         ".\$BinaryFileName --describe-active-keymap-binding ctrl-shift-1 --describe-active-keymap-binding-format json",
         ".\$BinaryFileName --list-active-keymap-bindings --list-active-keymap-bindings-format json",
+        ".\$BinaryFileName --list-active-keymap-conflicts --list-active-keymap-conflicts-format json",
         ".\$BinaryFileName --validate-startup-config",
         ".\$BinaryFileName --validate-startup-config --validate-startup-config-format json",
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
@@ -682,6 +684,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "zed_terminal::OpenActiveKeymapBindingsReport",
+            "zed_terminal::OpenActiveKeymapConflictsReport",
             "zed_terminal::OpenStartupLayoutReport",
             "zed_terminal::OpenPathsReport",
             "zed_terminal::OpenVersionInfoReport",
@@ -1024,6 +1027,7 @@ function Invoke-KeymapDiscoverySmoke {
     }
     foreach ($actionName in @(
         "zed_terminal::OpenActiveKeymapBindingsReport",
+        "zed_terminal::OpenActiveKeymapConflictsReport",
         "zed_terminal::OpenConfigBundleBackupFile",
         "zed_terminal::OpenConfigBundleBackupsReport",
         "zed_terminal::OpenKeymapActionCatalogReport",
@@ -1154,6 +1158,30 @@ function Invoke-ActiveKeymapDiscoverySmoke {
     Assert-ActiveProfileSlotBindingMatch `
         -Matches $profileSlotEntry.matches `
         -Context "zed-terminal --list-active-keymap-bindings"
+
+    $conflicts = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-active-keymap-conflicts",
+        "--list-active-keymap-conflicts-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $conflictsJson = $conflicts.Stdout | ConvertFrom-Json
+    if (
+        $conflictsJson.status -ne "ok" -or
+        $conflictsJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $conflictsJson.keymap_file -ne $expectedKeymapFile -or
+        $conflictsJson.user_keymap_source -ne "file" -or
+        [int64]$conflictsJson.conflict_count -lt 0
+    ) {
+        throw "zed-terminal --list-active-keymap-conflicts did not report the expected packaged active keymap conflict contract"
+    }
+    if (-not $conflictsJson.contexts -or $conflictsJson.contexts[0] -notmatch "Terminal") {
+        throw "zed-terminal --list-active-keymap-conflicts did not report the default Terminal context"
+    }
+    $conflictsText = $conflictsJson | ConvertTo-Json -Depth 20
+    if ($conflictsText -match "do-not-log") {
+        throw "zed-terminal --list-active-keymap-conflicts output unexpectedly contained fixture content"
+    }
 }
 
 function Assert-StartupConfigValidationJson {
