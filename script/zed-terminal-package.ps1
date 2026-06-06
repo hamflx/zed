@@ -402,6 +402,14 @@ Validate key bindings without opening a terminal window:
 .\{{BINARY}} --validate-keymap --validate-keymap-format json
 ```
 
+Inspect the standalone action catalog and bundled default bindings without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --list-keymap-actions --list-keymap-actions-format json
+.\{{BINARY}} --describe-keymap-action zed_terminal::NewTerminalTabWithProfileSlot --describe-keymap-action-format json
+.\{{BINARY}} --describe-keymap-binding ctrl-shift-1 --describe-keymap-binding-format json
+```
+
 Inspect active key bindings after user overrides without opening a terminal window:
 
 ```powershell
@@ -467,7 +475,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -508,6 +516,9 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
         ".\$BinaryFileName --validate-keymap",
         ".\$BinaryFileName --validate-keymap --validate-keymap-format json",
+        ".\$BinaryFileName --list-keymap-actions --list-keymap-actions-format json",
+        ".\$BinaryFileName --describe-keymap-action zed_terminal::NewTerminalTabWithProfileSlot --describe-keymap-action-format json",
+        ".\$BinaryFileName --describe-keymap-binding ctrl-shift-1 --describe-keymap-binding-format json",
         ".\$BinaryFileName --describe-active-keymap-binding ctrl-shift-1 --describe-active-keymap-binding-format json",
         ".\$BinaryFileName --list-active-keymap-bindings --list-active-keymap-bindings-format json",
         ".\$BinaryFileName --validate-startup-config",
@@ -848,6 +859,104 @@ function Assert-KeymapValidationJson {
     ) {
         throw "zed-terminal --validate-keymap did not report expected keymap validation status"
     }
+}
+
+function Assert-DefaultProfileSlotBindingMatch {
+    param(
+        [Parameter(Mandatory = $true)]$Matches,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if (-not (@($Matches) | Where-Object {
+        $_.keystrokes -eq "ctrl-shift-1" -and
+        $_.match -eq "exact" -and
+        $_.action -eq "zed_terminal::NewTerminalTabWithProfileSlot" -and
+        $_.namespace -eq "zed_terminal" -and
+        $null -eq $_.context -and
+        $_.input -eq '{"slot":1}'
+    } | Select-Object -First 1)) {
+        throw "$Context is missing the bundled ctrl-shift-1 profile-slot binding"
+    }
+}
+
+function Invoke-KeymapDiscoverySmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $actions = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-keymap-actions",
+        "--list-keymap-actions-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $actionsJson = $actions.Stdout | ConvertFrom-Json
+    if (
+        $actionsJson.status -ne "ok" -or
+        $actionsJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        [int64]$actionsJson.action_count -lt 1
+    ) {
+        throw "zed-terminal --list-keymap-actions did not report the expected packaged keymap action catalog contract"
+    }
+
+    $profileSlotAction = @($actionsJson.actions) | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfileSlot" } | Select-Object -First 1
+    if (-not $profileSlotAction -or $profileSlotAction.namespace -ne "zed_terminal" -or $profileSlotAction.input -ne "object") {
+        throw "zed-terminal --list-keymap-actions is missing the profile-slot tab action contract"
+    }
+    if (-not (@($profileSlotAction.default_bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' } | Select-Object -First 1)) {
+        throw "zed-terminal --list-keymap-actions is missing the ctrl-shift-1 profile-slot default binding"
+    }
+    foreach ($actionName in @(
+        "zed_terminal::OpenActiveKeymapBindingsReport",
+        "zed_terminal::OpenKeymapActionCatalogReport",
+        "terminal::Paste"
+    )) {
+        if (-not (@($actionsJson.actions) | Where-Object { $_.name -eq $actionName } | Select-Object -First 1)) {
+            throw "zed-terminal --list-keymap-actions is missing expected action: $actionName"
+        }
+    }
+
+    $actionDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-keymap-action", "zed_terminal::NewTerminalTabWithProfileSlot",
+        "--describe-keymap-action-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $actionDescriptionJson = $actionDescription.Stdout | ConvertFrom-Json
+    if (
+        $actionDescriptionJson.status -ne "ok" -or
+        $actionDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $actionDescriptionJson.action.name -ne "zed_terminal::NewTerminalTabWithProfileSlot" -or
+        $actionDescriptionJson.action.namespace -ne "zed_terminal" -or
+        $actionDescriptionJson.action.input -ne "object"
+    ) {
+        throw "zed-terminal --describe-keymap-action did not report the expected profile-slot action contract"
+    }
+    if (-not (@($actionDescriptionJson.action.default_bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' } | Select-Object -First 1)) {
+        throw "zed-terminal --describe-keymap-action is missing the ctrl-shift-1 profile-slot default binding"
+    }
+
+    $bindingDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-keymap-binding", "ctrl-shift-1",
+        "--describe-keymap-binding-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $bindingDescriptionJson = $bindingDescription.Stdout | ConvertFrom-Json
+    if (
+        $bindingDescriptionJson.status -ne "ok" -or
+        $bindingDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $bindingDescriptionJson.keystrokes -ne "ctrl-shift-1" -or
+        [int64]$bindingDescriptionJson.match_count -lt 1
+    ) {
+        throw "zed-terminal --describe-keymap-binding did not report the expected profile-slot binding contract"
+    }
+    Assert-DefaultProfileSlotBindingMatch `
+        -Matches $bindingDescriptionJson.matches `
+        -Context "zed-terminal --describe-keymap-binding"
 }
 
 function Assert-ActiveProfileSlotBindingMatch {
@@ -1859,6 +1968,7 @@ function Assert-PackageManifest {
         "startup_validation",
         "settings_validation",
         "keymap_validation",
+        "keymap_discovery",
         "active_keymap_discovery",
         "settings_backup",
         "startup_backup",
@@ -2096,6 +2206,12 @@ function Assert-PackageZipArchive {
     Assert-KeymapValidationJson `
         -Report ($keymapValidation.Stdout | ConvertFrom-Json) `
         -ExpectedKeymapFile (Join-Path $extractedConfigDir "keymap.json")
+
+    Invoke-KeymapDiscoverySmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -WorkingDirectory $extractedPackageDir
 
     Invoke-ActiveKeymapDiscoverySmoke `
         -Binary $extractedBinary `
@@ -2361,6 +2477,12 @@ Assert-KeymapValidationJson `
     -Report ($keymapValidation.Stdout | ConvertFrom-Json) `
     -ExpectedKeymapFile (Join-Path $configTemplateDir "keymap.json")
 
+Invoke-KeymapDiscoverySmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -WorkingDirectory $packageDir
+
 Invoke-ActiveKeymapDiscoverySmoke `
     -Binary $packagedBinary `
     -DataDir $validationDataDir `
@@ -2464,6 +2586,7 @@ $manifest = [pscustomobject]@{
         git_provenance = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
+        keymap_discovery = "ok"
         active_keymap_discovery = "ok"
         settings_backup = "ok"
         startup_backup = "ok"
