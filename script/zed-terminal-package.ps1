@@ -357,6 +357,13 @@ Validate settings without opening a terminal window:
 .\{{BINARY}} --validate-settings --validate-settings-format json
 ```
 
+Validate key bindings without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --validate-keymap
+.\{{BINARY}} --validate-keymap --validate-keymap-format json
+```
+
 Back up and restore settings without opening a terminal window:
 
 ```powershell
@@ -388,7 +395,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, keymap validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -423,6 +430,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
+        ".\$BinaryFileName --validate-keymap",
+        ".\$BinaryFileName --validate-keymap --validate-keymap-format json",
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
@@ -643,6 +652,24 @@ function Assert-SettingsValidationJson {
         if ($file.status -eq "error" -or -not $file.parse_status -or -not $file.migration_status) {
             throw "zed-terminal --validate-settings reported an invalid settings file entry"
         }
+    }
+}
+
+function Assert-KeymapValidationJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$ExpectedKeymapFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.keymap_file -ne $ExpectedKeymapFile -or
+        [int64]$Report.default_binding_count -le 0 -or
+        $Report.user_keymap_source -ne "file" -or
+        $null -eq $Report.user_binding_count -or
+        [int64]$Report.user_binding_count -lt 0
+    ) {
+        throw "zed-terminal --validate-keymap did not report expected keymap validation status"
     }
 }
 
@@ -1039,6 +1066,7 @@ function Assert-PackageManifest {
         "keymap_schema",
         "default_keymap",
         "settings_validation",
+        "keymap_validation",
         "settings_backup",
         "config_bundle",
         "doctor",
@@ -1235,6 +1263,16 @@ function Assert-PackageZipArchive {
         "--validate-settings-format", "json"
     ) -WorkingDirectory $extractedPackageDir
     Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
+
+    $keymapValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--validate-keymap",
+        "--validate-keymap-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    Assert-KeymapValidationJson `
+        -Report ($keymapValidation.Stdout | ConvertFrom-Json) `
+        -ExpectedKeymapFile (Join-Path $extractedConfigDir "keymap.json")
 
     Invoke-SettingsBackupSmoke `
         -Binary $extractedBinary `
@@ -1448,6 +1486,16 @@ $settingsValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments
 ) -WorkingDirectory $packageDir
 Assert-SettingsValidationJson ($settingsValidation.Stdout | ConvertFrom-Json)
 
+$keymapValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--validate-keymap",
+    "--validate-keymap-format", "json"
+) -WorkingDirectory $packageDir
+Assert-KeymapValidationJson `
+    -Report ($keymapValidation.Stdout | ConvertFrom-Json) `
+    -ExpectedKeymapFile (Join-Path $configTemplateDir "keymap.json")
+
 Invoke-SettingsBackupSmoke `
     -Binary $packagedBinary `
     -DataDir $validationDataDir `
@@ -1523,6 +1571,7 @@ $manifest = [pscustomobject]@{
         keymap_schema = "ok"
         default_keymap = "ok"
         settings_validation = "ok"
+        keymap_validation = "ok"
         settings_backup = "ok"
         config_bundle = "ok"
         doctor = "ok"
