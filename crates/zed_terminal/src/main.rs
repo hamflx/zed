@@ -9512,12 +9512,7 @@ fn main() {
         TerminalCliCommand::PrintDefaultKeymap { .. } => {
             print_default_keymap();
         }
-        TerminalCliCommand::InitConfig { format, .. } => {
-            if let Err(error) = print_config_initialization(format) {
-                eprintln!("failed to initialize terminal config files: {error:#}");
-                process::exit(2);
-            }
-        }
+        TerminalCliCommand::InitConfig { format, .. } => run_config_initialization(format),
         TerminalCliCommand::Doctor { .. } => unreachable!("doctor is handled before path install"),
         TerminalCliCommand::SupportInfo { .. } => {
             unreachable!("support info is handled before path install")
@@ -10287,8 +10282,11 @@ fn print_default_keymap() {
     print!("{}", default_keymap_content());
 }
 
-fn print_config_initialization(format: TerminalConfigInitializationOutputFormat) -> Result<()> {
-    let initialization = initialize_terminal_config_files()?;
+fn print_config_initialization(
+    format: TerminalConfigInitializationOutputFormat,
+    cx: &mut App,
+) -> Result<()> {
+    let initialization = initialize_terminal_config_files(cx)?;
     match format {
         TerminalConfigInitializationOutputFormat::Text => {
             print!("{}", format_config_initialization(&initialization))
@@ -10298,6 +10296,26 @@ fn print_config_initialization(format: TerminalConfigInitializationOutputFormat)
         }
     }
     Ok(())
+}
+
+fn run_config_initialization(format: TerminalConfigInitializationOutputFormat) {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match print_config_initialization(format, cx) {
+                Ok(()) => {
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush config initialization output");
+                }
+                Err(error) => {
+                    eprintln!("failed to initialize terminal config files: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
+            }
+            cx.quit();
+        });
 }
 
 fn print_default_profile_update(
@@ -11349,8 +11367,8 @@ fn print_keymap_restore(
     Ok(())
 }
 
-fn initialize_terminal_config_files() -> Result<TerminalConfigInitialization> {
-    initialize_terminal_config_files_at(active_terminal_config_file_paths())
+fn initialize_terminal_config_files(cx: &mut App) -> Result<TerminalConfigInitialization> {
+    initialize_terminal_config_files_at(active_terminal_config_file_paths(), cx)
 }
 
 fn active_terminal_config_file_paths() -> TerminalConfigFilePaths {
@@ -11393,7 +11411,10 @@ impl TerminalConfigFilePaths {
 
 fn initialize_terminal_config_files_at(
     file_paths: TerminalConfigFilePaths,
+    cx: &mut App,
 ) -> Result<TerminalConfigInitialization> {
+    let settings_schema = format_settings_schema(cx)?;
+    let keymap_schema = format_keymap_schema(cx)?;
     let startup_config_schema = format_startup_config_schema()?;
     Ok(TerminalConfigInitialization {
         files: vec![
@@ -11401,6 +11422,11 @@ fn initialize_terminal_config_files_at(
                 "settings_file",
                 file_paths.settings_file,
                 settings::initial_user_settings_content().as_ref(),
+            )?,
+            initialize_terminal_config_file(
+                "settings_schema_file",
+                file_paths.settings_schema_file,
+                &settings_schema,
             )?,
             initialize_terminal_config_file(
                 "global_settings_file",
@@ -11411,6 +11437,11 @@ fn initialize_terminal_config_files_at(
                 "keymap_file",
                 file_paths.keymap_file,
                 settings::initial_keymap_content().as_ref(),
+            )?,
+            initialize_terminal_config_file(
+                "keymap_schema_file",
+                file_paths.keymap_schema_file,
+                &keymap_schema,
             )?,
             initialize_terminal_config_file(
                 "default_keymap_reference_file",
@@ -24575,8 +24606,8 @@ fn watch_themes(fs: Arc<dyn fs::Fs>, cx: &mut App) {
     .detach();
 }
 
-fn ensure_config_files(fs: &Arc<dyn fs::Fs>, cx: &App) -> Result<()> {
-    initialize_terminal_config_files()?;
+fn ensure_config_files(fs: &Arc<dyn fs::Fs>, cx: &mut App) -> Result<()> {
+    initialize_terminal_config_files(cx)?;
 
     // Prime the abstract filesystem for platforms that use a non-std backend.
     let settings_path = paths::settings_file();
@@ -24770,7 +24801,7 @@ fn open_config_bundle_backups_directory(_: &OpenConfigBundleBackupsDirectory, cx
 
 fn open_config_initialization_report(_: &OpenConfigInitializationReport, cx: &mut App) {
     let report_file = active_terminal_config_initialization_report_file();
-    let initialization = match initialize_terminal_config_files() {
+    let initialization = match initialize_terminal_config_files(cx) {
         Ok(initialization) => initialization,
         Err(error) => {
             log::warn!("failed to initialize terminal config files for report: {error:#}");
@@ -34468,8 +34499,8 @@ mod tests {
         std_fs::remove_dir_all(root_dir).ok();
     }
 
-    #[test]
-    fn initializes_missing_config_files_without_overwriting_existing_files() {
+    #[gpui::test]
+    fn initializes_missing_config_files_without_overwriting_existing_files(cx: &mut App) {
         let root_dir = temp_test_dir();
         let config_dir = root_dir.join("config");
         let settings_file = config_dir.join("settings.json");
@@ -34482,17 +34513,22 @@ mod tests {
         let startup_config_schema_file = config_dir.join("terminal.schema.json");
         std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
         std_fs::write(&keymap_file, "custom keymap\n").expect("failed to write keymap");
+        std_fs::write(&settings_schema_file, "{ existing settings schema }\n")
+            .expect("failed to write existing settings schema");
 
-        let initialization = initialize_terminal_config_files_at(TerminalConfigFilePaths {
-            settings_file: settings_file.clone(),
-            settings_schema_file: settings_schema_file.clone(),
-            global_settings_file: global_settings_file.clone(),
-            keymap_file: keymap_file.clone(),
-            keymap_schema_file: keymap_schema_file.clone(),
-            default_keymap_reference_file: default_keymap_reference_file.clone(),
-            startup_config_file: startup_config_file.clone(),
-            startup_config_schema_file: startup_config_schema_file.clone(),
-        })
+        let initialization = initialize_terminal_config_files_at(
+            TerminalConfigFilePaths {
+                settings_file: settings_file.clone(),
+                settings_schema_file: settings_schema_file.clone(),
+                global_settings_file: global_settings_file.clone(),
+                keymap_file: keymap_file.clone(),
+                keymap_schema_file: keymap_schema_file.clone(),
+                default_keymap_reference_file: default_keymap_reference_file.clone(),
+                startup_config_file: startup_config_file.clone(),
+                startup_config_schema_file: startup_config_schema_file.clone(),
+            },
+            cx,
+        )
         .expect("config files should initialize");
 
         assert_eq!(
@@ -34507,12 +34543,20 @@ mod tests {
                     TerminalConfigFileInitializationStatus::Created
                 ),
                 (
+                    "settings_schema_file",
+                    TerminalConfigFileInitializationStatus::Existing
+                ),
+                (
                     "global_settings_file",
                     TerminalConfigFileInitializationStatus::Created
                 ),
                 (
                     "keymap_file",
                     TerminalConfigFileInitializationStatus::Existing
+                ),
+                (
+                    "keymap_schema_file",
+                    TerminalConfigFileInitializationStatus::Created
                 ),
                 (
                     "default_keymap_reference_file",
@@ -34529,11 +34573,21 @@ mod tests {
             ]
         );
         assert!(settings_file.exists());
+        assert_eq!(
+            std_fs::read_to_string(&settings_schema_file).expect("failed to read settings schema"),
+            "{ existing settings schema }\n"
+        );
         assert!(global_settings_file.exists());
         assert_eq!(
             std_fs::read_to_string(&keymap_file).expect("failed to read keymap"),
             "custom keymap\n"
         );
+        let keymap_schema: gpui::private::serde_json::Value = serde_json::from_str(
+            &std_fs::read_to_string(&keymap_schema_file).expect("failed to read keymap schema"),
+        )
+        .expect("keymap schema should parse as json");
+        assert_eq!(keymap_schema["title"], "KeymapFile");
+        assert_eq!(keymap_schema["type"], "array");
         assert_eq!(
             std_fs::read_to_string(&default_keymap_reference_file)
                 .expect("failed to read default keymap reference"),

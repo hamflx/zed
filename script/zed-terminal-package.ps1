@@ -864,6 +864,69 @@ function Assert-PathsJson {
     }
 }
 
+function Assert-ConfigInitializationJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$ConfigDir
+    )
+
+    $expectedFiles = @{
+        settings_file = Join-Path $ConfigDir "settings.json"
+        settings_schema_file = Join-Path $ConfigDir "settings.schema.json"
+        global_settings_file = Join-Path $ConfigDir "global_settings.json"
+        keymap_file = Join-Path $ConfigDir "keymap.json"
+        keymap_schema_file = Join-Path $ConfigDir "keymap.schema.json"
+        default_keymap_reference_file = Join-Path $ConfigDir "default-keymap.json"
+        startup_config_file = Join-Path $ConfigDir "terminal.json"
+        startup_config_schema_file = Join-Path $ConfigDir "terminal.schema.json"
+    }
+    $files = @($Report.files)
+    if (
+        $Report.status -ne "ok" -or
+        [int64]$Report.file_count -ne $expectedFiles.Count -or
+        [int64]$Report.created_count + [int64]$Report.existing_count -ne $expectedFiles.Count -or
+        $files.Count -ne $expectedFiles.Count
+    ) {
+        throw "zed-terminal --init-config did not report expected initialization counts"
+    }
+
+    foreach ($label in $expectedFiles.Keys) {
+        $matches = @($files | Where-Object { $_.label -eq $label })
+        if ($matches.Count -ne 1) {
+            throw "zed-terminal --init-config did not report exactly one '$label' entry"
+        }
+        $entry = $matches[0]
+        if ($entry.path -ne $expectedFiles[$label]) {
+            throw "zed-terminal --init-config reported unexpected path for '$label': $($entry.path)"
+        }
+        if ($entry.status -ne "created" -and $entry.status -ne "existing") {
+            throw "zed-terminal --init-config reported unexpected status for '$label': $($entry.status)"
+        }
+        if (-not (Test-Path -LiteralPath $expectedFiles[$label] -PathType Leaf)) {
+            throw "zed-terminal --init-config did not create expected file for '$label'"
+        }
+    }
+
+    foreach ($schemaFile in @(
+        (Join-Path $ConfigDir "settings.schema.json"),
+        (Join-Path $ConfigDir "terminal.schema.json"),
+        (Join-Path $ConfigDir "keymap.schema.json")
+    )) {
+        $schema = Get-Content -LiteralPath $schemaFile -Raw | ConvertFrom-Json
+        if (-not $schema.title -or -not $schema.type) {
+            throw "zed-terminal --init-config wrote an invalid schema file: $schemaFile"
+        }
+    }
+
+    $defaultKeymap = Get-Content -LiteralPath (Join-Path $ConfigDir "default-keymap.json") -Raw
+    if (
+        $defaultKeymap -notmatch "zed_terminal::NewTerminalTab" -or
+        $defaultKeymap -notmatch "terminal::Paste"
+    ) {
+        throw "zed-terminal --init-config wrote an invalid default keymap reference"
+    }
+}
+
 function Assert-SettingsValidationJson {
     param([Parameter(Mandatory = $true)]$Report)
 
@@ -1742,12 +1805,15 @@ function Invoke-SupportBundleSmoke {
     )
 
     New-Item -ItemType Directory -Force -Path $DataDir, $ConfigDir | Out-Null
-    Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+    $initConfig = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
         "--user-data-dir", $DataDir,
         "--config-dir", $ConfigDir,
         "--init-config",
         "--init-config-format", "json"
-    ) -WorkingDirectory $WorkingDirectory | Out-Null
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-ConfigInitializationJson `
+        -Report ($initConfig.Stdout | ConvertFrom-Json) `
+        -ConfigDir $ConfigDir
     New-Item -ItemType Directory -Force -Path (Join-Path $DataDir "logs") | Out-Null
     Add-Content -LiteralPath (Join-Path $ConfigDir "terminal.json") -Value "`n// do-not-log-package-startup-secret"
     Add-Content -LiteralPath (Join-Path $ConfigDir "settings.json") -Value "`n// do-not-log-package-settings-secret"
@@ -2626,12 +2692,15 @@ Assert-PortablePathsJson `
     -Paths ($portablePaths.Stdout | ConvertFrom-Json) `
     -ExpectedPackageDir $packageDir
 
-Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+$initConfig = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
     "--init-config",
     "--init-config-format", "json"
-) | Out-Null
+)
+Assert-ConfigInitializationJson `
+    -Report ($initConfig.Stdout | ConvertFrom-Json) `
+    -ConfigDir $configTemplateDir
 
 $startupSchema = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
