@@ -444,6 +444,128 @@ function Assert-PackageReadme {
     }
 }
 
+function Read-PackageJsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "package $Label file was not written: $Path"
+    }
+
+    $text = Get-Content -LiteralPath $Path -Raw
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "package $Label file was empty: $Path"
+    }
+
+    try {
+        $json = $text | ConvertFrom-Json
+    } catch {
+        throw "package $Label file did not parse as JSON: $($_.Exception.Message)"
+    }
+
+    return [pscustomobject]@{
+        text = $text
+        json = $json
+    }
+}
+
+function Assert-PackageJsonSchemaFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ExpectedTitle,
+        [Parameter(Mandatory = $true)][string]$ExpectedType,
+        [Parameter()][string[]]$RequiredProperties = @(),
+        [Parameter()][string[]]$RequiredSnippets = @(),
+        [Parameter()][string[]]$ForbiddenSnippets = @()
+    )
+
+    $schema = Read-PackageJsonFile -Path $Path -Label $Label
+    if ($schema.json.title -ne $ExpectedTitle -or $schema.json.type -ne $ExpectedType) {
+        throw "package $Label schema did not report the expected $ExpectedTitle/$ExpectedType contract"
+    }
+    if (-not $schema.text.EndsWith("`n")) {
+        throw "package $Label schema should end with a newline"
+    }
+
+    foreach ($propertyName in $RequiredProperties) {
+        if (-not $schema.json.properties -or -not $schema.json.properties.PSObject.Properties[$propertyName]) {
+            throw "package $Label schema is missing expected property: $propertyName"
+        }
+    }
+
+    foreach ($snippet in $RequiredSnippets) {
+        if ($schema.text.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0) {
+            throw "package $Label schema is missing expected content: $snippet"
+        }
+    }
+
+    foreach ($snippet in $ForbiddenSnippets) {
+        if ($schema.text.IndexOf($snippet, [System.StringComparison]::Ordinal) -ge 0) {
+            throw "package $Label schema exposed forbidden content: $snippet"
+        }
+    }
+}
+
+function Assert-PackageConfigTemplateSchemas {
+    param([Parameter(Mandatory = $true)][string]$ConfigTemplateDir)
+
+    if (-not (Test-Path -LiteralPath $ConfigTemplateDir -PathType Container)) {
+        throw "package config template directory was not written: $ConfigTemplateDir"
+    }
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "terminal.schema.json") `
+        -Label "startup config" `
+        -ExpectedTitle "TerminalStartupConfig" `
+        -ExpectedType "object" `
+        -RequiredProperties @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "settings.schema.json") `
+        -Label "settings" `
+        -ExpectedTitle "UserSettingsContent" `
+        -ExpectedType "object" `
+        -RequiredProperties @("theme") `
+        -RequiredSnippets @(
+            "zed_terminal::OpenSettingsSchemaFile",
+            "zed_terminal::OpenSettingsToolsPicker",
+            "zed_terminal::OpenStartupConfigSchemaFile",
+            "zed_terminal::OpenKeymapSchemaFile",
+            "zed_terminal::NewTerminalTab"
+        ) `
+        -ForbiddenSnippets @("workspace::NewFile")
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "keymap.schema.json") `
+        -Label "keymap" `
+        -ExpectedTitle "KeymapFile" `
+        -ExpectedType "array" `
+        -RequiredSnippets @(
+            "zed_terminal::NewTerminalTab",
+            "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::OpenConfigBundleBackupDirectory",
+            "zed_terminal::OpenConfigBundleBackupsDirectory",
+            "zed_terminal::OpenConfigInitializationReport",
+            "zed_terminal::OpenKeymapToolsPicker",
+            "zed_terminal::OpenSettingsSchemaFile",
+            "zed_terminal::OpenSettingsToolsPicker",
+            "zed_terminal::OpenStartupProfileConfig",
+            "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenSupportToolsPicker",
+            "zed_terminal::OpenStartupToolsPicker",
+            "zed_terminal::OpenActiveKeymapBindingsReport",
+            "zed_terminal::OpenStartupLayoutReport",
+            "zed_terminal::OpenPathsReport",
+            "zed_terminal::OpenVersionInfoReport",
+            "terminal::Paste",
+            "pane::CloseActiveItem",
+            '"profile"'
+        )
+}
+
 function Assert-VersionInfoJson {
     param(
         [Parameter(Mandatory = $true)]$VersionInfo,
@@ -988,6 +1110,8 @@ function Assert-PackageManifest {
         }
     }
 
+    Assert-PackageConfigTemplateSchemas -ConfigTemplateDir (Join-Path $PackageDir "config-template")
+
     $actualFiles = @(Get-ChildItem -LiteralPath $PackageDir -Recurse -File |
         Where-Object { $_.FullName -ne $ManifestFile }
     )
@@ -1296,6 +1420,7 @@ foreach ($templateFile in @("settings.json", "settings.schema.json", "global_set
         throw "package config template is missing $templateFile"
     }
 }
+Assert-PackageConfigTemplateSchemas -ConfigTemplateDir $configTemplateDir
 
 $doctor = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,

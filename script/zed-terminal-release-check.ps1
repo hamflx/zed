@@ -454,6 +454,128 @@ function Assert-VisualSmokeFile {
     }
 }
 
+function Read-ReleaseJsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label file was not written: $Path"
+    }
+
+    $text = Get-Content -LiteralPath $Path -Raw
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "$Label file was empty: $Path"
+    }
+
+    try {
+        $json = $text | ConvertFrom-Json
+    } catch {
+        throw "$Label file did not parse as JSON: $($_.Exception.Message)"
+    }
+
+    return [pscustomobject]@{
+        text = $text
+        json = $json
+    }
+}
+
+function Assert-PackageJsonSchemaFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ExpectedTitle,
+        [Parameter(Mandatory = $true)][string]$ExpectedType,
+        [Parameter()][string[]]$RequiredProperties = @(),
+        [Parameter()][string[]]$RequiredSnippets = @(),
+        [Parameter()][string[]]$ForbiddenSnippets = @()
+    )
+
+    $schema = Read-ReleaseJsonFile -Path $Path -Label $Label
+    if ($schema.json.title -ne $ExpectedTitle -or $schema.json.type -ne $ExpectedType) {
+        throw "$Label schema did not report the expected $ExpectedTitle/$ExpectedType contract"
+    }
+    if (-not $schema.text.EndsWith("`n")) {
+        throw "$Label schema should end with a newline"
+    }
+
+    foreach ($propertyName in $RequiredProperties) {
+        if (-not $schema.json.properties -or -not $schema.json.properties.PSObject.Properties[$propertyName]) {
+            throw "$Label schema is missing expected property: $propertyName"
+        }
+    }
+
+    foreach ($snippet in $RequiredSnippets) {
+        if ($schema.text.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0) {
+            throw "$Label schema is missing expected content: $snippet"
+        }
+    }
+
+    foreach ($snippet in $ForbiddenSnippets) {
+        if ($schema.text.IndexOf($snippet, [System.StringComparison]::Ordinal) -ge 0) {
+            throw "$Label schema exposed forbidden content: $snippet"
+        }
+    }
+}
+
+function Assert-PackageConfigTemplateSchemas {
+    param([Parameter(Mandatory = $true)][string]$ConfigTemplateDir)
+
+    if (-not (Test-Path -LiteralPath $ConfigTemplateDir -PathType Container)) {
+        throw "package config template directory does not exist: $ConfigTemplateDir"
+    }
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "terminal.schema.json") `
+        -Label "package startup config" `
+        -ExpectedTitle "TerminalStartupConfig" `
+        -ExpectedType "object" `
+        -RequiredProperties @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "settings.schema.json") `
+        -Label "package settings" `
+        -ExpectedTitle "UserSettingsContent" `
+        -ExpectedType "object" `
+        -RequiredProperties @("theme") `
+        -RequiredSnippets @(
+            "zed_terminal::OpenSettingsSchemaFile",
+            "zed_terminal::OpenSettingsToolsPicker",
+            "zed_terminal::OpenStartupConfigSchemaFile",
+            "zed_terminal::OpenKeymapSchemaFile",
+            "zed_terminal::NewTerminalTab"
+        ) `
+        -ForbiddenSnippets @("workspace::NewFile")
+
+    Assert-PackageJsonSchemaFile `
+        -Path (Join-Path $ConfigTemplateDir "keymap.schema.json") `
+        -Label "package keymap" `
+        -ExpectedTitle "KeymapFile" `
+        -ExpectedType "array" `
+        -RequiredSnippets @(
+            "zed_terminal::NewTerminalTab",
+            "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::OpenConfigBundleBackupDirectory",
+            "zed_terminal::OpenConfigBundleBackupsDirectory",
+            "zed_terminal::OpenConfigInitializationReport",
+            "zed_terminal::OpenKeymapToolsPicker",
+            "zed_terminal::OpenSettingsSchemaFile",
+            "zed_terminal::OpenSettingsToolsPicker",
+            "zed_terminal::OpenStartupProfileConfig",
+            "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenSupportToolsPicker",
+            "zed_terminal::OpenStartupToolsPicker",
+            "zed_terminal::OpenActiveKeymapBindingsReport",
+            "zed_terminal::OpenStartupLayoutReport",
+            "zed_terminal::OpenPathsReport",
+            "zed_terminal::OpenVersionInfoReport",
+            "terminal::Paste",
+            "pane::CloseActiveItem",
+            '"profile"'
+        )
+}
+
 function Read-PackageSmokeSummary {
     param([Parameter(Mandatory = $true)][string]$SummaryFile)
 
@@ -520,6 +642,8 @@ function Read-PackageSmokeSummary {
         $manifest.validation.paths -ne "ok" -or
         $manifest.validation.portable_paths -ne "ok" -or
         $manifest.validation.settings_schema -ne "ok" -or
+        $manifest.validation.startup_schema -ne "ok" -or
+        $manifest.validation.keymap_schema -ne "ok" -or
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
         $manifest.validation.config_bundle -ne "ok" -or
@@ -534,6 +658,8 @@ function Read-PackageSmokeSummary {
         $summary.validation.paths -ne "ok" -or
         $summary.validation.portable_paths -ne "ok" -or
         $summary.validation.settings_schema -ne "ok" -or
+        $summary.validation.startup_schema -ne "ok" -or
+        $summary.validation.keymap_schema -ne "ok" -or
         $summary.validation.settings_validation -ne "ok" -or
         $summary.validation.settings_backup -ne "ok" -or
         $summary.validation.config_bundle -ne "ok" -or
@@ -564,6 +690,7 @@ function Read-PackageSmokeSummary {
     if ([int64]$summary.content_count -ne @($manifest.contents).Count) {
         throw "package smoke summary content count did not match the validated manifest"
     }
+    Assert-PackageConfigTemplateSchemas -ConfigTemplateDir $configTemplateDir
 
     return [pscustomobject]@{
         status = "ok"
