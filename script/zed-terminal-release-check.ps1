@@ -1158,12 +1158,23 @@ try {
                 "--init-config",
                 "--init-config-format", "json"
             )
-            Invoke-NativeJsonCommand "paths" @(
+            $pathsJson = Invoke-NativeJsonCommandResult "paths" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
                 "--paths",
                 "--paths-format", "json"
             )
+            if (
+                $pathsJson.mode -ne "custom" -or
+                $pathsJson.data_dir -ne $cliDataDir -or
+                $pathsJson.config_dir -ne $cliConfigDir -or
+                $pathsJson.settings_file -ne (Join-Path $cliConfigDir "settings.json") -or
+                $pathsJson.settings_schema_file -ne (Join-Path $cliConfigDir "settings.schema.json") -or
+                $pathsJson.startup_config_schema_file -ne (Join-Path $cliConfigDir "terminal.schema.json") -or
+                $pathsJson.keymap_schema_file -ne (Join-Path $cliConfigDir "keymap.schema.json")
+            ) {
+                throw "zed-terminal --paths did not report expected config discovery paths"
+            }
             $portablePaths = Invoke-NativeJsonCommandResult "portable-paths" @(
                 "--portable",
                 "--paths",
@@ -1175,7 +1186,8 @@ try {
                 $portablePaths.mode -ne "portable" -or
                 $portablePaths.data_dir -ne $expectedPortableDataDir -or
                 $portablePaths.config_dir -ne $expectedPortableConfigDir -or
-                $portablePaths.logs_dir -ne (Join-Path $expectedPortableDataDir "logs")
+                $portablePaths.logs_dir -ne (Join-Path $expectedPortableDataDir "logs") -or
+                $portablePaths.settings_schema_file -ne (Join-Path $expectedPortableConfigDir "settings.schema.json")
             ) {
                 throw "zed-terminal --portable --paths did not report expected binary-local paths"
             }
@@ -1187,6 +1199,10 @@ try {
             )
             if ($doctorJson.settings.status -ne "ok" -or @($doctorJson.settings.files).Count -ne 2) {
                 throw "zed-terminal --doctor did not include expected settings validation diagnostics"
+            }
+            $doctorConfigLabels = @($doctorJson.config_files | ForEach-Object { $_.label })
+            if ($doctorConfigLabels -notcontains "settings_schema_file") {
+                throw "zed-terminal --doctor did not report settings schema file diagnostics"
             }
             Invoke-NativeTextCommand "support-info" @(
                 "--user-data-dir", $cliDataDir,
@@ -1259,6 +1275,7 @@ try {
                 $supportBundleMetadata.redaction.includes_raw_file_contents -ne $false -or
                 $supportBundleMetadataLabels -notcontains "startup_config_file" -or
                 $supportBundleMetadataLabels -notcontains "settings_file" -or
+                $supportBundleMetadataLabels -notcontains "settings_schema_file" -or
                 $supportBundleMetadataLabels -notcontains "log_file"
             ) {
                 throw "zed-terminal support bundle metadata did not report expected file metadata"

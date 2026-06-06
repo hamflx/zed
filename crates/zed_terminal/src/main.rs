@@ -3328,6 +3328,7 @@ struct TerminalPathReport {
     data_dir: PathBuf,
     logs_dir: PathBuf,
     settings_file: PathBuf,
+    settings_schema_file: PathBuf,
     startup_config_file: PathBuf,
     startup_config_schema_file: PathBuf,
     global_settings_file: PathBuf,
@@ -10116,6 +10117,7 @@ fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathRepor
         data_dir: path_options.data_dir.clone(),
         logs_dir: path_options.data_dir.join("logs"),
         settings_file: path_options.config_dir.join("settings.json"),
+        settings_schema_file: terminal_settings_schema_file(&path_options.config_dir),
         startup_config_file: terminal_startup_config_file(&path_options.config_dir),
         startup_config_schema_file: terminal_startup_config_schema_file(&path_options.config_dir),
         global_settings_file: path_options.config_dir.join("global_settings.json"),
@@ -11321,6 +11323,7 @@ fn active_terminal_config_file_paths() -> TerminalConfigFilePaths {
 
 struct TerminalConfigFilePaths {
     settings_file: PathBuf,
+    settings_schema_file: PathBuf,
     global_settings_file: PathBuf,
     keymap_file: PathBuf,
     keymap_schema_file: PathBuf,
@@ -11333,6 +11336,7 @@ impl TerminalConfigFilePaths {
     fn from_path_options(path_options: &TerminalPathOptions) -> Self {
         Self {
             settings_file: path_options.config_dir.join("settings.json"),
+            settings_schema_file: terminal_settings_schema_file(&path_options.config_dir),
             global_settings_file: path_options.config_dir.join("global_settings.json"),
             keymap_file: path_options.config_dir.join("keymap.json"),
             keymap_schema_file: terminal_keymap_schema_file(&path_options.config_dir),
@@ -16534,6 +16538,11 @@ fn diagnose_terminal_config_files(
             TerminalDoctorPathKind::File,
         ),
         diagnose_path(
+            "settings_schema_file",
+            file_paths.settings_schema_file,
+            TerminalDoctorPathKind::File,
+        ),
+        diagnose_path(
             "global_settings_file",
             file_paths.global_settings_file,
             TerminalDoctorPathKind::File,
@@ -20175,6 +20184,12 @@ fn format_terminal_paths(report: &TerminalPathReport) -> String {
     .expect("writing to string should not fail");
     writeln!(
         &mut output,
+        "settings_schema_file: {}",
+        report.settings_schema_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
         "startup_config_file: {}",
         report.startup_config_file.display()
     )
@@ -20373,6 +20388,7 @@ fn format_support_bundle_file_metadata_json(paths: &TerminalPathReport) -> Resul
 fn support_bundle_metadata_paths(paths: &TerminalPathReport) -> Vec<(&'static str, PathBuf)> {
     vec![
         ("settings_file", paths.settings_file.clone()),
+        ("settings_schema_file", paths.settings_schema_file.clone()),
         ("global_settings_file", paths.global_settings_file.clone()),
         ("startup_config_file", paths.startup_config_file.clone()),
         (
@@ -20573,6 +20589,7 @@ fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
         "data_dir": report.data_dir.display().to_string(),
         "logs_dir": report.logs_dir.display().to_string(),
         "settings_file": report.settings_file.display().to_string(),
+        "settings_schema_file": report.settings_schema_file.display().to_string(),
         "startup_config_file": report.startup_config_file.display().to_string(),
         "startup_config_schema_file": report.startup_config_schema_file.display().to_string(),
         "global_settings_file": report.global_settings_file.display().to_string(),
@@ -29881,6 +29898,7 @@ mod tests {
         let config_dir = root_dir.join("config");
         TerminalConfigFilePaths {
             settings_file: config_dir.join("settings.json"),
+            settings_schema_file: terminal_settings_schema_file(&config_dir),
             global_settings_file: config_dir.join("global_settings.json"),
             keymap_file: config_dir.join("keymap.json"),
             keymap_schema_file: terminal_keymap_schema_file(&config_dir),
@@ -31029,6 +31047,14 @@ mod tests {
                 && file["exists"] == true
                 && file["byte_count"].as_u64().unwrap() > 0
         }));
+        assert!(metadata["files"].as_array().unwrap().iter().any(|file| {
+            file["label"] == "settings_schema_file"
+                && file["path"]
+                    == terminal_settings_schema_file(&config_dir)
+                        .display()
+                        .to_string()
+                && file["exists"] == false
+        }));
 
         let combined_bundle_text = std_fs::read_dir(&bundle_dir)
             .expect("failed to read bundle dir")
@@ -31526,6 +31552,7 @@ mod tests {
                 "data_dir: data\n",
                 "logs_dir: logs\n",
                 "settings_file: settings.json\n",
+                "settings_schema_file: settings.schema.json\n",
                 "startup_config_file: terminal.json\n",
                 "startup_config_schema_file: terminal.schema.json\n",
                 "global_settings_file: global-settings.json\n",
@@ -31550,6 +31577,7 @@ mod tests {
         assert_eq!(json["data_dir"], "data");
         assert_eq!(json["logs_dir"], "logs");
         assert_eq!(json["settings_file"], "settings.json");
+        assert_eq!(json["settings_schema_file"], "settings.schema.json");
         assert_eq!(json["startup_config_file"], "terminal.json");
         assert_eq!(json["startup_config_schema_file"], "terminal.schema.json");
         assert_eq!(json["global_settings_file"], "global-settings.json");
@@ -31578,6 +31606,10 @@ mod tests {
         assert_eq!(
             report.settings_file,
             PathBuf::from("config-root").join("settings.json")
+        );
+        assert_eq!(
+            report.settings_schema_file,
+            PathBuf::from("config-root").join(TERMINAL_SETTINGS_SCHEMA_FILE)
         );
         assert_eq!(
             report.startup_config_file,
@@ -31635,6 +31667,7 @@ mod tests {
                 "  data_dir: data\n",
                 "  logs_dir: logs\n",
                 "  settings_file: settings.json\n",
+                "  settings_schema_file: settings.schema.json\n",
                 "  startup_config_file: terminal.json\n",
                 "  startup_config_schema_file: terminal.schema.json\n",
                 "  global_settings_file: global-settings.json\n",
@@ -33507,6 +33540,7 @@ mod tests {
             data_dir: PathBuf::from("data"),
             logs_dir: PathBuf::from("logs"),
             settings_file: PathBuf::from("settings.json"),
+            settings_schema_file: PathBuf::from("settings.schema.json"),
             startup_config_file: PathBuf::from("terminal.json"),
             startup_config_schema_file: PathBuf::from("terminal.schema.json"),
             global_settings_file: PathBuf::from("global-settings.json"),
@@ -33678,6 +33712,14 @@ mod tests {
 
         assert!(
             checks.iter().any(|check| {
+                check.label == "settings_schema_file"
+                    && check.path == terminal_settings_schema_file(&config_dir)
+                    && check.status == TerminalDoctorCheckStatus::Missing
+            }),
+            "doctor config checks should include settings schema file: {checks:#?}"
+        );
+        assert!(
+            checks.iter().any(|check| {
                 check.label == "startup_config_schema_file"
                     && check.path == terminal_startup_config_schema_file(&config_dir)
                     && check.status == TerminalDoctorCheckStatus::Missing
@@ -33744,6 +33786,7 @@ mod tests {
         let root_dir = temp_test_dir();
         let config_dir = root_dir.join("config");
         let settings_file = config_dir.join("settings.json");
+        let settings_schema_file = config_dir.join("settings.schema.json");
         let global_settings_file = config_dir.join("global_settings.json");
         let keymap_file = config_dir.join("keymap.json");
         let keymap_schema_file = config_dir.join("keymap.schema.json");
@@ -33755,6 +33798,7 @@ mod tests {
 
         let initialization = initialize_terminal_config_files_at(TerminalConfigFilePaths {
             settings_file: settings_file.clone(),
+            settings_schema_file: settings_schema_file.clone(),
             global_settings_file: global_settings_file.clone(),
             keymap_file: keymap_file.clone(),
             keymap_schema_file: keymap_schema_file.clone(),
