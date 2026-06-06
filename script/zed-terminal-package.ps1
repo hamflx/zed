@@ -323,6 +323,7 @@ Preview the resolved startup layout without opening a window:
 
 ```powershell
 .\{{BINARY}} --print-startup-layout
+.\{{BINARY}} --print-startup-layout --startup-layout-format json
 ```
 
 ## Configuration
@@ -454,6 +455,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --portable",
         ".\$BinaryFileName --portable --paths --paths-format json",
         ".\$BinaryFileName --init-config",
+        ".\$BinaryFileName --print-startup-layout",
+        ".\$BinaryFileName --print-startup-layout --startup-layout-format json",
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
@@ -725,6 +728,40 @@ function Assert-StartupConfigValidationJson {
         [int64]$Report.tab_count -le 0
     ) {
         throw "zed-terminal --validate-startup-config did not report expected startup config validation status"
+    }
+}
+
+function Assert-StartupLayoutJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$ExpectedStartupConfigFile
+    )
+
+    $tabs = @($Report.tabs)
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $ExpectedStartupConfigFile -or
+        $null -eq $Report.new_terminal_tab -or
+        [int64]$Report.tab_count -le 0 -or
+        $tabs.Count -ne [int64]$Report.tab_count
+    ) {
+        throw "zed-terminal --print-startup-layout did not report expected startup layout status"
+    }
+
+    if ($Report.new_terminal_tab.placement -ne "tab" -or $null -eq $Report.new_terminal_tab.env_count) {
+        throw "zed-terminal --print-startup-layout reported an invalid new terminal tab template"
+    }
+
+    for ($index = 0; $index -lt $tabs.Count; $index++) {
+        $tab = $tabs[$index]
+        if (
+            [int64]$tab.tab -ne ($index + 1) -or
+            [string]::IsNullOrWhiteSpace([string]$tab.kind) -or
+            [string]::IsNullOrWhiteSpace([string]$tab.placement) -or
+            $null -eq $tab.env_count
+        ) {
+            throw "zed-terminal --print-startup-layout reported an invalid startup tab entry"
+        }
     }
 }
 
@@ -1470,6 +1507,7 @@ function Assert-PackageManifest {
         "startup_schema",
         "keymap_schema",
         "default_keymap",
+        "startup_layout",
         "startup_validation",
         "settings_validation",
         "keymap_validation",
@@ -1680,6 +1718,16 @@ function Assert-PackageZipArchive {
     ) -WorkingDirectory $extractedPackageDir
     Assert-StartupConfigValidationJson `
         -Report ($startupValidation.Stdout | ConvertFrom-Json) `
+        -ExpectedStartupConfigFile (Join-Path $extractedConfigDir "terminal.json")
+
+    $startupLayout = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
+        "--user-data-dir", $extractedDataDir,
+        "--config-dir", $extractedConfigDir,
+        "--print-startup-layout",
+        "--startup-layout-format", "json"
+    ) -WorkingDirectory $extractedPackageDir
+    Assert-StartupLayoutJson `
+        -Report ($startupLayout.Stdout | ConvertFrom-Json) `
         -ExpectedStartupConfigFile (Join-Path $extractedConfigDir "terminal.json")
 
     $keymapValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
@@ -1928,6 +1976,16 @@ Assert-StartupConfigValidationJson `
     -Report ($startupValidation.Stdout | ConvertFrom-Json) `
     -ExpectedStartupConfigFile (Join-Path $configTemplateDir "terminal.json")
 
+$startupLayout = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--print-startup-layout",
+    "--startup-layout-format", "json"
+) -WorkingDirectory $packageDir
+Assert-StartupLayoutJson `
+    -Report ($startupLayout.Stdout | ConvertFrom-Json) `
+    -ExpectedStartupConfigFile (Join-Path $configTemplateDir "terminal.json")
+
 $keymapValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -2026,6 +2084,7 @@ $manifest = [pscustomobject]@{
         startup_schema = "ok"
         keymap_schema = "ok"
         default_keymap = "ok"
+        startup_layout = "ok"
         startup_validation = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
