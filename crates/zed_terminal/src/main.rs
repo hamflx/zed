@@ -131,6 +131,13 @@ struct NewTerminalWindowWithProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct NewTerminalWindowWithProfileSlot {
+    slot: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct NewTerminalSplitWithProfile {
     profile: String,
     direction: TerminalStartupSplitDirection,
@@ -22256,6 +22263,29 @@ fn launch_options_for_profile_window(profile: &str) -> Result<LaunchOptions> {
     LaunchOptions::from_profile(active_terminal_path_options(), &startup_config, profile)
 }
 
+fn launch_options_for_visible_profile_slot_window(slot: usize) -> Result<Option<LaunchOptions>> {
+    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
+    launch_options_for_visible_profile_slot_window_from_config(
+        active_terminal_path_options(),
+        &startup_config,
+        slot,
+    )
+}
+
+fn launch_options_for_visible_profile_slot_window_from_config(
+    path_options: TerminalPathOptions,
+    startup_config: &TerminalStartupConfig,
+    slot: usize,
+) -> Result<Option<LaunchOptions>> {
+    let Some(profile_name) = visible_profile_name_for_slot(startup_config, slot)? else {
+        return Ok(None);
+    };
+
+    LaunchOptions::from_profile(path_options, startup_config, &profile_name)
+        .with_context(|| format!("failed to resolve startup profile {profile_name:?}"))
+        .map(Some)
+}
+
 fn active_terminal_path_options() -> TerminalPathOptions {
     TerminalPathOptions {
         mode: TerminalPathMode::Custom,
@@ -22732,6 +22762,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<MinimizeTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindowWithProfile>(),
+        TerminalActionSurface::new::<NewTerminalWindowWithProfileSlot>(),
         TerminalActionSurface::new::<NewTerminalTab>(),
         TerminalActionSurface::new::<NewTerminalSplitAuto>(),
         TerminalActionSurface::new::<NewTerminalSplitDown>(),
@@ -23668,6 +23699,38 @@ fn open_terminal_window(
                                 log::warn!(
                                     "failed to resolve terminal window profile {:?}: {error:#}",
                                     action.profile
+                                );
+                            }
+                        }
+                    },
+                );
+                let profile_slot_terminal_window_app_state = app_state.clone();
+                workspace.register_action(
+                    move |_, action: &NewTerminalWindowWithProfileSlot, _, cx| {
+                        match launch_options_for_visible_profile_slot_window(action.slot) {
+                            Ok(Some(launch_options)) => match open_terminal_window(
+                                profile_slot_terminal_window_app_state.clone(),
+                                launch_options,
+                                cx,
+                            ) {
+                                Ok(()) => cx.activate(true),
+                                Err(error) => {
+                                    log::warn!(
+                                        "failed to open terminal window for startup profile slot {}: {error:#}",
+                                        action.slot
+                                    );
+                                }
+                            },
+                            Ok(None) => {
+                                log::warn!(
+                                    "startup profile window slot {} has no visible profile",
+                                    action.slot
+                                );
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to resolve terminal window startup profile slot {}: {error:#}",
+                                    action.slot
                                 );
                             }
                         }
@@ -25626,6 +25689,10 @@ mod tests {
         );
         assert_command_palette_action_visible(
             &filter,
+            &NewTerminalWindowWithProfileSlot { slot: 1 },
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &NewTerminalSplitWithProfile {
                 profile: "work".into(),
                 direction: TerminalStartupSplitDirection::Right,
@@ -27503,6 +27570,27 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown profile window action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_window_with_profile_slot_action_input() {
+        let action = <NewTerminalWindowWithProfileSlot as Action>::build(
+            gpui::private::serde_json::json!({ "slot": 2 }),
+        )
+        .expect("profile slot window action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalWindowWithProfileSlot>()
+            .expect("action type should match");
+
+        assert_eq!(action, &NewTerminalWindowWithProfileSlot { slot: 2 });
+
+        let error = <NewTerminalWindowWithProfileSlot as Action>::build(
+            gpui::private::serde_json::json!({ "slot": 2, "extra": true }),
+        )
+        .expect_err("unknown profile slot window action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -29892,6 +29980,7 @@ mod tests {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::NewTerminalTabWithProfileSlot",
+            "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -30546,6 +30635,13 @@ mod tests {
             .expect("profile slot split action should be listed");
         assert_eq!(profile_split_slot.input, TerminalKeymapActionInput::Object);
 
+        let profile_window_slot = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::NewTerminalWindowWithProfileSlot")
+            .expect("profile slot window action should be listed");
+        assert_eq!(profile_window_slot.input, TerminalKeymapActionInput::Object);
+
         let profile_slot_tab = report
             .actions
             .iter()
@@ -30723,6 +30819,21 @@ mod tests {
         );
         assert!(
             profile_split_slot_report.actions[0]
+                .default_bindings
+                .is_empty()
+        );
+
+        let profile_window_slot_report = terminal_keymap_action_description_report(
+            cx,
+            "zed_terminal::NewTerminalWindowWithProfileSlot",
+        )
+        .expect("profile slot window keymap action description should build");
+        assert_eq!(
+            profile_window_slot_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(
+            profile_window_slot_report.actions[0]
                 .default_bindings
                 .is_empty()
         );
@@ -51450,6 +51561,95 @@ mod tests {
         );
 
         std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(additional_dir).ok();
+    }
+
+    #[test]
+    fn profile_slot_new_window_uses_visible_profile_initial_tab() {
+        let initial_dir = temp_test_dir();
+        let hidden_dir = temp_test_dir();
+        let additional_dir = temp_test_dir();
+        let path_options = TerminalPathOptions {
+            mode: TerminalPathMode::Custom,
+            data_dir: PathBuf::from("profile-slot-window-data"),
+            config_dir: PathBuf::from("profile-slot-window-config"),
+        };
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "alpha".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                working_directory: Some(hidden_dir.clone()),
+                title: Some("Hidden".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "omega".into(),
+            TerminalStartupProfileConfig {
+                working_directory: Some(initial_dir.clone()),
+                command: Some("cmd /C omega".into()),
+                title: Some("Omega".into()),
+                tabs: vec![TerminalStartupTabConfig {
+                    working_directory: Some(additional_dir.clone()),
+                    command: Some("cmd /C logs".into()),
+                    title: Some("Logs".into()),
+                    split: Some(TerminalStartupSplitDirection::Right),
+                    ..TerminalStartupTabConfig::default()
+                }],
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let options = launch_options_for_visible_profile_slot_window_from_config(
+            path_options.clone(),
+            &config,
+            1,
+        )
+        .expect("profile slot window launch options should resolve")
+        .expect("slot 1 should select the first visible profile");
+
+        assert_eq!(options.path_options, path_options);
+        assert!(options.additional_tabs.is_empty());
+        assert_eq!(options.initial_tab, options.new_terminal_tab);
+        assert_tab_working_directory(&options.initial_tab, &initial_dir);
+        assert_ne!(
+            options.initial_tab.working_directory.as_deref(),
+            Some(dunce::canonicalize(&additional_dir).unwrap().as_path())
+        );
+        assert_eq!(
+            options.initial_tab.command,
+            Some(LaunchCommand {
+                program: "cmd".into(),
+                args: vec!["/C".into(), "omega".into()],
+            })
+        );
+        assert_eq!(options.initial_tab.title.as_deref(), Some("Omega"));
+        assert_eq!(options.initial_tab.split, None);
+        assert_eq!(
+            options.startup_working_directories(),
+            vec![dunce::canonicalize(&initial_dir).unwrap()]
+        );
+        assert!(
+            launch_options_for_visible_profile_slot_window_from_config(
+                TerminalPathOptions {
+                    mode: TerminalPathMode::Custom,
+                    data_dir: PathBuf::from("unused-data"),
+                    config_dir: PathBuf::from("unused-config"),
+                },
+                &config,
+                2,
+            )
+            .expect("missing slot should be ok")
+            .is_none()
+        );
+
+        std_fs::remove_dir_all(initial_dir).ok();
+        std_fs::remove_dir_all(hidden_dir).ok();
         std_fs::remove_dir_all(additional_dir).ok();
     }
 

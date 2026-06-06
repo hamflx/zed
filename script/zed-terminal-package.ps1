@@ -639,6 +639,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::NewTerminalTabWithProfileSlot",
+            "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
