@@ -587,6 +587,9 @@ function Assert-PackageConfigTemplateSchemas {
         -RequiredSnippets @(
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::NewTerminalTabWithProfileSlot",
+            "zed_terminal::NewTerminalWindowWithProfileSlot",
+            "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigInitializationReport",
@@ -603,7 +606,8 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenVersionInfoReport",
             "terminal::Paste",
             "pane::CloseActiveItem",
-            '"profile"'
+            '"profile"',
+            '"slot"'
         )
 }
 
@@ -683,6 +687,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.startup_validation -ne "ok" -or
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.keymap_validation -ne "ok" -or
+        $manifest.validation.active_keymap_discovery -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
         $manifest.validation.startup_backup -ne "ok" -or
         $manifest.validation.keymap_backup -ne "ok" -or
@@ -708,13 +713,14 @@ function Read-PackageSmokeSummary {
         $summary.validation.startup_validation -ne "ok" -or
         $summary.validation.settings_validation -ne "ok" -or
         $summary.validation.keymap_validation -ne "ok" -or
+        $summary.validation.active_keymap_discovery -ne "ok" -or
         $summary.validation.settings_backup -ne "ok" -or
         $summary.validation.startup_backup -ne "ok" -or
         $summary.validation.keymap_backup -ne "ok" -or
         $summary.validation.config_bundle -ne "ok" -or
         $summary.validation.support_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/schema/license/git/startup/settings/keymap validation/backup/config bundle/support bundle status"
+        throw "package smoke summary did not report expected path/version/schema/license/git/startup/settings/keymap validation/active keymap discovery/backup/config bundle/support bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
