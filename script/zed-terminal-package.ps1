@@ -696,6 +696,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenStartupProfileExportsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsReport",
+            "zed_terminal::RestoreLatestStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
@@ -1058,6 +1059,7 @@ function Invoke-KeymapDiscoverySmoke {
         "zed_terminal::OpenStartupProfileExportsDirectory",
         "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
         "zed_terminal::OpenStartupProfileMutationBackupsReport",
+        "zed_terminal::RestoreLatestStartupProfileMutationBackup",
         "zed_terminal::OpenStartupProfileSlotsReport",
         "zed_terminal::OpenStartupProfileReferencesReport",
         "zed_terminal::OpenSupportBundleManifestFile",
@@ -1086,6 +1088,24 @@ function Invoke-KeymapDiscoverySmoke {
     }
     if (-not (@($actionDescriptionJson.action.default_bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' } | Select-Object -First 1)) {
         throw "zed-terminal --describe-keymap-action is missing the ctrl-shift-1 profile-slot default binding"
+    }
+
+    $restoreActionDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-keymap-action", "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+        "--describe-keymap-action-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $restoreActionDescriptionJson = $restoreActionDescription.Stdout | ConvertFrom-Json
+    if (
+        $restoreActionDescriptionJson.status -ne "ok" -or
+        $restoreActionDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $restoreActionDescriptionJson.action.name -ne "zed_terminal::RestoreLatestStartupProfileMutationBackup" -or
+        $restoreActionDescriptionJson.action.namespace -ne "zed_terminal" -or
+        $restoreActionDescriptionJson.action.input -ne "none" -or
+        @($restoreActionDescriptionJson.action.default_bindings).Count -ne 0
+    ) {
+        throw "zed-terminal --describe-keymap-action did not report the expected restore profile mutation backup action contract"
     }
 
     $bindingDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(

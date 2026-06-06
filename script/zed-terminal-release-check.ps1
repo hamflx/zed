@@ -978,6 +978,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenStartupProfileExportsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsReport",
+            "zed_terminal::RestoreLatestStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportBundleManifestFile",
@@ -2018,6 +2019,7 @@ try {
                 "zed_terminal::OpenStartupProfileExportsDirectory",
                 "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
                 "zed_terminal::OpenStartupProfileMutationBackupsReport",
+                "zed_terminal::RestoreLatestStartupProfileMutationBackup",
                 "zed_terminal::OpenStartupProfilePicker",
                 "zed_terminal::OpenStartupProfileSlotsReport",
                 "zed_terminal::OpenStartupProfileReferencesReport",
@@ -2145,6 +2147,10 @@ try {
             $startupProfileMutationBackupsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileMutationBackupsReport" } | Select-Object -First 1
             if (-not $startupProfileMutationBackupsReportAction -or $startupProfileMutationBackupsReportAction.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsReportAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupProfileMutationBackupsReport no-input metadata."
+            }
+            $restoreStartupProfileMutationBackupAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::RestoreLatestStartupProfileMutationBackup" } | Select-Object -First 1
+            if (-not $restoreStartupProfileMutationBackupAction -or $restoreStartupProfileMutationBackupAction.namespace -ne "zed_terminal" -or $restoreStartupProfileMutationBackupAction.input -ne "none") {
+                throw "Keymap action list did not report the expected RestoreLatestStartupProfileMutationBackup no-input metadata."
             }
             $supportToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSupportToolsPicker" } | Select-Object -First 1
             if (-not $supportToolsPickerAction -or $supportToolsPickerAction.namespace -ne "zed_terminal" -or $supportToolsPickerAction.input -ne "none") {
@@ -2409,6 +2415,15 @@ try {
             )
             if ($startupProfileMutationBackupsReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileMutationBackupsReport" -or $startupProfileMutationBackupsReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileMutationBackupsReportActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected startup profile mutation backups report action contract."
+            }
+            $restoreStartupProfileMutationBackupActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-restore-startup-profile-mutation-backup" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($restoreStartupProfileMutationBackupActionDescription.action.name -ne "zed_terminal::RestoreLatestStartupProfileMutationBackup" -or $restoreStartupProfileMutationBackupActionDescription.action.namespace -ne "zed_terminal" -or $restoreStartupProfileMutationBackupActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected restore latest startup profile mutation backup action contract."
             }
             $supportToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-support-tools-picker" @(
                 "--user-data-dir", $cliDataDir,
