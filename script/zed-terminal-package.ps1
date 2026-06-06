@@ -362,6 +362,7 @@ Inspect startup profiles and root startup configuration without opening a window
 
 ```powershell
 .\{{BINARY}} --list-profiles --list-profiles-format json
+.\{{BINARY}} --list-profile-slots --list-profile-slots-format json
 .\{{BINARY}} --describe-startup --describe-startup-format json
 ```
 
@@ -512,6 +513,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --print-startup-layout",
         ".\$BinaryFileName --print-startup-layout --startup-layout-format json",
         ".\$BinaryFileName --list-profiles --list-profiles-format json",
+        ".\$BinaryFileName --list-profile-slots --list-profile-slots-format json",
         ".\$BinaryFileName --describe-startup --describe-startup-format json",
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
@@ -1196,23 +1198,37 @@ function Assert-StartupLayoutJson {
 
 function Assert-StartupDiscoveryJson {
     param(
-        [Parameter(Mandatory = $true)]$StartupDescription,
-        [Parameter(Mandatory = $true)]$ProfileList,
-        $ProfileDescription,
+        [Parameter(Mandatory = $true)][string]$StartupDescriptionJson,
+        [Parameter(Mandatory = $true)][string]$ProfileListJson,
+        [string]$ProfileDescriptionJson,
         [Parameter(Mandatory = $true)][string]$ExpectedStartupConfigFile
     )
 
+    $StartupDescription = ConvertFrom-Json -InputObject $StartupDescriptionJson
+    $ProfileList = ConvertFrom-Json -InputObject $ProfileListJson
+    $ProfileDescription = $null
+    if (-not [string]::IsNullOrWhiteSpace($ProfileDescriptionJson)) {
+        $ProfileDescription = ConvertFrom-Json -InputObject $ProfileDescriptionJson
+    }
+
     $startupTabs = @($StartupDescription.tabs)
     $profiles = @($ProfileList.profiles)
+    $startupTabCount = [int64]@($StartupDescription.tab_count)[0]
+    $startupProfileCount = [int64]@($StartupDescription.profile_count)[0]
+    $startupVisibleProfileCount = [int64]@($StartupDescription.visible_profile_count)[0]
+    $startupHiddenProfileCount = [int64]@($StartupDescription.hidden_profile_count)[0]
+    $totalProfileCount = [int64]@($ProfileList.total_count)[0]
+    $visibleProfileCount = [int64]@($ProfileList.visible_count)[0]
+    $hiddenProfileCount = [int64]@($ProfileList.hidden_count)[0]
     if (
         $StartupDescription.status -ne "ok" -or
         $StartupDescription.source -ne "file" -or
         $StartupDescription.startup_config_file -ne $ExpectedStartupConfigFile -or
         $null -eq $StartupDescription.shell -or
-        $startupTabs.Count -ne [int64]$StartupDescription.tab_count -or
-        [int64]$StartupDescription.profile_count -lt 0 -or
-        [int64]$StartupDescription.visible_profile_count -lt 0 -or
-        [int64]$StartupDescription.hidden_profile_count -lt 0
+        $startupTabs.Count -ne $startupTabCount -or
+        $startupProfileCount -lt 0 -or
+        $startupVisibleProfileCount -lt 0 -or
+        $startupHiddenProfileCount -lt 0
     ) {
         throw "zed-terminal --describe-startup did not report expected startup discovery status"
     }
@@ -1220,9 +1236,9 @@ function Assert-StartupDiscoveryJson {
     if (
         $ProfileList.startup_config_file -ne $ExpectedStartupConfigFile -or
         $ProfileList.include_hidden -ne $false -or
-        $profiles.Count -ne [int64]$ProfileList.visible_count -or
-        [int64]$ProfileList.total_count -lt [int64]$ProfileList.visible_count -or
-        [int64]$ProfileList.hidden_count -lt 0
+        $profiles.Count -ne $visibleProfileCount -or
+        $totalProfileCount -lt $visibleProfileCount -or
+        $hiddenProfileCount -lt 0
     ) {
         throw "zed-terminal --list-profiles did not report expected startup profile discovery status"
     }
@@ -1254,9 +1270,9 @@ function Assert-StartupDiscoveryJson {
     }
 
     if (
-        [int64]$StartupDescription.profile_count -ne [int64]$ProfileList.total_count -or
-        [int64]$StartupDescription.visible_profile_count -ne [int64]$ProfileList.visible_count -or
-        [int64]$StartupDescription.hidden_profile_count -ne [int64]$ProfileList.hidden_count
+        $startupProfileCount -ne $totalProfileCount -or
+        $startupVisibleProfileCount -ne $visibleProfileCount -or
+        $startupHiddenProfileCount -ne $hiddenProfileCount
     ) {
         throw "zed-terminal startup discovery commands reported inconsistent profile counts"
     }
@@ -2112,7 +2128,41 @@ function Invoke-StartupDiscoverySmoke {
         "--list-profiles-format", "json"
     ) -WorkingDirectory $WorkingDirectory
 
-    $profileListJson = $profileList.Stdout | ConvertFrom-Json
+    $profileListJson = ConvertFrom-Json -InputObject $profileList.Stdout
+    $profileSlots = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-profile-slots",
+        "--list-profile-slots-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $profileSlotsJson = ConvertFrom-Json -InputObject $profileSlots.Stdout
+    $profileSlotEntries = @($profileSlotsJson.slots)
+    $expectedMappedProfileSlotCount = [Math]::Min([int64]$profileListJson.visible_count, [int64]9)
+    if (
+        $profileSlotsJson.startup_config_file -ne $startupConfigFile -or
+        $profileSlotsJson.status -ne "ok" -or
+        [int64]$profileSlotsJson.slot_count -ne 9 -or
+        $profileSlotEntries.Count -ne 9 -or
+        [int64]$profileSlotsJson.mapped_count -ne $expectedMappedProfileSlotCount
+    ) {
+        throw "zed-terminal --list-profile-slots did not report expected profile slot discovery status"
+    }
+    for ($index = 0; $index -lt $profileSlotEntries.Count; $index++) {
+        $slot = $profileSlotEntries[$index]
+        $expectedSlot = $index + 1
+        if ([int64]$slot.slot -ne $expectedSlot -or $slot.shortcut -ne "ctrl-shift-$expectedSlot") {
+            throw "zed-terminal --list-profile-slots did not report stable profile slot shortcut ordering"
+        }
+        $expectedProfile = @($profileListJson.profiles | Where-Object { [int64]$_.visible_slot -eq $expectedSlot } | Select-Object -First 1)
+        if ($expectedProfile.Count -gt 0) {
+            if ($null -eq $slot.profile -or $slot.profile.name -ne $expectedProfile[0].name -or $slot.profile.visible_slot_shortcut -ne $slot.shortcut) {
+                throw "zed-terminal --list-profile-slots did not report the expected profile for a visible slot"
+            }
+        } elseif ($null -ne $slot.profile) {
+            throw "zed-terminal --list-profile-slots reported a profile for an empty shortcut slot"
+        }
+    }
+
     $firstVisibleProfile = @($profileListJson.profiles) | Select-Object -First 1
     $profileDescriptionJson = $null
     if ($null -ne $firstVisibleProfile) {
@@ -2122,13 +2172,13 @@ function Invoke-StartupDiscoverySmoke {
             "--describe-profile", $firstVisibleProfile.name,
             "--describe-profile-format", "json"
         ) -WorkingDirectory $WorkingDirectory
-        $profileDescriptionJson = $profileDescription.Stdout | ConvertFrom-Json
+        $profileDescriptionJson = $profileDescription.Stdout
     }
 
     Assert-StartupDiscoveryJson `
-        -StartupDescription ($startupDescription.Stdout | ConvertFrom-Json) `
-        -ProfileList $profileListJson `
-        -ProfileDescription $profileDescriptionJson `
+        -StartupDescriptionJson $startupDescription.Stdout `
+        -ProfileListJson $profileList.Stdout `
+        -ProfileDescriptionJson $profileDescriptionJson `
         -ExpectedStartupConfigFile $startupConfigFile
 }
 

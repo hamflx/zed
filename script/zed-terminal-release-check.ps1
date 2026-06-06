@@ -3063,6 +3063,26 @@ try {
             if ($visibleProfileEntries[0].visible_slot_shortcut -ne "ctrl-shift-1") {
                 throw "Visible profile list did not report the expected visible profile slot shortcut."
             }
+            $profileSlots = Invoke-NativeJsonCommandResult "list-profile-slots" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--list-profile-slots",
+                "--list-profile-slots-format", "json"
+            )
+            $profileSlotEntries = @($profileSlots.slots)
+            if ($profileSlots.status -ne "ok" -or $profileSlots.slot_count -ne 9 -or $profileSlotEntries.Count -ne 9 -or $profileSlots.mapped_count -ne 1) {
+                throw "Profile slot list did not report the expected slot summary."
+            }
+            if ($profileSlotEntries[0].slot -ne 1 -or $profileSlotEntries[0].shortcut -ne "ctrl-shift-1" -or $profileSlotEntries[0].profile.name -ne "work" -or $profileSlotEntries[0].profile.visible_slot_shortcut -ne "ctrl-shift-1") {
+                throw "Profile slot list did not map slot 1 to the visible work profile."
+            }
+            if ($profileSlotEntries[1].slot -ne 2 -or $profileSlotEntries[1].shortcut -ne "ctrl-shift-2" -or $null -ne $profileSlotEntries[1].profile) {
+                throw "Profile slot list did not report slot 2 as empty."
+            }
+            $profileSlotText = $profileSlots | ConvertTo-Json -Depth 10
+            if ($profileSlotText -match '"name":\s*"secret"') {
+                throw "Profile slot list included a hidden profile."
+            }
             $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,

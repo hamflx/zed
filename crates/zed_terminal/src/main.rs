@@ -223,6 +223,7 @@ const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_PREFIX: &str = "zed-terminal-prof
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_EXTENSION: &str = ".json";
 const TERMINAL_PROFILE_DESCRIPTION_REPORT_FILE_STEM_MAX_LEN: usize = 80;
 const TERMINAL_PROFILE_COMMAND_PALETTE_MAX_RESULTS: usize = 100;
+const TERMINAL_PROFILE_SLOT_SHORTCUT_COUNT: usize = 9;
 const TERMINAL_PROFILE_EXPORT_FORMAT: &str = "zed-terminal-startup-profile";
 const TERMINAL_PROFILE_EXPORT_VERSION: u64 = 1;
 const TERMINAL_CONFIG_BUNDLE_FORMAT: &str = "zed-terminal-config-bundle";
@@ -440,6 +441,7 @@ Profile transfer, startup config file, keymap file, version metadata, and path i
         .conflicts_with_all([
             "list_profiles",
             "all_profiles",
+            "list_profile_slots",
             "describe_profile",
             "describe_startup",
             "print_startup_layout",
@@ -525,6 +527,7 @@ struct Cli {
     #[arg(
         long = "list-profiles",
         conflicts_with_all = [
+            "list_profile_slots",
             "describe_profile",
             "print_startup_layout",
             "set_default_profile",
@@ -562,6 +565,7 @@ struct Cli {
         long = "all-profiles",
         requires = "list_profiles",
         conflicts_with_all = [
+            "list_profile_slots",
             "describe_profile",
             "print_startup_layout",
             "set_default_profile",
@@ -590,11 +594,77 @@ struct Cli {
     list_profiles_format: Option<TerminalListProfilesOutputFormat>,
 
     #[arg(
+        long = "list-profile-slots",
+        conflicts_with_all = [
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_settings",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_settings_schema",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "support_info",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "List Ctrl+Shift+number startup profile shortcut slots without opening a terminal window"
+    )]
+    list_profile_slots: bool,
+
+    #[arg(
+        long = "list-profile-slots-format",
+        value_enum,
+        requires = "list_profile_slots",
+        help = "Set the output format for --list-profile-slots"
+    )]
+    list_profile_slots_format: Option<TerminalListProfileSlotsOutputFormat>,
+
+    #[arg(
         long = "describe-profile",
         value_name = "NAME",
         conflicts_with_all = [
             "list_profiles",
             "all_profiles",
+            "list_profile_slots",
             "describe_startup",
             "print_startup_layout",
             "set_default_profile",
@@ -2951,6 +3021,11 @@ enum TerminalCliCommand {
         include_hidden: bool,
         format: TerminalListProfilesOutputFormat,
     },
+    ListProfileSlots {
+        path_options: TerminalPathOptions,
+        startup_config: TerminalStartupConfig,
+        format: TerminalListProfileSlotsOutputFormat,
+    },
     DescribeProfile {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
@@ -3629,6 +3704,22 @@ struct TerminalStartupProfileListReport {
     visible_count: usize,
     hidden_count: usize,
     profiles: Vec<TerminalStartupProfileSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileSlotReport {
+    startup_config_file: PathBuf,
+    status: &'static str,
+    slot_count: usize,
+    mapped_count: usize,
+    slots: Vec<TerminalStartupProfileSlot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileSlot {
+    slot: usize,
+    shortcut: String,
+    profile: Option<TerminalStartupProfileSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5002,6 +5093,13 @@ enum TerminalListProfilesOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalListProfileSlotsOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalDescribeProfileOutputFormat {
     #[default]
     Text,
@@ -5395,6 +5493,14 @@ impl TerminalCliCommand {
                 startup_config,
                 include_hidden: cli.all_profiles,
                 format: cli.list_profiles_format.unwrap_or_default(),
+            });
+        }
+
+        if cli.list_profile_slots {
+            return Ok(Self::ListProfileSlots {
+                path_options,
+                startup_config,
+                format: cli.list_profile_slots_format.unwrap_or_default(),
             });
         }
 
@@ -5815,6 +5921,7 @@ impl TerminalCliCommand {
     fn path_options(&self) -> &TerminalPathOptions {
         match self {
             Self::ListProfiles { path_options, .. } => path_options,
+            Self::ListProfileSlots { path_options, .. } => path_options,
             Self::DescribeProfile { path_options, .. } => path_options,
             Self::DescribeStartup { path_options, .. } => path_options,
             Self::SetDefaultProfile { path_options, .. } => path_options,
@@ -9270,6 +9377,16 @@ fn main() {
                 process::exit(2);
             }
         }
+        TerminalCliCommand::ListProfileSlots {
+            startup_config,
+            format,
+            ..
+        } => {
+            if let Err(error) = print_startup_profile_slots(&startup_config, format) {
+                eprintln!("failed to list terminal startup profile slots: {error:#}");
+                process::exit(2);
+            }
+        }
         TerminalCliCommand::DescribeProfile {
             startup_config,
             profile,
@@ -10187,6 +10304,23 @@ fn print_startup_profiles(
             let report =
                 startup_profile_list_report(startup_config, &startup_config_file, include_hidden);
             print!("{}", format_startup_profiles_json(&report)?)
+        }
+    }
+    Ok(())
+}
+
+fn print_startup_profile_slots(
+    startup_config: &TerminalStartupConfig,
+    format: TerminalListProfileSlotsOutputFormat,
+) -> Result<()> {
+    let startup_config_file = active_terminal_startup_config_file();
+    let report = startup_profile_slot_report(startup_config, &startup_config_file);
+    match format {
+        TerminalListProfileSlotsOutputFormat::Text => {
+            print!("{}", format_startup_profile_slots(&report))
+        }
+        TerminalListProfileSlotsOutputFormat::Json => {
+            print!("{}", format_startup_profile_slots_json(&report)?)
         }
     }
     Ok(())
@@ -17006,6 +17140,34 @@ fn startup_profile_list_report(
     }
 }
 
+fn startup_profile_slot_report(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+) -> TerminalStartupProfileSlotReport {
+    let profiles_by_visible_slot = startup_config
+        .profile_summaries(false)
+        .into_iter()
+        .filter_map(|profile| profile.visible_slot.map(|slot| (slot, profile)))
+        .collect::<BTreeMap<_, _>>();
+
+    let slots = (1..=TERMINAL_PROFILE_SLOT_SHORTCUT_COUNT)
+        .map(|slot| TerminalStartupProfileSlot {
+            slot,
+            shortcut: visible_profile_slot_shortcut(Some(slot))
+                .expect("default profile slot shortcuts should cover slots 1 through 9"),
+            profile: profiles_by_visible_slot.get(&slot).cloned(),
+        })
+        .collect::<Vec<_>>();
+
+    TerminalStartupProfileSlotReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        status: "ok",
+        slot_count: TERMINAL_PROFILE_SLOT_SHORTCUT_COUNT,
+        mapped_count: slots.iter().filter(|slot| slot.profile.is_some()).count(),
+        slots,
+    }
+}
+
 fn startup_profile_description_report(
     startup_config: &TerminalStartupConfig,
     startup_config_file: &Path,
@@ -17312,6 +17474,88 @@ fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serd
         "is_default": profile.is_default,
         "tab_count": profile.tab_count,
         "reference_count": profile.reference_count,
+    })
+}
+
+fn format_startup_profile_slots(report: &TerminalStartupProfileSlotReport) -> String {
+    let mut output = String::new();
+
+    writeln!(
+        &mut output,
+        "startup_config_file: {}",
+        report.startup_config_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "status: {}", report.status).expect("writing to string should not fail");
+    writeln!(&mut output, "profile_slots: {}", report.slot_count)
+        .expect("writing to string should not fail");
+    writeln!(&mut output, "mapped_slots: {}", report.mapped_count)
+        .expect("writing to string should not fail");
+
+    for slot in &report.slots {
+        writeln!(&mut output, "- slot {}", slot.slot).expect("writing to string should not fail");
+        writeln!(&mut output, "  shortcut: {}", slot.shortcut)
+            .expect("writing to string should not fail");
+        match &slot.profile {
+            Some(profile) => {
+                let mut badges = Vec::new();
+                if profile.is_default {
+                    badges.push("default");
+                }
+                let badges = if badges.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", badges.join(", "))
+                };
+                writeln!(&mut output, "  profile: {}{}", profile.name, badges)
+                    .expect("writing to string should not fail");
+                writeln!(&mut output, "  display_name: {}", profile.display_name)
+                    .expect("writing to string should not fail");
+                if let Some(description) = &profile.description {
+                    writeln!(&mut output, "  description: {description}")
+                        .expect("writing to string should not fail");
+                }
+                if let Some(icon) = &profile.icon {
+                    writeln!(&mut output, "  icon: {icon}")
+                        .expect("writing to string should not fail");
+                }
+                if let Some(color) = &profile.color {
+                    writeln!(&mut output, "  color: {color}")
+                        .expect("writing to string should not fail");
+                }
+            }
+            None => {
+                writeln!(&mut output, "  profile: none").expect("writing to string should not fail")
+            }
+        }
+    }
+
+    output
+}
+
+fn format_startup_profile_slots_json(report: &TerminalStartupProfileSlotReport) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "status": report.status,
+        "slot_count": report.slot_count,
+        "mapped_count": report.mapped_count,
+        "slots": report
+            .slots
+            .iter()
+            .map(startup_profile_slot_json)
+            .collect::<Vec<_>>(),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile slots as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_slot_json(slot: &TerminalStartupProfileSlot) -> serde_json::Value {
+    serde_json::json!({
+        "slot": slot.slot,
+        "shortcut": slot.shortcut.as_str(),
+        "profile": slot.profile.as_ref().map(startup_profile_summary_json),
     })
 }
 
@@ -22334,7 +22578,7 @@ impl TerminalUserKeymapSource {
 
 fn visible_profile_slot_shortcut(visible_slot: Option<usize>) -> Option<String> {
     let visible_slot = visible_slot?;
-    if (1..=9).contains(&visible_slot) {
+    if (1..=TERMINAL_PROFILE_SLOT_SHORTCUT_COUNT).contains(&visible_slot) {
         Some(format!("ctrl-shift-{visible_slot}"))
     } else {
         None
@@ -28642,6 +28886,99 @@ mod tests {
         assert_eq!(json["profiles"][1]["tab_count"], 2);
         assert_eq!(json["profiles"][1]["reference_count"], 1);
         assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn formats_startup_profile_slots() {
+        let config = sample_startup_profile_list_config();
+        let report = startup_profile_slot_report(&config, Path::new("terminal.json"));
+        let output = format_startup_profile_slots(&report);
+
+        assert!(output.contains("startup_config_file: terminal.json"));
+        assert!(output.contains("status: ok"));
+        assert!(output.contains("profile_slots: 9"));
+        assert!(output.contains("mapped_slots: 1"));
+        assert!(output.contains("- slot 1"));
+        assert!(output.contains("  shortcut: ctrl-shift-1"));
+        assert!(output.contains("  profile: work (default)"));
+        assert!(output.contains("  display_name: Work Shell"));
+        assert!(output.contains("  description: Project startup shell"));
+        assert!(output.contains("  icon: terminal"));
+        assert!(output.contains("  color: #0f766e"));
+        assert!(output.contains("- slot 2"));
+        assert!(output.contains("  shortcut: ctrl-shift-2"));
+        assert!(output.contains("  profile: none"));
+        assert!(output.contains("- slot 9"));
+        assert!(output.contains("  shortcut: ctrl-shift-9"));
+        assert!(!output.contains("secret"));
+    }
+
+    #[test]
+    fn formats_startup_profile_slots_json() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "hidden".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        for index in 1..=10 {
+            profiles.insert(
+                format!("profile-{index:02}"),
+                TerminalStartupProfileConfig {
+                    display_name: Some(format!("Profile {index:02}")),
+                    ..TerminalStartupProfileConfig::default()
+                },
+            );
+        }
+        let config = TerminalStartupConfig {
+            default_profile: Some("profile-01".into()),
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let report = startup_profile_slot_report(&config, Path::new("terminal.json"));
+        let output =
+            format_startup_profile_slots_json(&report).expect("profile slots json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("profile slots json should parse");
+
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["slot_count"], 9);
+        assert_eq!(json["mapped_count"], 9);
+        assert_eq!(json["slots"].as_array().unwrap().len(), 9);
+        assert_eq!(json["slots"][0]["slot"], 1);
+        assert_eq!(json["slots"][0]["shortcut"], "ctrl-shift-1");
+        assert_eq!(json["slots"][0]["profile"]["name"], "profile-01");
+        assert_eq!(json["slots"][0]["profile"]["display_name"], "Profile 01");
+        assert_eq!(json["slots"][0]["profile"]["visible_slot"], 1);
+        assert_eq!(
+            json["slots"][0]["profile"]["visible_slot_shortcut"],
+            "ctrl-shift-1"
+        );
+        assert_eq!(json["slots"][0]["profile"]["is_default"], true);
+        assert_eq!(json["slots"][8]["slot"], 9);
+        assert_eq!(json["slots"][8]["shortcut"], "ctrl-shift-9");
+        assert_eq!(json["slots"][8]["profile"]["name"], "profile-09");
+        assert!(!output.contains("\"name\": \"hidden\""));
+        assert!(!output.contains("profile-10"));
+        assert!(output.ends_with('\n'));
+    }
+
+    #[test]
+    fn startup_profile_slots_report_marks_empty_slots() {
+        let report = startup_profile_slot_report(
+            &TerminalStartupConfig::default(),
+            Path::new("terminal.json"),
+        );
+
+        assert_eq!(report.slot_count, 9);
+        assert_eq!(report.mapped_count, 0);
+        assert_eq!(report.slots.len(), 9);
+        assert!(report.slots.iter().all(|slot| slot.profile.is_none()));
+        assert_eq!(report.slots[0].shortcut, "ctrl-shift-1");
+        assert_eq!(report.slots[8].shortcut, "ctrl-shift-9");
     }
 
     fn sample_startup_profile_list_config() -> TerminalStartupConfig {
@@ -42447,6 +42784,25 @@ mod tests {
     }
 
     #[test]
+    fn list_profile_slots_format_json_is_carried_through_cli_resolution() {
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-slots",
+            "--list-profile-slots-format",
+            "json",
+        ])
+        .expect("failed to parse list profile slots json args");
+        let command =
+            TerminalCliCommand::from_cli_and_startup_config(cli, TerminalStartupConfig::default())
+                .expect("profile slot list json mode should resolve");
+
+        let TerminalCliCommand::ListProfileSlots { format, .. } = command else {
+            panic!("expected profile slot listing mode");
+        };
+        assert_eq!(format, TerminalListProfileSlotsOutputFormat::Json);
+    }
+
+    #[test]
     fn describe_profile_format_json_is_carried_through_cli_resolution() {
         let cli = Cli::try_parse_from([
             "zed-terminal",
@@ -45807,6 +46163,65 @@ mod tests {
         assert_eq!(from_tab_number, 2);
         assert_eq!(to_tab_number, 1);
         assert_eq!(format, TerminalStartupProfileTabMoveOutputFormat::Text);
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn list_profile_slots_loads_startup_config_during_cli_resolution() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        let startup_config_file = terminal_startup_config_file(&config_dir);
+        std_fs::write(
+            &startup_config_file,
+            r#"{ "profiles": { "work": { "display_name": "Work Shell" } } }"#,
+        )
+        .expect("failed to write startup config");
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--list-profile-slots",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("list-profile-slots mode should load terminal.json during cli resolution");
+
+        let TerminalCliCommand::ListProfileSlots {
+            path_options,
+            startup_config,
+            format,
+        } = command
+        else {
+            panic!("expected profile slot listing mode");
+        };
+
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalListProfileSlotsOutputFormat::Text);
+        assert_eq!(
+            startup_config
+                .profiles
+                .get("work")
+                .and_then(|profile| profile.display_name.as_deref()),
+            Some("Work Shell")
+        );
+
+        std_fs::write(&startup_config_file, "{ broken terminal config")
+            .expect("failed to write broken startup config");
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--list-profile-slots",
+        ])
+        .expect("failed to parse cli args");
+        let error = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect_err("list-profile-slots mode should reject broken terminal.json");
+
+        assert!(format!("{error:#}").contains("failed to parse terminal startup config"));
 
         std_fs::remove_dir_all(data_dir).ok();
     }
@@ -49831,6 +50246,7 @@ mod tests {
             "--print-default-keymap",
             "--validate-keymap",
             "--list-profiles",
+            "--list-profile-slots",
             "--describe-profile",
             "--describe-startup",
             "--set-default-profile",
@@ -50052,6 +50468,53 @@ mod tests {
 
         let error = Cli::try_parse_from(["zed-terminal", "--default-profile-format", "json"])
             .expect_err("default profile format should require a default profile command");
+        assert!(error.to_string().contains("required"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn list_profile_slots_rejects_startup_only_arguments() {
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--list-profile-slots", "--profile", "work"])
+                .expect_err("profile selection should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let dir = temp_test_dir();
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-slots",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--list-profile-slots",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--list-profile-slots", "--list-profiles"])
+                .expect_err("profile listing should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--list-profile-slots", "--describe-startup"])
+                .expect_err("startup description should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profile-slots", "--", "cmd"])
+            .expect_err("startup command should conflict with profile slot listing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from(["zed-terminal", "--list-profile-slots-format", "json"])
+            .expect_err("profile slot list format should require profile slot listing");
         assert!(error.to_string().contains("required"));
 
         std_fs::remove_dir_all(dir).ok();
