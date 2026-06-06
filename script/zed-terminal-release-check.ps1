@@ -1629,6 +1629,7 @@ try {
             foreach ($actionName in @(
                 "zed_terminal::NewTerminalTab",
                 "zed_terminal::NewTerminalTabWithProfile",
+                "zed_terminal::NewTerminalTabWithProfileSlot",
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
                 "zed_terminal::OpenConfigInitializationReport",
@@ -1669,6 +1670,16 @@ try {
             $profileTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfile" } | Select-Object -First 1
             if (-not $profileTabAction -or $profileTabAction.input -ne "object") {
                 throw "Keymap action list did not mark NewTerminalTabWithProfile as an object-input action."
+            }
+            $profileSlotTabAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalTabWithProfileSlot" } | Select-Object -First 1
+            if (-not $profileSlotTabAction -or $profileSlotTabAction.namespace -ne "zed_terminal" -or $profileSlotTabAction.input -ne "object") {
+                throw "Keymap action list did not mark NewTerminalTabWithProfileSlot as an object-input action."
+            }
+            if (-not ($profileSlotTabAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
+                throw "Keymap action list is missing the profile slot 1 default binding."
+            }
+            if (-not ($profileSlotTabAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-9" -and $null -eq $_.context -and $_.input -eq '{"slot":9}' })) {
+                throw "Keymap action list is missing the profile slot 9 default binding."
             }
             $configBundleBackupAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigBundleBackupDirectory" } | Select-Object -First 1
             if (-not $configBundleBackupAction -or $configBundleBackupAction.namespace -ne "zed_terminal" -or $configBundleBackupAction.input -ne "none") {
@@ -1754,6 +1765,21 @@ try {
             )
             if ($profileTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfile" -or $profileTabActionDescription.action.input -ne "object") {
                 throw "Keymap action description did not report the expected profile-tab input contract."
+            }
+            $profileSlotTabActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-slot-tab" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::NewTerminalTabWithProfileSlot",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileSlotTabActionDescription.action.name -ne "zed_terminal::NewTerminalTabWithProfileSlot" -or $profileSlotTabActionDescription.action.namespace -ne "zed_terminal" -or $profileSlotTabActionDescription.action.input -ne "object") {
+                throw "Keymap action description did not report the expected profile-slot-tab input contract."
+            }
+            if (-not ($profileSlotTabActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
+                throw "Keymap action description is missing the profile slot 1 default binding."
+            }
+            if (-not ($profileSlotTabActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-9" -and $null -eq $_.context -and $_.input -eq '{"slot":9}' })) {
+                throw "Keymap action description is missing the profile slot 9 default binding."
             }
             $configBundleBackupActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-bundle-backup" @(
                 "--user-data-dir", $cliDataDir,
@@ -1893,6 +1919,7 @@ try {
             $keymapActionDescriptionText = @(
                 $newTabActionDescription,
                 $profileTabActionDescription,
+                $profileSlotTabActionDescription,
                 $configBundleBackupActionDescription,
                 $configBundleBackupsActionDescription,
                 $configInitializationReportActionDescription,
@@ -1923,6 +1950,18 @@ try {
             if (-not ($newTabBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-shift-T" -and $_.match -eq "exact" -and $_.action -eq "zed_terminal::NewTerminalTab" -and $null -eq $_.context })) {
                 throw "Keymap binding description is missing the NewTerminalTab exact binding."
             }
+            $profileSlotBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-profile-slot" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-binding", "ctrl-shift-1",
+                "--describe-keymap-binding-format", "json"
+            )
+            if ($profileSlotBindingDescription.status -ne "ok" -or $profileSlotBindingDescription.default_keymap -ne "keymaps/zed-terminal.json" -or $profileSlotBindingDescription.keystrokes -ne "ctrl-shift-1" -or $profileSlotBindingDescription.match_count -lt 1) {
+                throw "Keymap binding description did not report the expected profile slot binding contract."
+            }
+            if (-not ($profileSlotBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-shift-1" -and $_.match -eq "exact" -and $_.action -eq "zed_terminal::NewTerminalTabWithProfileSlot" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
+                throw "Keymap binding description is missing the profile slot exact binding."
+            }
             $pasteBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-paste" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -1934,6 +1973,7 @@ try {
             }
             $keymapBindingDescriptionText = @(
                 $newTabBindingDescription,
+                $profileSlotBindingDescription,
                 $pasteBindingDescription
             ) | ConvertTo-Json -Depth 20
             if ($keymapBindingDescriptionText -match "do-not-log") {
@@ -1946,6 +1986,8 @@ try {
             ) @(
                 "^// Zed Terminal keymap",
                 '"ctrl-shift-t": "zed_terminal::NewTerminalTab"',
+                '"ctrl-shift-1": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 1 \}\]',
+                '"ctrl-shift-9": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 9 \}\]',
                 '"ctrl-shift-p": "command_palette::Toggle"',
                 '"alt-shift-d": "zed_terminal::DuplicateTerminalSplitAuto"',
                 '"alt-f4": "zed_terminal::CloseTerminalWindow"'

@@ -638,6 +638,7 @@ function Assert-PackageConfigTemplateSchemas {
         -RequiredSnippets @(
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
             "zed_terminal::OpenConfigInitializationReport",
@@ -654,7 +655,8 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenVersionInfoReport",
             "terminal::Paste",
             "pane::CloseActiveItem",
-            '"profile"'
+            '"profile"',
+            '"slot"'
         )
 }
 
@@ -684,8 +686,10 @@ function Assert-PackageDefaultKeymapReferences {
 
     foreach ($snippet in @(
         "zed_terminal::NewTerminalTab",
+        "zed_terminal::NewTerminalTabWithProfileSlot",
+        '"ctrl-shift-1"',
+        '"ctrl-shift-9"',
         "zed_terminal::DuplicateTerminalTab",
-        "zed_terminal::NewTerminalSplitRight",
         "command_palette::Toggle",
         "terminal::Paste",
         "pane::CloseActiveItem"

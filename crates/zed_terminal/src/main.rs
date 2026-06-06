@@ -117,6 +117,13 @@ struct NewTerminalTabWithProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct NewTerminalTabWithProfileSlot {
+    slot: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct NewTerminalWindowWithProfile {
     profile: String,
 }
@@ -22196,6 +22203,33 @@ fn launch_tab_for_profile(
     .with_context(|| format!("failed to resolve startup profile {profile:?}"))
 }
 
+fn visible_profile_name_for_slot(
+    startup_config: &TerminalStartupConfig,
+    slot: usize,
+) -> Result<Option<String>> {
+    if slot == 0 {
+        bail!("startup profile slot must be 1-based");
+    }
+
+    Ok(startup_config
+        .profile_summaries(false)
+        .into_iter()
+        .nth(slot - 1)
+        .map(|profile| profile.name))
+}
+
+fn launch_tab_for_visible_profile_slot(slot: usize) -> Result<Option<LaunchTab>> {
+    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
+    let Some(profile_name) = visible_profile_name_for_slot(&startup_config, slot)? else {
+        return Ok(None);
+    };
+
+    startup_config
+        .profile_initial_tab(&profile_name)
+        .with_context(|| format!("failed to resolve startup profile {profile_name:?}"))
+        .map(Some)
+}
+
 fn launch_options_for_profile_window(profile: &str) -> Result<LaunchOptions> {
     let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
     LaunchOptions::from_profile(active_terminal_path_options(), &startup_config, profile)
@@ -22685,6 +22719,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<NewTerminalSplitUp>(),
         TerminalActionSurface::new::<NewTerminalSplitWithProfile>(),
         TerminalActionSurface::new::<NewTerminalTabWithProfile>(),
+        TerminalActionSurface::new::<NewTerminalTabWithProfileSlot>(),
         TerminalActionSurface::new::<OpenConfigDirectory>(),
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
@@ -23820,6 +23855,35 @@ fn open_terminal_window(
                                 log::warn!(
                                     "failed to create terminal tab for profile {:?}: {error:#}",
                                     action.profile
+                                );
+                            }
+                        }
+                    },
+                );
+                let profile_slot_project = project.clone();
+                workspace.register_action(
+                    move |workspace, action: &NewTerminalTabWithProfileSlot, window, cx| {
+                        match launch_tab_for_visible_profile_slot(action.slot) {
+                            Ok(Some(tab)) => {
+                                if let Some(working_directory) = tab.working_directory.clone() {
+                                    profile_slot_project.update(cx, |project, cx| {
+                                        project
+                                            .find_or_create_worktree(&working_directory, true, cx)
+                                            .detach_and_log_err(cx);
+                                    });
+                                }
+                                add_launch_tab(workspace, window, cx, tab).detach_and_log_err(cx);
+                            }
+                            Ok(None) => {
+                                log::warn!(
+                                    "startup profile slot {} has no visible profile",
+                                    action.slot
+                                );
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to create terminal tab for startup profile slot {}: {error:#}",
+                                    action.slot
                                 );
                             }
                         }
@@ -25292,12 +25356,6 @@ mod tests {
         assert_key_binding(
             &keymap,
             None,
-            "ctrl-shift-5",
-            "zed_terminal::NewTerminalSplitRight",
-        );
-        assert_key_binding(
-            &keymap,
-            None,
             "alt-shift-d",
             "zed_terminal::DuplicateTerminalSplitAuto",
         );
@@ -25315,6 +25373,16 @@ mod tests {
         );
         assert_key_binding(&keymap, None, "f11", "zed_terminal::ToggleFullScreen");
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");
+        for profile_slot in 1..=9 {
+            assert_key_binding_with_object_number_param(
+                &keymap,
+                None,
+                &format!("ctrl-shift-{profile_slot}"),
+                "zed_terminal::NewTerminalTabWithProfileSlot",
+                "slot",
+                profile_slot,
+            );
+        }
         for tab_number in 1..=8 {
             assert_key_binding_with_param(
                 &keymap,
@@ -25484,6 +25552,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &MinimizeTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalWindow);
         assert_command_palette_action_visible(&filter, &NewTerminalTab);
+        assert_command_palette_action_visible(&filter, &NewTerminalTabWithProfileSlot { slot: 1 });
         assert_command_palette_action_visible(&filter, &NewTerminalSplitAuto);
         assert_command_palette_action_visible(&filter, &NewTerminalSplitRight);
         assert_command_palette_action_visible(&filter, &NewTerminalSplitDown);
@@ -25779,6 +25848,41 @@ mod tests {
         assert_show_profile_action(&result.results[0], "hidden");
         assert_profile_tab_action(&result.results[1], "work");
         assert_hide_profile_action(&result.results[10], "work");
+    }
+
+    #[test]
+    fn visible_profile_slot_uses_visible_profile_order() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert("alpha".into(), TerminalStartupProfileConfig::default());
+        profiles.insert(
+            "hidden".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert("omega".into(), TerminalStartupProfileConfig::default());
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        assert_eq!(
+            visible_profile_name_for_slot(&config, 1).expect("slot 1 should resolve"),
+            Some("alpha".into())
+        );
+        assert_eq!(
+            visible_profile_name_for_slot(&config, 2).expect("slot 2 should resolve"),
+            Some("omega".into())
+        );
+        assert_eq!(
+            visible_profile_name_for_slot(&config, 3).expect("missing slot should be ok"),
+            None
+        );
+
+        let error =
+            visible_profile_name_for_slot(&config, 0).expect_err("slot 0 should be rejected");
+        assert!(format!("{error:#}").contains("1-based"));
     }
 
     #[test]
@@ -26176,6 +26280,37 @@ mod tests {
 
         assert_eq!(action, expected_action);
         assert_eq!(param, expected_param);
+    }
+
+    fn assert_key_binding_with_object_number_param(
+        keymap: &gpui::private::serde_json::Value,
+        context: Option<&str>,
+        keystroke: &str,
+        expected_action: &str,
+        param_name: &str,
+        expected_param: usize,
+    ) {
+        let binding = key_binding(keymap, context, keystroke)
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!("key binding {keystroke:?} in context {context:?} should be an array action")
+            });
+        let action = binding
+            .first()
+            .and_then(gpui::private::serde_json::Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "key binding {keystroke:?} in context {context:?} should include an action name"
+                )
+            });
+        let param = binding
+            .get(1)
+            .and_then(|param| param.get(param_name))
+            .and_then(gpui::private::serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("key binding {keystroke:?} in context {context:?} should include a numeric {param_name:?} parameter"));
+
+        assert_eq!(action, expected_action);
+        assert_eq!(param, expected_param as u64);
     }
 
     fn key_binding<'a>(
@@ -27219,6 +27354,27 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown profile action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_tab_with_profile_slot_action_input() {
+        let action = <NewTerminalTabWithProfileSlot as Action>::build(
+            gpui::private::serde_json::json!({ "slot": 2 }),
+        )
+        .expect("profile slot action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalTabWithProfileSlot>()
+            .expect("action type should match");
+
+        assert_eq!(action, &NewTerminalTabWithProfileSlot { slot: 2 });
+
+        let error = <NewTerminalTabWithProfileSlot as Action>::build(
+            gpui::private::serde_json::json!({ "slot": 2, "extra": true }),
+        )
+        .expect_err("unknown profile slot action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -29594,6 +29750,7 @@ mod tests {
         for action_name in [
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
+            "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
@@ -29613,6 +29770,10 @@ mod tests {
         assert!(
             schema.contains("\"profile\""),
             "profile action input schema should be included: {schema}"
+        );
+        assert!(
+            schema.contains("\"slot\""),
+            "profile slot action input schema should be included: {schema}"
         );
     }
 
@@ -30236,6 +30397,21 @@ mod tests {
             .expect("profile new tab action should be listed");
         assert_eq!(profile_tab.input, TerminalKeymapActionInput::Object);
 
+        let profile_slot_tab = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::NewTerminalTabWithProfileSlot")
+            .expect("profile slot new tab action should be listed");
+        assert_eq!(profile_slot_tab.input, TerminalKeymapActionInput::Object);
+        assert!(
+            profile_slot_tab.default_bindings.iter().any(|binding| {
+                binding.keystrokes == "ctrl-shift-1"
+                    && binding.context.is_none()
+                    && binding.input.as_deref() == Some("{\"slot\":1}")
+            }),
+            "profile slot action should expose its default binding"
+        );
+
         let profile_config = report
             .actions
             .iter()
@@ -30365,6 +30541,26 @@ mod tests {
         assert_eq!(
             profile_report.actions[0].input,
             TerminalKeymapActionInput::Object
+        );
+
+        let profile_slot_report = terminal_keymap_action_description_report(
+            cx,
+            "zed_terminal::NewTerminalTabWithProfileSlot",
+        )
+        .expect("profile slot keymap action description should build");
+        assert_eq!(
+            profile_slot_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(
+            profile_slot_report.actions[0]
+                .default_bindings
+                .iter()
+                .any(|binding| {
+                    binding.keystrokes == "ctrl-shift-1"
+                        && binding.context.is_none()
+                        && binding.input.as_deref() == Some("{\"slot\":1}")
+                })
         );
 
         let profile_config_report =
