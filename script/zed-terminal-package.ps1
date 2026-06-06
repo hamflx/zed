@@ -626,6 +626,47 @@ function Assert-PackageConfigTemplateSchemas {
         )
 }
 
+function Assert-PackageDefaultKeymapReferences {
+    param([Parameter(Mandatory = $true)][string]$PackageDir)
+
+    $rootDefaultKeymapFile = Join-Path $PackageDir "default-keymap.json"
+    $templateDefaultKeymapFile = Join-Path (Join-Path $PackageDir "config-template") "default-keymap.json"
+    if (-not (Test-Path -LiteralPath $rootDefaultKeymapFile -PathType Leaf)) {
+        throw "package default keymap reference was not written: $rootDefaultKeymapFile"
+    }
+    if (-not (Test-Path -LiteralPath $templateDefaultKeymapFile -PathType Leaf)) {
+        throw "package config template default keymap reference was not written: $templateDefaultKeymapFile"
+    }
+
+    $rootDefaultKeymapText = Get-Content -LiteralPath $rootDefaultKeymapFile -Raw
+    $templateDefaultKeymapText = Get-Content -LiteralPath $templateDefaultKeymapFile -Raw
+    if ([string]::IsNullOrWhiteSpace($rootDefaultKeymapText) -or [string]::IsNullOrWhiteSpace($templateDefaultKeymapText)) {
+        throw "package default keymap references must not be empty"
+    }
+
+    $rootNormalized = $rootDefaultKeymapText.Replace("`r`n", "`n").TrimEnd()
+    $templateNormalized = $templateDefaultKeymapText.Replace("`r`n", "`n").TrimEnd()
+    if ($rootNormalized -ne $templateNormalized) {
+        throw "package default keymap references did not describe the same keymap"
+    }
+
+    foreach ($snippet in @(
+        "zed_terminal::NewTerminalTab",
+        "zed_terminal::DuplicateTerminalTab",
+        "zed_terminal::NewTerminalSplitRight",
+        "command_palette::Toggle",
+        "terminal::Paste",
+        "pane::CloseActiveItem"
+    )) {
+        if (
+            $rootDefaultKeymapText.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0 -or
+            $templateDefaultKeymapText.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0
+        ) {
+            throw "package default keymap references are missing expected binding content: $snippet"
+        }
+    }
+}
+
 function Assert-VersionInfoJson {
     param(
         [Parameter(Mandatory = $true)]$VersionInfo,
@@ -1586,6 +1627,7 @@ function Assert-PackageManifest {
         "startup_schema",
         "keymap_schema",
         "default_keymap",
+        "default_keymap_reference",
         "startup_layout",
         "startup_discovery",
         "startup_validation",
@@ -1665,6 +1707,7 @@ function Assert-PackageManifest {
     }
 
     Assert-PackageConfigTemplateSchemas -ConfigTemplateDir (Join-Path $PackageDir "config-template")
+    Assert-PackageDefaultKeymapReferences -PackageDir $PackageDir
 
     $actualFiles = @(Get-ChildItem -LiteralPath $PackageDir -Recurse -File |
         Where-Object { $_.FullName -ne $ManifestFile }
@@ -2179,6 +2222,7 @@ $manifest = [pscustomobject]@{
         startup_layout = "ok"
         startup_discovery = "ok"
         startup_validation = "ok"
+        default_keymap_reference = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
