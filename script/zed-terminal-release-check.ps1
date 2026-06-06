@@ -97,6 +97,7 @@ $script:PackageSmoke = $null
 $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
+$script:SourceControl = $null
 
 function Write-ReleaseLog {
     param([Parameter(Mandatory = $true)][string]$Message)
@@ -255,6 +256,36 @@ function Invoke-NativeCommand {
     )
 
     $null = Invoke-NativeCommandResult -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+}
+
+function Get-GitSourceInfo {
+    try {
+        $commitResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "HEAD")
+        if ($commitResult.ExitCode -ne 0) {
+            throw "git rev-parse failed"
+        }
+
+        $branchResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "--abbrev-ref", "HEAD")
+        $statusResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("status", "--porcelain")
+        $statusText = if ($statusResult.ExitCode -eq 0) { $statusResult.Stdout.TrimEnd() } else { "" }
+        $statusEntries = if ([string]::IsNullOrWhiteSpace($statusText)) { @() } else { @($statusText -split "`r?`n") }
+
+        return [pscustomobject]@{
+            git_available = $true
+            git_commit = $commitResult.Stdout.Trim()
+            git_branch = if ($branchResult.ExitCode -eq 0) { $branchResult.Stdout.Trim() } else { $null }
+            git_dirty = [bool]($statusEntries.Count -gt 0)
+            git_status_entry_count = [int]$statusEntries.Count
+        }
+    } catch {
+        return [pscustomobject]@{
+            git_available = $false
+            git_commit = $null
+            git_branch = $null
+            git_dirty = $null
+            git_status_entry_count = $null
+        }
+    }
 }
 
 function Invoke-NativeJsonCommandResult {
@@ -646,6 +677,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.keymap_schema -ne "ok" -or
         $manifest.validation.default_keymap_reference -ne "ok" -or
         $manifest.validation.licenses -ne "ok" -or
+        $manifest.validation.git_provenance -ne "ok" -or
         $manifest.validation.startup_layout -ne "ok" -or
         $manifest.validation.startup_discovery -ne "ok" -or
         $manifest.validation.startup_validation -ne "ok" -or
@@ -670,6 +702,7 @@ function Read-PackageSmokeSummary {
         $summary.validation.keymap_schema -ne "ok" -or
         $summary.validation.default_keymap_reference -ne "ok" -or
         $summary.validation.licenses -ne "ok" -or
+        $summary.validation.git_provenance -ne "ok" -or
         $summary.validation.startup_layout -ne "ok" -or
         $summary.validation.startup_discovery -ne "ok" -or
         $summary.validation.startup_validation -ne "ok" -or
@@ -681,11 +714,29 @@ function Read-PackageSmokeSummary {
         $summary.validation.config_bundle -ne "ok" -or
         $summary.validation.support_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/schema/license/startup/settings/keymap validation/backup/config bundle/support bundle status"
+        throw "package smoke summary did not report expected path/version/schema/license/git/startup/settings/keymap validation/backup/config bundle/support bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
         throw "package smoke summary metadata did not match the validated manifest"
+    }
+    if (
+        -not $manifest.source_control -or
+        -not $summary.source_control -or
+        $manifest.source_control.git_commit -ne $manifest.git_commit -or
+        $summary.source_control.git_commit -ne $summary.git_commit -or
+        $manifest.source_control.git_commit -ne $summary.source_control.git_commit -or
+        $manifest.source_control.git_branch -ne $summary.source_control.git_branch -or
+        $manifest.source_control.git_dirty -ne $summary.source_control.git_dirty -or
+        [int]$manifest.source_control.git_status_entry_count -ne [int]$summary.source_control.git_status_entry_count
+    ) {
+        throw "package smoke source control metadata did not match the validated manifest"
+    }
+    if (
+        $summary.source_control.git_available -eq $true -and
+        $summary.source_control.git_commit -notmatch '^[a-f0-9]{40}$'
+    ) {
+        throw "package smoke source control commit was not a full SHA"
     }
     if (
         -not $versionInfo -or
@@ -717,6 +768,7 @@ function Read-PackageSmokeSummary {
         platform = [string]$summary.platform
         architecture = [string]$summary.architecture
         git_commit = [string]$summary.git_commit
+        source_control = $summary.source_control
         manifest_file = $manifestFile
         readme_file = $readmeFile
         config_template_dir = $configTemplateDir
@@ -976,6 +1028,29 @@ function Get-SkippedReleaseChecks {
     return @($skipped)
 }
 
+function Get-ReleaseBlockers {
+    $blockers = New-Object System.Collections.Generic.List[string]
+    $sourceControl = $script:SourceControl
+    if (-not $sourceControl -or $sourceControl.git_available -ne $true) {
+        $blockers.Add("source control metadata unavailable")
+    } elseif ($sourceControl.git_dirty) {
+        $blockers.Add("source tree has uncommitted changes")
+    }
+
+    if (
+        $script:PackageSmoke -and
+        $script:PackageSmoke.source_control -and
+        $sourceControl -and
+        $sourceControl.git_available -eq $true -and
+        $script:PackageSmoke.source_control.git_available -eq $true -and
+        $script:PackageSmoke.source_control.git_commit -ne $sourceControl.git_commit
+    ) {
+        $blockers.Add("package smoke commit does not match release check commit")
+    }
+
+    return @($blockers)
+}
+
 function Format-MarkdownValue {
     param([Parameter()][object]$Value)
 
@@ -1004,6 +1079,19 @@ function New-ReleaseReportMarkdown {
     $lines += "| Report file | $(Format-MarkdownValue $Summary.report_file) |"
     $lines += ""
 
+    $lines += "## Source Control"
+    $lines += ""
+    $lines += "| Field | Value |"
+    $lines += "| --- | --- |"
+    if ($Summary.source_control) {
+        $lines += "| Git available | $(Format-MarkdownValue $Summary.source_control.git_available) |"
+        $lines += "| Commit | $(Format-MarkdownValue $Summary.source_control.git_commit) |"
+        $lines += "| Branch | $(Format-MarkdownValue $Summary.source_control.git_branch) |"
+        $lines += "| Dirty | $(Format-MarkdownValue $Summary.source_control.git_dirty) |"
+        $lines += "| Status entries | $(Format-MarkdownValue $Summary.source_control.git_status_entry_count) |"
+    }
+    $lines += ""
+
     $lines += "## Skipped Release Checks"
     if ($null -eq $Summary.skipped_release_checks -or $Summary.skipped_release_checks.Count -eq 0) {
         $lines += ""
@@ -1011,6 +1099,17 @@ function New-ReleaseReportMarkdown {
     } else {
         foreach ($check in $Summary.skipped_release_checks) {
             $lines += "- $(Format-MarkdownValue $check)"
+        }
+    }
+    $lines += ""
+
+    $lines += "## Release Blockers"
+    if ($null -eq $Summary.release_blockers -or $Summary.release_blockers.Count -eq 0) {
+        $lines += ""
+        $lines += "None."
+    } else {
+        foreach ($blocker in $Summary.release_blockers) {
+            $lines += "- $(Format-MarkdownValue $blocker)"
         }
     }
     $lines += ""
@@ -1024,6 +1123,11 @@ function New-ReleaseReportMarkdown {
         $lines += "| Package | $(Format-MarkdownValue $package.package_name) |"
         $lines += "| Version | $(Format-MarkdownValue $package.version) |"
         $lines += "| Build profile | $(Format-MarkdownValue $package.build_profile) |"
+        if ($package.source_control) {
+            $lines += "| Git commit | $(Format-MarkdownValue $package.source_control.git_commit) |"
+            $lines += "| Git branch | $(Format-MarkdownValue $package.source_control.git_branch) |"
+            $lines += "| Git dirty | $(Format-MarkdownValue $package.source_control.git_dirty) |"
+        }
         if ($package.version_info) {
             $lines += "| Target | $(Format-MarkdownValue "$($package.version_info.target_os)-$($package.version_info.target_arch)") |"
             $lines += "| Debug assertions | $(Format-MarkdownValue $package.version_info.debug_assertions) |"
@@ -1089,11 +1193,13 @@ function Write-ReleaseSummary {
     param([Parameter(Mandatory = $true)][string]$Status)
 
     $skippedReleaseChecks = @(Get-SkippedReleaseChecks)
-    $releaseReady = $Status -eq "ok" -and $skippedReleaseChecks.Count -eq 0
+    $releaseBlockers = @(Get-ReleaseBlockers)
+    $releaseReady = $Status -eq "ok" -and $skippedReleaseChecks.Count -eq 0 -and $releaseBlockers.Count -eq 0
     $payload = [pscustomobject]@{
         status = $Status
         release_ready = $releaseReady
         release_mode = if ($releaseReady) { "full" } else { "partial" }
+        source_control = $script:SourceControl
         skip_options = [pscustomobject]@{
             cargo = [bool]$SkipCargo
             rust_tests = [bool]$SkipRustTests
@@ -1104,6 +1210,7 @@ function Write-ReleaseSummary {
             split_visual_smoke = [bool]$SkipSplitVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
+        release_blockers = $releaseBlockers
         run_dir = $runDir
         binary = $Binary
         log_file = $releaseLog
@@ -1127,10 +1234,19 @@ function Write-ReleaseSummary {
 }
 
 try {
+    $script:SourceControl = Get-GitSourceInfo
     Write-Host "zed-terminal release check"
     Write-Host "repo_root: $repoRoot"
     Write-Host "run_dir: $runDir"
     Write-Host "binary: $Binary"
+    if ($script:SourceControl.git_available) {
+        Write-Host "git_commit: $($script:SourceControl.git_commit)"
+        Write-Host "git_branch: $($script:SourceControl.git_branch)"
+        Write-Host "git_dirty: $($script:SourceControl.git_dirty)"
+        Write-Host "git_status_entry_count: $($script:SourceControl.git_status_entry_count)"
+    } else {
+        Write-Host "git_source: unavailable"
+    }
     if ($VisualBaselineImage) {
         Write-Host "visual_baseline_image: $VisualBaselineImage"
     } elseif ($SkipVisualBaseline) {

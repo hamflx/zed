@@ -122,6 +122,36 @@ function Invoke-CheckedProcess {
     return $result
 }
 
+function Get-GitSourceInfo {
+    try {
+        $commitResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "HEAD")
+        if ($commitResult.ExitCode -ne 0) {
+            throw "git rev-parse failed"
+        }
+
+        $branchResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "--abbrev-ref", "HEAD")
+        $statusResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("status", "--porcelain")
+        $statusText = if ($statusResult.ExitCode -eq 0) { $statusResult.Stdout.TrimEnd() } else { "" }
+        $statusEntries = if ([string]::IsNullOrWhiteSpace($statusText)) { @() } else { @($statusText -split "`r?`n") }
+
+        return [pscustomobject]@{
+            git_available = $true
+            git_commit = $commitResult.Stdout.Trim()
+            git_branch = if ($branchResult.ExitCode -eq 0) { $branchResult.Stdout.Trim() } else { $null }
+            git_dirty = [bool]($statusEntries.Count -gt 0)
+            git_status_entry_count = [int]$statusEntries.Count
+        }
+    } catch {
+        return [pscustomobject]@{
+            git_available = $false
+            git_commit = $null
+            git_branch = $null
+            git_dirty = $null
+            git_status_entry_count = $null
+        }
+    }
+}
+
 function Get-ZedTerminalVersion {
     if ($Version) {
         return $Version
@@ -1646,9 +1676,32 @@ function Assert-PackageManifest {
         $manifest.binary -ne $BinaryFileName -or
         $manifest.binary_sha256 -ne $BinaryHash -or
         -not $manifest.version_info -or
+        -not $manifest.source_control -or
         $manifest.config_template_dir -ne "config-template"
     ) {
         throw "package manifest metadata did not match the package that was just built"
+    }
+    if ($manifest.source_control.git_commit -ne $manifest.git_commit) {
+        throw "package manifest git commit did not match source control metadata"
+    }
+    if (
+        $manifest.source_control.git_available -eq $true -and
+        $manifest.source_control.git_commit -notmatch '^[a-f0-9]{40}$'
+    ) {
+        throw "package manifest source control commit was not a full SHA"
+    }
+    if (
+        $manifest.source_control.git_available -eq $true -and
+        $manifest.source_control.git_dirty -ne $true -and
+        $manifest.source_control.git_dirty -ne $false
+    ) {
+        throw "package manifest source control dirty flag was not boolean"
+    }
+    if (
+        $manifest.source_control.git_available -eq $true -and
+        [int]$manifest.source_control.git_status_entry_count -lt 0
+    ) {
+        throw "package manifest source control status count was invalid"
     }
 
     Assert-VersionInfoJson `
@@ -1669,6 +1722,7 @@ function Assert-PackageManifest {
         "default_keymap",
         "default_keymap_reference",
         "licenses",
+        "git_provenance",
         "startup_layout",
         "startup_discovery",
         "startup_validation",
@@ -2025,12 +2079,8 @@ Copy-RequiredFile -Source (Join-Path $repoRoot "LICENSE-GPL") -Destination (Join
 Copy-RequiredFile -Source (Join-Path $repoRoot "LICENSE-APACHE") -Destination (Join-Path $packageDir "LICENSE-APACHE")
 Copy-RequiredFile -Source (Join-Path $repoRoot "assets\keymaps\zed-terminal.json") -Destination (Join-Path $packageDir "default-keymap.json")
 
-$gitCommit = $null
-try {
-    $gitCommit = (Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "HEAD")).Stdout.Trim()
-} catch {
-    $gitCommit = $null
-}
+$sourceControl = Get-GitSourceInfo
+$gitCommit = $sourceControl.git_commit
 
 $help = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @("--help")
 if ($help.Stdout -notmatch "Launch the standalone Zed terminal" -or $help.Stdout -notmatch "--init-config") {
@@ -2246,6 +2296,7 @@ $manifest = [pscustomobject]@{
     platform = $platform
     architecture = $architecture
     git_commit = $gitCommit
+    source_control = $sourceControl
     created_at_utc = (Get-Date).ToUniversalTime().ToString("o")
     binary = $binaryFileName
     binary_sha256 = $binaryHash
@@ -2266,6 +2317,7 @@ $manifest = [pscustomobject]@{
         startup_validation = "ok"
         default_keymap_reference = "ok"
         licenses = "ok"
+        git_provenance = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
@@ -2331,6 +2383,7 @@ $packageSummary = [pscustomobject]@{
     platform = $platform
     architecture = $architecture
     git_commit = $gitCommit
+    source_control = $sourceControl
     manifest_file = $manifestFile
     readme_file = Join-Path $packageDir "README.md"
     config_template_dir = $configTemplateDir
