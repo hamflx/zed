@@ -3614,6 +3614,7 @@ struct TerminalStartupProfileSummary {
     icon: Option<String>,
     color: Option<String>,
     visible_slot: Option<usize>,
+    visible_slot_shortcut: Option<String>,
     hidden: bool,
     is_default: bool,
     tab_count: usize,
@@ -3639,6 +3640,7 @@ struct TerminalStartupProfileDescription {
     icon: Option<String>,
     color: Option<String>,
     visible_slot: Option<usize>,
+    visible_slot_shortcut: Option<String>,
     hidden: bool,
     is_default: bool,
     working_directory: Option<PathBuf>,
@@ -8930,6 +8932,7 @@ impl TerminalStartupConfig {
                     return None;
                 }
 
+                let visible_slot = visible_slots.get(name).copied();
                 Some(TerminalStartupProfileSummary {
                     name: name.clone(),
                     display_name: normalize_profile_text(profile.display_name.as_deref())
@@ -8937,7 +8940,8 @@ impl TerminalStartupConfig {
                     description: normalize_profile_text(profile.description.as_deref()),
                     icon: normalize_profile_text(profile.icon.as_deref()),
                     color: normalize_profile_text(profile.color.as_deref()),
-                    visible_slot: visible_slots.get(name).copied(),
+                    visible_slot,
+                    visible_slot_shortcut: visible_profile_slot_shortcut(visible_slot),
                     hidden: profile.hidden,
                     is_default: self.default_profile.as_deref() == Some(name.as_str()),
                     tab_count: 1 + profile.tabs.len(),
@@ -17031,6 +17035,10 @@ fn startup_profile_description_report(
         }
     })?;
 
+    let visible_slot = startup_config
+        .visible_profile_slots()
+        .get(&profile)
+        .copied();
     Ok(TerminalStartupProfileDescription {
         startup_config_file: startup_config_file.to_path_buf(),
         profile: profile.clone(),
@@ -17038,10 +17046,8 @@ fn startup_profile_description_report(
         description: startup_profile.description.clone(),
         icon: startup_profile.icon.clone(),
         color: startup_profile.color.clone(),
-        visible_slot: startup_config
-            .visible_profile_slots()
-            .get(&profile)
-            .copied(),
+        visible_slot,
+        visible_slot_shortcut: visible_profile_slot_shortcut(visible_slot),
         hidden: startup_profile.hidden,
         is_default: startup_config.default_profile.as_deref() == Some(profile.as_str()),
         working_directory: startup_profile.working_directory.clone(),
@@ -17246,6 +17252,12 @@ fn format_startup_profiles_report(report: &TerminalStartupProfileListReport) -> 
         if let Some(visible_slot) = profile.visible_slot {
             writeln!(&mut output, "  visible_slot: {visible_slot}")
                 .expect("writing to string should not fail");
+            writeln!(
+                &mut output,
+                "  visible_slot_shortcut: {}",
+                profile.visible_slot_shortcut.as_deref().unwrap_or("none")
+            )
+            .expect("writing to string should not fail");
         }
         writeln!(&mut output, "  display_name: {}", profile.display_name)
             .expect("writing to string should not fail");
@@ -17295,6 +17307,7 @@ fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serd
         "icon": profile.icon.as_deref(),
         "color": profile.color.as_deref(),
         "visible_slot": profile.visible_slot,
+        "visible_slot_shortcut": profile.visible_slot_shortcut.as_deref(),
         "hidden": profile.hidden,
         "is_default": profile.is_default,
         "tab_count": profile.tab_count,
@@ -17340,6 +17353,12 @@ fn format_startup_profile_description(report: &TerminalStartupProfileDescription
     if let Some(visible_slot) = report.visible_slot {
         writeln!(&mut output, "visible_slot: {visible_slot}")
             .expect("writing to string should not fail");
+        writeln!(
+            &mut output,
+            "visible_slot_shortcut: {}",
+            report.visible_slot_shortcut.as_deref().unwrap_or("none")
+        )
+        .expect("writing to string should not fail");
     }
     writeln!(&mut output, "hidden: {}", report.hidden).expect("writing to string should not fail");
     writeln!(&mut output, "is_default: {}", report.is_default)
@@ -17540,6 +17559,7 @@ fn format_startup_profile_description_json(
         "icon": report.icon.as_deref(),
         "color": report.color.as_deref(),
         "visible_slot": report.visible_slot,
+        "visible_slot_shortcut": report.visible_slot_shortcut.as_deref(),
         "hidden": report.hidden,
         "is_default": report.is_default,
         "working_directory": report
@@ -22312,6 +22332,15 @@ impl TerminalUserKeymapSource {
     }
 }
 
+fn visible_profile_slot_shortcut(visible_slot: Option<usize>) -> Option<String> {
+    let visible_slot = visible_slot?;
+    if (1..=9).contains(&visible_slot) {
+        Some(format!("ctrl-shift-{visible_slot}"))
+    } else {
+        None
+    }
+}
+
 fn profile_menu_label(profile: &TerminalStartupProfileSummary) -> String {
     let mut label = profile.display_name.clone();
     if profile.display_name != profile.name {
@@ -26038,6 +26067,7 @@ mod tests {
                 icon: Some("terminal".into()),
                 color: Some("#0f766e".into()),
                 visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
@@ -26226,6 +26256,35 @@ mod tests {
     }
 
     #[test]
+    fn visible_profile_slot_shortcut_is_limited_to_default_profile_slot_bindings() {
+        let mut profiles = BTreeMap::new();
+        for index in 1..=10 {
+            profiles.insert(
+                format!("profile-{index:02}"),
+                TerminalStartupProfileConfig::default(),
+            );
+        }
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+        let summaries = config.profile_summaries(false);
+
+        assert_eq!(summaries[0].visible_slot, Some(1));
+        assert_eq!(
+            summaries[0].visible_slot_shortcut.as_deref(),
+            Some("ctrl-shift-1")
+        );
+        assert_eq!(summaries[8].visible_slot, Some(9));
+        assert_eq!(
+            summaries[8].visible_slot_shortcut.as_deref(),
+            Some("ctrl-shift-9")
+        );
+        assert_eq!(summaries[9].visible_slot, Some(10));
+        assert_eq!(summaries[9].visible_slot_shortcut, None);
+    }
+
+    #[test]
     fn terminal_profile_command_palette_filters_by_query() {
         let profiles = vec![
             TerminalStartupProfileSummary {
@@ -26235,6 +26294,7 @@ mod tests {
                 icon: None,
                 color: None,
                 visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26247,6 +26307,7 @@ mod tests {
                 icon: None,
                 color: None,
                 visible_slot: Some(2),
+                visible_slot_shortcut: Some("ctrl-shift-2".into()),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26274,6 +26335,7 @@ mod tests {
             icon: Some("rocket".into()),
             color: Some("#dc2626".into()),
             visible_slot: Some(1),
+            visible_slot_shortcut: Some("ctrl-shift-1".into()),
             hidden: false,
             is_default: false,
             tab_count: 1,
@@ -26322,6 +26384,7 @@ mod tests {
                 icon: Some("terminal".into()),
                 color: None,
                 visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26351,6 +26414,7 @@ mod tests {
                 icon: Some("terminal".into()),
                 color: None,
                 visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
                 hidden: false,
                 is_default: false,
                 tab_count: 1,
@@ -26760,6 +26824,7 @@ mod tests {
                 icon: Some("terminal".into()),
                 color: Some("#0f766e".into()),
                 visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
                 hidden: false,
                 is_default: true,
                 tab_count: 2,
@@ -26776,12 +26841,19 @@ mod tests {
                         profile.display_name,
                         profile.hidden,
                         profile.visible_slot,
+                        profile.visible_slot_shortcut,
                     )
                 })
                 .collect::<Vec<_>>(),
             vec![
-                ("hidden".into(), "hidden".into(), true, None),
-                ("work".into(), "Work Shell".into(), false, Some(1)),
+                ("hidden".into(), "hidden".into(), true, None, None),
+                (
+                    "work".into(),
+                    "Work Shell".into(),
+                    false,
+                    Some(1),
+                    Some("ctrl-shift-1".into()),
+                ),
             ]
         );
     }
@@ -28516,6 +28588,7 @@ mod tests {
         assert!(visible.contains("profiles: 1 visible, 1 hidden"));
         assert!(visible.contains("- work (default)"));
         assert!(visible.contains("  visible_slot: 1"));
+        assert!(visible.contains("  visible_slot_shortcut: ctrl-shift-1"));
         assert!(visible.contains("  display_name: Work Shell"));
         assert!(visible.contains("  description: Project startup shell"));
         assert!(visible.contains("  icon: terminal"));
@@ -28549,6 +28622,10 @@ mod tests {
         assert_eq!(json["profiles"][0]["name"], "secret");
         assert_eq!(json["profiles"][0]["display_name"], "Secret");
         assert_eq!(json["profiles"][0]["visible_slot"], serde_json::Value::Null);
+        assert_eq!(
+            json["profiles"][0]["visible_slot_shortcut"],
+            serde_json::Value::Null
+        );
         assert_eq!(json["profiles"][0]["hidden"], true);
         assert_eq!(json["profiles"][0]["is_default"], false);
         assert_eq!(json["profiles"][0]["tab_count"], 1);
@@ -28556,6 +28633,7 @@ mod tests {
         assert_eq!(json["profiles"][1]["name"], "work");
         assert_eq!(json["profiles"][1]["display_name"], "Work Shell");
         assert_eq!(json["profiles"][1]["visible_slot"], 1);
+        assert_eq!(json["profiles"][1]["visible_slot_shortcut"], "ctrl-shift-1");
         assert_eq!(json["profiles"][1]["description"], "Project startup shell");
         assert_eq!(json["profiles"][1]["icon"], "terminal");
         assert_eq!(json["profiles"][1]["color"], "#0f766e");
@@ -28604,6 +28682,7 @@ mod tests {
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
             visible_slot: None,
+            visible_slot_shortcut: None,
             hidden: true,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),
@@ -28651,6 +28730,7 @@ mod tests {
         assert!(output.contains("icon: terminal"));
         assert!(output.contains("color: #0f766e"));
         assert!(!output.contains("visible_slot:"));
+        assert!(!output.contains("visible_slot_shortcut:"));
         assert!(output.contains("hidden: true"));
         assert!(output.contains("is_default: true"));
         assert!(output.contains("working_directory: ."));
@@ -28681,6 +28761,7 @@ mod tests {
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
             visible_slot: Some(2),
+            visible_slot_shortcut: Some("ctrl-shift-2".into()),
             hidden: false,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),
@@ -28718,6 +28799,7 @@ mod tests {
         assert_eq!(json["icon"], "terminal");
         assert_eq!(json["color"], "#0f766e");
         assert_eq!(json["visible_slot"], 2);
+        assert_eq!(json["visible_slot_shortcut"], "ctrl-shift-2");
         assert_eq!(json["hidden"], false);
         assert_eq!(json["is_default"], true);
         assert_eq!(json["working_directory"], ".");
@@ -29059,6 +29141,10 @@ mod tests {
         assert_eq!(report.profile, "work");
         assert_eq!(report.display_name.as_deref(), Some("Work Shell"));
         assert_eq!(report.visible_slot, Some(1));
+        assert_eq!(
+            report.visible_slot_shortcut.as_deref(),
+            Some("ctrl-shift-1")
+        );
         assert!(report.is_default);
         assert_eq!(report.env_keys, vec!["API_KEY", "ZED_MODE"]);
         assert_eq!(report.tabs.len(), 1);
@@ -29070,6 +29156,7 @@ mod tests {
 
         let text = format_startup_profile_description(&report);
         assert!(text.contains("visible_slot: 1"));
+        assert!(text.contains("visible_slot_shortcut: ctrl-shift-1"));
         assert!(text.contains("  - API_KEY"));
         assert!(text.contains("  - ZED_MODE"));
         assert!(text.contains("  - LOG_TOKEN"));
@@ -29081,6 +29168,7 @@ mod tests {
         let json_value: serde_json::Value =
             serde_json::from_str(&json).expect("profile description json should parse");
         assert_eq!(json_value["visible_slot"], 1);
+        assert_eq!(json_value["visible_slot_shortcut"], "ctrl-shift-1");
         assert!(json.contains("API_KEY"));
         assert!(json.contains("LOG_TOKEN"));
         assert!(!json.contains("SECRET_VALUE"));
@@ -29202,14 +29290,17 @@ mod tests {
 
         assert_eq!(report.profile, "secret");
         assert_eq!(report.visible_slot, None);
+        assert_eq!(report.visible_slot_shortcut, None);
         assert!(report.hidden);
         let text = format_startup_profile_description(&report);
         assert!(!text.contains("visible_slot:"));
+        assert!(!text.contains("visible_slot_shortcut:"));
         let json = format_startup_profile_description_json(&report)
             .expect("hidden profile description json should format");
         let json: serde_json::Value =
             serde_json::from_str(&json).expect("hidden profile description json should parse");
         assert_eq!(json["visible_slot"], serde_json::Value::Null);
+        assert_eq!(json["visible_slot_shortcut"], serde_json::Value::Null);
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -32100,6 +32191,7 @@ mod tests {
             icon: Some("terminal".into()),
             color: Some("#0f766e".into()),
             visible_slot: Some(1),
+            visible_slot_shortcut: Some("ctrl-shift-1".into()),
             hidden: false,
             is_default: true,
             working_directory: Some(PathBuf::from(".")),
@@ -49888,6 +49980,7 @@ mod tests {
                 icon: None,
                 color: None,
                 visible_slot: None,
+                visible_slot_shortcut: None,
                 hidden: true,
                 is_default: false,
                 tab_count: 1,

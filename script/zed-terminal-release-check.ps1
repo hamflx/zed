@@ -2803,6 +2803,9 @@ try {
             if ($mutationProfileDescription.profile -ne "work" -or -not $mutationProfileDescription.is_default -or $mutationProfileDescription.command -ne "pwsh -NoLogo" -or $mutationProfileDescription.title -ne "Work Home" -or $mutationProfileEnvKeys -notcontains "ZED_TERMINAL_MUTATION_TOKEN") {
                 throw "Mutated profile description did not report the expected default profile state."
             }
+            if ([int64]$mutationProfileDescription.visible_slot -ne 1 -or $mutationProfileDescription.visible_slot_shortcut -ne "ctrl-shift-1") {
+                throw "Mutated profile description did not report the expected visible profile slot shortcut."
+            }
             $mutationProfileReferences = @($mutationProfileDescription.references)
             if ($mutationProfileDescription.reference_count -ne 2 -or $mutationProfileReferences.Count -ne 2 -or $mutationProfileReferences[0].kind -ne "default_profile" -or $mutationProfileReferences[1].kind -ne "root_tab" -or $mutationProfileReferences[1].tab -ne 1) {
                 throw "Mutated profile description did not report the expected default/root tab references."
@@ -3057,6 +3060,9 @@ try {
             if ([int64]$visibleProfileEntries[0].visible_slot -ne 1) {
                 throw "Visible profile list did not report the expected visible profile slot."
             }
+            if ($visibleProfileEntries[0].visible_slot_shortcut -ne "ctrl-shift-1") {
+                throw "Visible profile list did not report the expected visible profile slot shortcut."
+            }
             $allProfiles = Invoke-NativeJsonCommandResult "list-profiles-all" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -3071,6 +3077,9 @@ try {
             if ($null -ne $hiddenProfileEntries[0].visible_slot) {
                 throw "All-profile list assigned a visible slot to a hidden profile."
             }
+            if ($null -ne $hiddenProfileEntries[0].visible_slot_shortcut) {
+                throw "All-profile list assigned a visible slot shortcut to a hidden profile."
+            }
             $profileDescription = Invoke-NativeJsonCommandResult "describe-profile-work" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -3082,6 +3091,9 @@ try {
             }
             if ([int64]$profileDescription.visible_slot -ne 1) {
                 throw "Profile description did not report the expected visible profile slot."
+            }
+            if ($profileDescription.visible_slot_shortcut -ne "ctrl-shift-1") {
+                throw "Profile description did not report the expected visible profile slot shortcut."
             }
             $profileEnvKeys = @($profileDescription.env_keys)
             $profileTabEnvKeys = @($profileDescription.tabs[0].env_keys)
@@ -3104,6 +3116,9 @@ try {
             )
             if ($hiddenProfileDescription.profile -ne "secret" -or -not $hiddenProfileDescription.hidden -or $null -ne $hiddenProfileDescription.visible_slot) {
                 throw "Hidden profile description unexpectedly reported a visible profile slot."
+            }
+            if ($null -ne $hiddenProfileDescription.visible_slot_shortcut) {
+                throw "Hidden profile description unexpectedly reported a visible profile slot shortcut."
             }
         }
     }

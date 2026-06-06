@@ -1232,6 +1232,10 @@ function Assert-StartupDiscoveryJson {
         if ($profile.hidden -eq $true -or [int64]$profile.visible_slot -ne ($index + 1)) {
             throw "zed-terminal --list-profiles did not report stable visible profile slot metadata"
         }
+        $expectedShortcut = if (($index + 1) -le 9) { "ctrl-shift-$($index + 1)" } else { $null }
+        if ($profile.visible_slot_shortcut -ne $expectedShortcut) {
+            throw "zed-terminal --list-profiles did not report stable visible profile shortcut metadata"
+        }
     }
 
     if ($profiles.Count -gt 0) {
@@ -1242,7 +1246,8 @@ function Assert-StartupDiscoveryJson {
             $ProfileDescription.profile -ne $firstVisibleProfile.name -or
             $ProfileDescription.startup_config_file -ne $ExpectedStartupConfigFile -or
             $ProfileDescription.hidden -eq $true -or
-            [int64]$ProfileDescription.visible_slot -ne [int64]$firstVisibleProfile.visible_slot
+            [int64]$ProfileDescription.visible_slot -ne [int64]$firstVisibleProfile.visible_slot -or
+            $ProfileDescription.visible_slot_shortcut -ne $firstVisibleProfile.visible_slot_shortcut
         ) {
             throw "zed-terminal --describe-profile did not report stable visible profile slot metadata"
         }
