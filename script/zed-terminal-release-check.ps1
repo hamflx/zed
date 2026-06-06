@@ -648,6 +648,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.keymap_validation -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
+        $manifest.validation.keymap_backup -ne "ok" -or
         $manifest.validation.config_bundle -ne "ok" -or
         $manifest.validation.support_bundle -ne "ok" -or
         $manifest.validation.manifest -ne "ok" -or
@@ -666,6 +667,7 @@ function Read-PackageSmokeSummary {
         $summary.validation.settings_validation -ne "ok" -or
         $summary.validation.keymap_validation -ne "ok" -or
         $summary.validation.settings_backup -ne "ok" -or
+        $summary.validation.keymap_backup -ne "ok" -or
         $summary.validation.config_bundle -ne "ok" -or
         $summary.validation.support_bundle -ne "ok"
     ) {

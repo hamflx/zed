@@ -379,6 +379,14 @@ Back up and restore settings without opening a terminal window:
 .\{{BINARY}} --restore-settings --restore-settings-file settings.backup.json
 ```
 
+Back up and restore key bindings without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --backup-keymap --backup-keymap-file keymap.backup.json
+.\{{BINARY}} --check-keymap-backup --check-keymap-backup-file keymap.backup.json
+.\{{BINARY}} --restore-keymap --restore-keymap-file keymap.backup.json
+```
+
 Back up and restore the complete user config set without opening a terminal window:
 
 ```powershell
@@ -402,7 +410,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, keymap validation, settings backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, keymap validation, settings backup/restore, keymap backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -444,6 +452,9 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
+        ".\$BinaryFileName --backup-keymap --backup-keymap-file keymap.backup.json",
+        ".\$BinaryFileName --check-keymap-backup --check-keymap-backup-file keymap.backup.json",
+        ".\$BinaryFileName --restore-keymap --restore-keymap-file keymap.backup.json",
         ".\$BinaryFileName --backup-config-bundle --backup-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json",
@@ -748,6 +759,92 @@ function Assert-SettingsRestoreJson {
     }
 }
 
+function Assert-KeymapBackupJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$KeymapFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.keymap_file -ne $KeymapFile -or
+        $Report.backup_file -ne $BackupFile -or
+        [int64]$Report.byte_count -le 0 -or
+        [int64]$Report.section_count -le 0 -or
+        [int64]$Report.binding_count -lt 0 -or
+        [int64]$Report.unbind_count -lt 0
+    ) {
+        throw "zed-terminal --backup-keymap did not report expected keymap backup status"
+    }
+}
+
+function Assert-KeymapBackupCheckJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$KeymapFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][bool]$ExpectedMatches
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.keymap_file -ne $KeymapFile -or
+        $Report.backup_file -ne $BackupFile -or
+        $Report.matches -ne $ExpectedMatches -or
+        [int64]$Report.keymap_byte_count -le 0 -or
+        [int64]$Report.backup_byte_count -le 0 -or
+        [int64]$Report.keymap_section_count -le 0 -or
+        [int64]$Report.backup_section_count -le 0
+    ) {
+        throw "zed-terminal --check-keymap-backup did not report expected keymap backup check status"
+    }
+}
+
+function Assert-KeymapBackupDiffJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$KeymapFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][bool]$ExpectedTextMatches,
+        [Parameter(Mandatory = $true)][bool]$ExpectedKeymapMatches
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.keymap_file -ne $KeymapFile -or
+        $Report.backup_file -ne $BackupFile -or
+        $Report.text_matches -ne $ExpectedTextMatches -or
+        $Report.keymap_matches -ne $ExpectedKeymapMatches -or
+        [int64]$Report.keymap_byte_count -le 0 -or
+        [int64]$Report.backup_byte_count -le 0 -or
+        [int64]$Report.keymap_section_count -le 0 -or
+        [int64]$Report.backup_section_count -le 0
+    ) {
+        throw "zed-terminal --diff-keymap-backup did not report expected keymap backup diff status"
+    }
+}
+
+function Assert-KeymapRestoreJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$KeymapFile,
+        [Parameter(Mandatory = $true)][string]$RestoreFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.keymap_file -ne $KeymapFile -or
+        $Report.restore_file -ne $RestoreFile -or
+        [int64]$Report.byte_count -le 0 -or
+        [int64]$Report.section_count -le 0 -or
+        [int64]$Report.binding_count -lt 0 -or
+        [int64]$Report.unbind_count -lt 0
+    ) {
+        throw "zed-terminal --restore-keymap did not report expected keymap restore status"
+    }
+}
+
 function Assert-ConfigBundleJson {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -965,6 +1062,91 @@ function Invoke-SettingsBackupSmoke {
     Assert-SettingsBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $BackupFile $true
 }
 
+function Invoke-KeymapBackupSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $keymapFile = Join-Path $ConfigDir "keymap.json"
+    $backup = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--backup-keymap",
+        "--backup-keymap-file", $BackupFile,
+        "--backup-keymap-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-KeymapBackupJson ($backup.Stdout | ConvertFrom-Json) $keymapFile $BackupFile
+    if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
+        throw "zed-terminal --backup-keymap did not write the requested backup file"
+    }
+
+    $backupText = Get-Content -LiteralPath $BackupFile -Raw
+    $keymapText = Get-Content -LiteralPath $keymapFile -Raw
+    if ($backupText -ne $keymapText) {
+        throw "zed-terminal --backup-keymap did not preserve keymap.json exactly"
+    }
+
+    $check = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-keymap-backup",
+        "--check-keymap-backup-file", $BackupFile,
+        "--check-keymap-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-KeymapBackupCheckJson ($check.Stdout | ConvertFrom-Json) $keymapFile $BackupFile $true
+
+    $diff = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-keymap-backup",
+        "--diff-keymap-backup-file", $BackupFile,
+        "--diff-keymap-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-KeymapBackupDiffJson ($diff.Stdout | ConvertFrom-Json) $keymapFile $BackupFile $true $true
+
+    Add-Content -LiteralPath $keymapFile -Value "`n// package keymap drift"
+    $drift = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-keymap-backup",
+        "--diff-keymap-backup-file", $BackupFile,
+        "--diff-keymap-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $driftJson = $drift.Stdout | ConvertFrom-Json
+    Assert-KeymapBackupDiffJson $driftJson $keymapFile $BackupFile $false $true
+    if (@($driftJson.categories) -notcontains "text") {
+        throw "zed-terminal --diff-keymap-backup did not distinguish text-only keymap drift"
+    }
+
+    Set-Content -LiteralPath $keymapFile -Value "{ broken keymap" -NoNewline
+    $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-keymap",
+        "--restore-keymap-file", $BackupFile,
+        "--restore-keymap-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-KeymapRestoreJson ($restore.Stdout | ConvertFrom-Json) $keymapFile $BackupFile
+
+    $restoredKeymapText = Get-Content -LiteralPath $keymapFile -Raw
+    if ($restoredKeymapText -ne $backupText) {
+        throw "zed-terminal --restore-keymap did not restore keymap.json exactly"
+    }
+
+    $postRestore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-keymap-backup",
+        "--check-keymap-backup-file", $BackupFile,
+        "--check-keymap-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-KeymapBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $keymapFile $BackupFile $true
+}
+
 function Invoke-ConfigBundleSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
@@ -1094,6 +1276,7 @@ function Assert-PackageManifest {
         "settings_validation",
         "keymap_validation",
         "settings_backup",
+        "keymap_backup",
         "config_bundle",
         "doctor",
         "support_info",
@@ -1315,6 +1498,13 @@ function Assert-PackageZipArchive {
         -DataDir $extractedDataDir `
         -ConfigDir $extractedConfigDir `
         -BackupFile (Join-Path $ValidationRoot "zip-settings.backup.json") `
+        -WorkingDirectory $extractedPackageDir
+
+    Invoke-KeymapBackupSmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -BackupFile (Join-Path $ValidationRoot "zip-keymap.backup.json") `
         -WorkingDirectory $extractedPackageDir
 
     Invoke-ConfigBundleSmoke `
@@ -1549,6 +1739,13 @@ Invoke-SettingsBackupSmoke `
     -BackupFile (Join-Path $runDir "settings.backup.json") `
     -WorkingDirectory $packageDir
 
+Invoke-KeymapBackupSmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -BackupFile (Join-Path $runDir "keymap.backup.json") `
+    -WorkingDirectory $packageDir
+
 Invoke-ConfigBundleSmoke `
     -Binary $packagedBinary `
     -DataDir $validationDataDir `
@@ -1620,6 +1817,7 @@ $manifest = [pscustomobject]@{
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
+        keymap_backup = "ok"
         config_bundle = "ok"
         doctor = "ok"
         support_info = "ok"
