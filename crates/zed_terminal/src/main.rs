@@ -13,6 +13,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+mod terminal_tab;
+
 use anyhow::{Context as _, Result, bail};
 use assets::Assets;
 use clap::{ArgGroup, CommandFactory, Error as ClapError, Parser, ValueEnum, ValueHint};
@@ -38,7 +40,8 @@ use task::{
     HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
 };
 use terminal::Terminal;
-use terminal_view::{TerminalView, default_working_directory, terminal_panel::TerminalPanel};
+use terminal_tab::TerminalTab;
+use terminal_view::default_working_directory;
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::{ThemeSettings, load_user_theme};
 use workspace::WorkspaceSettings;
@@ -102,6 +105,16 @@ actions!(
         CloseTerminalWindow,
         MinimizeTerminalWindow,
         ZoomTerminalWindow,
+        ActivateNextTerminalTab,
+        ActivatePreviousTerminalTab,
+        ActivateLastTerminalTab,
+        CloseTerminalTab,
+        CloseOtherTerminalTabs,
+        CloseTerminalTabsToTheRight,
+        CloseTerminalTabsToTheLeft,
+        CloseAllTerminalTabs,
+        MoveTerminalTabLeft,
+        MoveTerminalTabRight,
         NewTerminalTab,
         DuplicateTerminalTab,
         DuplicateTerminalSplitAuto,
@@ -123,6 +136,10 @@ actions!(
         ClearDefaultStartupProfile
     ]
 );
+
+#[derive(Clone, PartialEq, Debug, Deserialize, JsonSchema, Default, Action)]
+#[action(namespace = zed_terminal)]
+struct ActivateTerminalTab(pub usize);
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
@@ -26008,6 +26025,11 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
     vec![
         TerminalActionSurface::new::<ClearDefaultStartupProfile>(),
         TerminalActionSurface::new::<CloseTerminalWindow>(),
+        TerminalActionSurface::new::<CloseAllTerminalTabs>(),
+        TerminalActionSurface::new::<CloseOtherTerminalTabs>(),
+        TerminalActionSurface::new::<CloseTerminalTab>(),
+        TerminalActionSurface::new::<CloseTerminalTabsToTheLeft>(),
+        TerminalActionSurface::new::<CloseTerminalTabsToTheRight>(),
         TerminalActionSurface::new::<CopySupportInfoToClipboard>(),
         TerminalActionSurface::new::<CopyStartupProfile>(),
         TerminalActionSurface::new::<CreateStartupProfile>(),
@@ -26021,6 +26043,12 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<HideStartupProfile>(),
         TerminalActionSurface::new::<ImportStartupProfile>(),
         TerminalActionSurface::new::<MinimizeTerminalWindow>(),
+        TerminalActionSurface::new::<ActivateLastTerminalTab>(),
+        TerminalActionSurface::new::<ActivateNextTerminalTab>(),
+        TerminalActionSurface::new::<ActivatePreviousTerminalTab>(),
+        TerminalActionSurface::new::<ActivateTerminalTab>(),
+        TerminalActionSurface::new::<MoveTerminalTabLeft>(),
+        TerminalActionSurface::new::<MoveTerminalTabRight>(),
         TerminalActionSurface::new::<NewTerminalWindow>(),
         TerminalActionSurface::new::<NewTerminalWindowWithProfile>(),
         TerminalActionSurface::new::<NewTerminalWindowWithProfileSlot>(),
@@ -26127,28 +26155,9 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<workspace::SwapPaneRight>(),
         TerminalActionSurface::new::<workspace::SwapPaneUp>(),
         TerminalActionSurface::new::<workspace::ToggleZoom>(),
-        TerminalActionSurface::new::<workspace::pane::ActivateItem>(),
-        TerminalActionSurface::new::<workspace::pane::ActivateLastItem>(),
-        TerminalActionSurface::new::<workspace::pane::ActivateNextItem>(),
-        TerminalActionSurface::new::<workspace::pane::ActivatePreviousItem>(),
-        TerminalActionSurface::new::<workspace::pane::CloseActiveItem>(),
-        TerminalActionSurface::new::<workspace::pane::CloseAllItems>(),
-        TerminalActionSurface::new::<workspace::pane::CloseItemsToTheLeft>(),
-        TerminalActionSurface::new::<workspace::pane::CloseItemsToTheRight>(),
-        TerminalActionSurface::new::<workspace::pane::CloseOtherItems>(),
         TerminalActionSurface::new::<workspace::pane::GoBack>(),
         TerminalActionSurface::new::<workspace::pane::GoForward>(),
-        TerminalActionSurface::new::<workspace::pane::JoinAll>(),
-        TerminalActionSurface::new::<workspace::pane::JoinIntoNext>(),
         TerminalActionSurface::new::<workspace::pane::ReopenClosedItem>(),
-        TerminalActionSurface::new::<workspace::pane::SplitAndMoveDown>(),
-        TerminalActionSurface::new::<workspace::pane::SplitAndMoveLeft>(),
-        TerminalActionSurface::new::<workspace::pane::SplitAndMoveRight>(),
-        TerminalActionSurface::new::<workspace::pane::SplitAndMoveUp>(),
-        TerminalActionSurface::new::<workspace::pane::SwapItemLeft>(),
-        TerminalActionSurface::new::<workspace::pane::SwapItemRight>(),
-        TerminalActionSurface::new::<workspace::pane::TogglePinTab>(),
-        TerminalActionSurface::new::<workspace::pane::UnpinAllTabs>(),
         TerminalActionSurface::new::<zed_actions::buffer_search::Deploy>(),
         TerminalActionSurface::new::<zed_actions::command_palette::Toggle>(),
         TerminalActionSurface::new::<zed_actions::DecreaseBufferFontSize>(),
@@ -26639,49 +26648,19 @@ fn shell_menu_items_with_visibility(
         RestoreStartupProfileMutationBackup,
     ));
     shell_items.extend([
-        MenuItem::action(
-            "Close Tab",
-            workspace::CloseActiveItem {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
-        MenuItem::action(
-            "Close Other Tabs",
-            workspace::CloseOtherItems {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
-        MenuItem::action(
-            "Close Tabs to the Right",
-            workspace::CloseItemsToTheRight {
-                close_pinned: false,
-            },
-        ),
-        MenuItem::action(
-            "Close Tabs to the Left",
-            workspace::CloseItemsToTheLeft {
-                close_pinned: false,
-            },
-        ),
-        MenuItem::action(
-            "Close All Tabs",
-            workspace::CloseAllItems {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
+        MenuItem::action("Close Tab", CloseTerminalTab),
+        MenuItem::action("Close Other Tabs", CloseOtherTerminalTabs),
+        MenuItem::action("Close Tabs to the Right", CloseTerminalTabsToTheRight),
+        MenuItem::action("Close Tabs to the Left", CloseTerminalTabsToTheLeft),
+        MenuItem::action("Close All Tabs", CloseAllTerminalTabs),
         MenuItem::separator(),
         MenuItem::action("Go Back", workspace::pane::GoBack),
         MenuItem::action("Go Forward", workspace::pane::GoForward),
         MenuItem::separator(),
-        MenuItem::action("Next Tab", workspace::ActivateNextItem::default()),
-        MenuItem::action("Previous Tab", workspace::ActivatePreviousItem::default()),
-        MenuItem::action("Move Tab Left", workspace::pane::SwapItemLeft),
-        MenuItem::action("Move Tab Right", workspace::pane::SwapItemRight),
-        MenuItem::action("Toggle Pin Tab", workspace::pane::TogglePinTab),
-        MenuItem::action("Unpin All Tabs", workspace::pane::UnpinAllTabs),
+        MenuItem::action("Next Tab", ActivateNextTerminalTab),
+        MenuItem::action("Previous Tab", ActivatePreviousTerminalTab),
+        MenuItem::action("Move Tab Left", MoveTerminalTabLeft),
+        MenuItem::action("Move Tab Right", MoveTerminalTabRight),
     ]);
 
     shell_items
@@ -26749,47 +26728,7 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Split Down", NewTerminalSplitDown),
         MenuItem::action("Split Left", NewTerminalSplitLeft),
         MenuItem::action("Split Up", NewTerminalSplitUp),
-        MenuItem::action(
-            "Move Tab to Split Right",
-            workspace::pane::SplitAndMoveRight,
-        ),
-        MenuItem::action("Move Tab to Split Down", workspace::pane::SplitAndMoveDown),
-        MenuItem::action("Move Tab to Split Left", workspace::pane::SplitAndMoveLeft),
-        MenuItem::action("Move Tab to Split Up", workspace::pane::SplitAndMoveUp),
         MenuItem::separator(),
-        MenuItem::action(
-            "Close Active Tab",
-            workspace::CloseActiveItem {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
-        MenuItem::action(
-            "Close Other Tabs in Pane",
-            workspace::CloseOtherItems {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
-        MenuItem::action(
-            "Close Tabs to the Right in Pane",
-            workspace::CloseItemsToTheRight {
-                close_pinned: false,
-            },
-        ),
-        MenuItem::action(
-            "Close Tabs to the Left in Pane",
-            workspace::CloseItemsToTheLeft {
-                close_pinned: false,
-            },
-        ),
-        MenuItem::action(
-            "Close All Tabs in Pane",
-            workspace::CloseAllItems {
-                close_pinned: false,
-                save_intent: None,
-            },
-        ),
         MenuItem::action(
             "Close Inactive Tabs and Panes",
             workspace::CloseInactiveTabsAndPanes { save_intent: None },
@@ -26820,8 +26759,6 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Previous Pane", workspace::ActivatePreviousPane),
         MenuItem::action("Last Pane", workspace::ActivateLastPane),
         MenuItem::action("Toggle Pane Zoom", workspace::ToggleZoom),
-        MenuItem::action("Join Pane Into Next", workspace::pane::JoinIntoNext),
-        MenuItem::action("Join All Panes", workspace::pane::JoinAll),
         MenuItem::separator(),
         MenuItem::action("Resize Pane Left", ResizePaneLeft),
         MenuItem::action("Resize Pane Right", ResizePaneRight),
@@ -26966,13 +26903,214 @@ fn terminal_pane_resize_height(cx: &App) -> Pixels {
 fn terminal_auto_split_direction(
     workspace: &Workspace,
     window: &Window,
+    cx: &App,
 ) -> TerminalStartupSplitDirection {
     let size = workspace
-        .bounding_box_for_pane(workspace.active_pane())
-        .map(|bounds| bounds.size)
+        .active_item_as::<TerminalTab>(cx)
+        .and_then(|terminal_tab| terminal_tab.read(cx).active_pane_size(cx))
+        .or_else(|| {
+            workspace
+                .bounding_box_for_pane(workspace.active_pane())
+                .map(|bounds| bounds.size)
+        })
         .unwrap_or_else(|| window.viewport_size());
 
     terminal_auto_split_direction_for_size(size.width, size.height)
+}
+
+fn resize_active_terminal_pane(
+    workspace: &mut Workspace,
+    axis: Axis,
+    amount: Pixels,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+        terminal_tab.update(cx, |terminal_tab, cx| {
+            terminal_tab.resize_active_pane(axis, amount, window, cx);
+        });
+    } else {
+        workspace.resize_pane(axis, amount, window, cx);
+    }
+}
+
+fn reset_active_terminal_pane_sizes(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+        terminal_tab.update(cx, |terminal_tab, cx| {
+            terminal_tab.reset_pane_sizes(cx);
+        });
+    } else {
+        workspace.reset_pane_sizes(cx);
+    }
+}
+
+fn activate_terminal_tab(
+    workspace: &mut Workspace,
+    index: usize,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.activate_item(
+            index.min(pane.items_len().saturating_sub(1)),
+            true,
+            true,
+            window,
+            cx,
+        );
+    });
+}
+
+fn activate_next_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.activate_next_item(&workspace::pane::ActivateNextItem::default(), window, cx);
+    });
+}
+
+fn activate_previous_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.activate_previous_item(
+            &workspace::pane::ActivatePreviousItem::default(),
+            window,
+            cx,
+        );
+    });
+}
+
+fn activate_last_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.activate_last_item(&workspace::pane::ActivateLastItem, window, cx);
+    });
+}
+
+fn close_terminal_tab(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.close_active_item(
+            &workspace::CloseActiveItem {
+                close_pinned: false,
+                save_intent: None,
+            },
+            window,
+            cx,
+        )
+        .detach_and_log_err(cx);
+    });
+}
+
+fn close_other_terminal_tabs(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.close_other_items(
+            &workspace::CloseOtherItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+            None,
+            window,
+            cx,
+        )
+        .detach_and_log_err(cx);
+    });
+}
+
+fn close_terminal_tabs_to_the_right(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.close_items_to_the_right_by_id(
+            None,
+            &workspace::CloseItemsToTheRight {
+                close_pinned: false,
+            },
+            window,
+            cx,
+        )
+        .detach_and_log_err(cx);
+    });
+}
+
+fn close_terminal_tabs_to_the_left(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.close_items_to_the_left_by_id(
+            None,
+            &workspace::CloseItemsToTheLeft {
+                close_pinned: false,
+            },
+            window,
+            cx,
+        )
+        .detach_and_log_err(cx);
+    });
+}
+
+fn close_all_terminal_tabs(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.close_all_items(
+            &workspace::CloseAllItems {
+                close_pinned: false,
+                save_intent: None,
+            },
+            window,
+            cx,
+        )
+        .detach_and_log_err(cx);
+    });
+}
+
+fn move_terminal_tab_left(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.swap_item_left(&workspace::pane::SwapItemLeft, window, cx);
+    });
+}
+
+fn move_terminal_tab_right(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.swap_item_right(&workspace::pane::SwapItemRight, window, cx);
+    });
 }
 
 fn terminal_auto_split_direction_for_size(
@@ -27352,9 +27490,46 @@ fn open_terminal_window(
                     add_new_terminal_tab(workspace, window, cx, new_terminal_tab.clone())
                         .detach_and_log_err(cx);
                 });
+                workspace.register_action(|workspace, action: &ActivateTerminalTab, window, cx| {
+                    activate_terminal_tab(workspace, action.0, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ActivateNextTerminalTab, window, cx| {
+                    activate_next_terminal_tab(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ActivatePreviousTerminalTab, window, cx| {
+                    activate_previous_terminal_tab(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &ActivateLastTerminalTab, window, cx| {
+                    activate_last_terminal_tab(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &CloseTerminalTab, window, cx| {
+                    close_terminal_tab(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &CloseOtherTerminalTabs, window, cx| {
+                    close_other_terminal_tabs(workspace, window, cx);
+                });
+                workspace.register_action(
+                    |workspace, _: &CloseTerminalTabsToTheRight, window, cx| {
+                        close_terminal_tabs_to_the_right(workspace, window, cx);
+                    },
+                );
+                workspace.register_action(
+                    |workspace, _: &CloseTerminalTabsToTheLeft, window, cx| {
+                        close_terminal_tabs_to_the_left(workspace, window, cx);
+                    },
+                );
+                workspace.register_action(|workspace, _: &CloseAllTerminalTabs, window, cx| {
+                    close_all_terminal_tabs(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &MoveTerminalTabLeft, window, cx| {
+                    move_terminal_tab_left(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &MoveTerminalTabRight, window, cx| {
+                    move_terminal_tab_right(workspace, window, cx);
+                });
                 workspace.register_action(
                     move |workspace, _: &NewTerminalSplitAuto, window, cx| {
-                        let split = terminal_auto_split_direction(workspace, window);
+                        let split = terminal_auto_split_direction(workspace, window, cx);
                         add_new_terminal_split(
                             workspace,
                             window,
@@ -27425,7 +27600,7 @@ fn open_terminal_window(
                 );
                 workspace.register_action(
                     move |workspace, _: &DuplicateTerminalSplitAuto, window, cx| {
-                        let split = terminal_auto_split_direction(workspace, window);
+                        let split = terminal_auto_split_direction(workspace, window, cx);
                         duplicate_terminal(
                             workspace,
                             window,
@@ -27517,22 +27692,22 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &ResizePaneLeft, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
-                    workspace.resize_pane(Axis::Horizontal, -amount, window, cx);
+                    resize_active_terminal_pane(workspace, Axis::Horizontal, -amount, window, cx);
                 });
                 workspace.register_action(|workspace, _: &ResizePaneRight, window, cx| {
                     let amount = terminal_pane_resize_width(window, cx);
-                    workspace.resize_pane(Axis::Horizontal, amount, window, cx);
+                    resize_active_terminal_pane(workspace, Axis::Horizontal, amount, window, cx);
                 });
                 workspace.register_action(|workspace, _: &ResizePaneUp, window, cx| {
                     let amount = terminal_pane_resize_height(cx);
-                    workspace.resize_pane(Axis::Vertical, amount, window, cx);
+                    resize_active_terminal_pane(workspace, Axis::Vertical, amount, window, cx);
                 });
                 workspace.register_action(|workspace, _: &ResizePaneDown, window, cx| {
                     let amount = terminal_pane_resize_height(cx);
-                    workspace.resize_pane(Axis::Vertical, -amount, window, cx);
+                    resize_active_terminal_pane(workspace, Axis::Vertical, -amount, window, cx);
                 });
                 workspace.register_action(|workspace, _: &ResetPaneSizes, _, cx| {
-                    workspace.reset_pane_sizes(cx);
+                    reset_active_terminal_pane_sizes(workspace, cx);
                 });
                 let profile_project = project.clone();
                 workspace.register_action(
@@ -27710,13 +27885,9 @@ fn duplicate_terminal(
     fallback_tab: LaunchTab,
     split: Option<TerminalStartupSplitDirection>,
 ) -> Task<Result<WeakEntity<Terminal>>> {
-    let active_terminal_view = workspace
-        .active_pane()
-        .read(cx)
-        .active_item()
-        .and_then(|item| item.downcast::<TerminalView>());
+    let active_terminal_tab = workspace.active_item_as::<TerminalTab>(cx);
 
-    let Some(active_terminal_view) = active_terminal_view else {
+    let Some(active_terminal_tab) = active_terminal_tab else {
         return if let Some(split) = split {
             add_new_terminal_split(workspace, window, cx, fallback_tab, split)
         } else {
@@ -27724,12 +27895,18 @@ fn duplicate_terminal(
         };
     };
 
-    let (terminal, custom_title) = {
-        let active_terminal_view = active_terminal_view.read(cx);
+    let (terminal, custom_title) = active_terminal_tab.update(cx, |terminal_tab, cx| {
         (
-            active_terminal_view.terminal().clone(),
-            active_terminal_view.custom_title().map(str::to_owned),
+            terminal_tab.active_terminal(cx),
+            terminal_tab.active_terminal_custom_title(cx),
         )
+    });
+    let Some(terminal) = terminal else {
+        return if let Some(split) = split {
+            add_new_terminal_split(workspace, window, cx, fallback_tab, split)
+        } else {
+            add_new_terminal_tab(workspace, window, cx, fallback_tab)
+        };
     };
     let working_directory = terminal
         .read(cx)
@@ -27741,7 +27918,7 @@ fn duplicate_terminal(
     };
 
     if let Some(split) = split {
-        TerminalPanel::split_center_terminal_with_custom_title(
+        add_terminal_split_with_custom_title(
             workspace,
             window,
             cx,
@@ -27750,13 +27927,7 @@ fn duplicate_terminal(
             create_terminal,
         )
     } else {
-        TerminalPanel::add_center_terminal_with_custom_title(
-            workspace,
-            window,
-            cx,
-            custom_title,
-            create_terminal,
-        )
+        add_terminal_tab_with_custom_title(workspace, window, cx, custom_title, create_terminal)
     }
 }
 
@@ -27783,7 +27954,7 @@ fn add_launch_tab(
     };
 
     if let Some(split) = split {
-        TerminalPanel::split_center_terminal_with_custom_title(
+        add_terminal_split_with_custom_title(
             workspace,
             window,
             cx,
@@ -27792,14 +27963,97 @@ fn add_launch_tab(
             create_terminal,
         )
     } else {
-        TerminalPanel::add_center_terminal_with_custom_title(
-            workspace,
-            window,
-            cx,
-            title,
-            create_terminal,
-        )
+        add_terminal_tab_with_custom_title(workspace, window, cx, title, create_terminal)
     }
+}
+
+fn add_terminal_tab_with_custom_title(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    custom_title: Option<String>,
+    create_terminal: impl FnOnce(
+        &mut Project,
+        &mut Context<Project>,
+    ) -> Task<Result<gpui::Entity<Terminal>>>
+    + 'static,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    if !workspace.project().read(cx).supports_terminal(cx) {
+        return Task::ready(Err(anyhow::anyhow!(
+            "terminal not yet supported for remote projects"
+        )));
+    }
+
+    let project = workspace.project().downgrade();
+    cx.spawn_in(window, async move |workspace, cx| {
+        let terminal = project.update(cx, create_terminal)?.await?;
+        workspace.update_in(cx, |workspace, window, cx| {
+            let terminal_tab = cx.new(|cx| {
+                TerminalTab::new(
+                    workspace.weak_handle(),
+                    workspace.database_id(),
+                    workspace.project().clone(),
+                    terminal.clone(),
+                    custom_title,
+                    window,
+                    cx,
+                )
+            });
+            workspace.add_item_to_active_pane(Box::new(terminal_tab), None, true, window, cx);
+        })?;
+        Ok(terminal.downgrade())
+    })
+}
+
+fn add_terminal_split_with_custom_title(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    split_direction: workspace::SplitDirection,
+    custom_title: Option<String>,
+    create_terminal: impl FnOnce(
+        &mut Project,
+        &mut Context<Project>,
+    ) -> Task<Result<gpui::Entity<Terminal>>>
+    + 'static,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    if !workspace.project().read(cx).supports_terminal(cx) {
+        return Task::ready(Err(anyhow::anyhow!(
+            "terminal not yet supported for remote projects"
+        )));
+    }
+
+    let project = workspace.project().downgrade();
+    cx.spawn_in(window, async move |workspace, cx| {
+        let terminal = project.update(cx, create_terminal)?.await?;
+        workspace.update_in(cx, |workspace, window, cx| {
+            if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+                terminal_tab.update(cx, |terminal_tab, cx| {
+                    terminal_tab.split_terminal(
+                        terminal.clone(),
+                        custom_title,
+                        split_direction,
+                        window,
+                        cx,
+                    );
+                });
+            } else {
+                let terminal_tab = cx.new(|cx| {
+                    TerminalTab::new(
+                        workspace.weak_handle(),
+                        workspace.database_id(),
+                        workspace.project().clone(),
+                        terminal.clone(),
+                        custom_title,
+                        window,
+                        cx,
+                    )
+                });
+                workspace.add_item_to_active_pane(Box::new(terminal_tab), None, true, window, cx);
+            }
+        })?;
+        Ok(terminal.downgrade())
+    })
 }
 
 fn add_launch_tabs(
@@ -29416,7 +29670,7 @@ mod tests {
   {
     "bindings": {
       "ctrl-shift-t": "zed_terminal::NewTerminalTab",
-      "ctrl-shift-w": "pane::CloseActiveItem"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
     },
     "unbind": {
       "ctrl-j": "zed_terminal::NewTerminalTab"
@@ -29793,6 +30047,24 @@ mod tests {
         assert_key_binding(
             &keymap,
             None,
+            "ctrl-shift-w",
+            "zed_terminal::CloseTerminalTab",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-tab",
+            "zed_terminal::ActivateNextTerminalTab",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-shift-tab",
+            "zed_terminal::ActivatePreviousTerminalTab",
+        );
+        assert_key_binding(
+            &keymap,
+            None,
             "alt-shift-d",
             "zed_terminal::DuplicateTerminalSplitAuto",
         );
@@ -29825,11 +30097,16 @@ mod tests {
                 &keymap,
                 None,
                 &format!("ctrl-alt-{tab_number}"),
-                "pane::ActivateItem",
+                "zed_terminal::ActivateTerminalTab",
                 tab_number - 1,
             );
         }
-        assert_key_binding(&keymap, None, "ctrl-alt-9", "pane::ActivateLastItem");
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-alt-9",
+            "zed_terminal::ActivateLastTerminalTab",
+        );
         assert_key_binding(
             &keymap,
             Some("os == windows && Terminal"),
@@ -30156,19 +30433,20 @@ mod tests {
         assert_command_palette_action_visible(&filter, &workspace::SwapPaneRight);
         assert_command_palette_action_visible(&filter, &workspace::SwapPaneUp);
         assert_command_palette_action_visible(&filter, &workspace::SwapPaneDown);
-        assert_command_palette_action_visible(&filter, &workspace::pane::ActivateLastItem);
+        assert_command_palette_action_visible(&filter, &ActivateLastTerminalTab);
+        assert_command_palette_action_visible(&filter, &ActivateNextTerminalTab);
+        assert_command_palette_action_visible(&filter, &ActivatePreviousTerminalTab);
+        assert_command_palette_action_visible(&filter, &ActivateTerminalTab(0));
+        assert_command_palette_action_visible(&filter, &CloseTerminalTab);
+        assert_command_palette_action_visible(&filter, &CloseOtherTerminalTabs);
+        assert_command_palette_action_visible(&filter, &CloseTerminalTabsToTheRight);
+        assert_command_palette_action_visible(&filter, &CloseTerminalTabsToTheLeft);
+        assert_command_palette_action_visible(&filter, &CloseAllTerminalTabs);
+        assert_command_palette_action_visible(&filter, &MoveTerminalTabLeft);
+        assert_command_palette_action_visible(&filter, &MoveTerminalTabRight);
         assert_command_palette_action_visible(&filter, &workspace::pane::GoBack);
         assert_command_palette_action_visible(&filter, &workspace::pane::GoForward);
-        assert_command_palette_action_visible(&filter, &workspace::pane::JoinAll);
-        assert_command_palette_action_visible(&filter, &workspace::pane::JoinIntoNext);
         assert_command_palette_action_visible(&filter, &workspace::pane::ReopenClosedItem);
-        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveDown);
-        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveLeft);
-        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveRight);
-        assert_command_palette_action_visible(&filter, &workspace::pane::SplitAndMoveUp);
-        assert_command_palette_action_visible(&filter, &workspace::pane::TogglePinTab);
-        assert_command_palette_action_visible(&filter, &workspace::pane::UnpinAllTabs);
-        assert_command_palette_action_visible(&filter, &workspace::CloseActiveItem::default());
     }
 
     #[test]
@@ -31286,35 +31564,39 @@ mod tests {
     fn shell_menu_exposes_bulk_tab_close_actions() {
         let items = shell_menu_items(Vec::new());
 
-        assert_menu_action(&items, "Close Tab", "pane::CloseActiveItem");
-        assert_menu_action(&items, "Close Other Tabs", "pane::CloseOtherItems");
+        assert_menu_action(&items, "Close Tab", "zed_terminal::CloseTerminalTab");
+        assert_menu_action(
+            &items,
+            "Close Other Tabs",
+            "zed_terminal::CloseOtherTerminalTabs",
+        );
         assert_menu_action(
             &items,
             "Close Tabs to the Right",
-            "pane::CloseItemsToTheRight",
+            "zed_terminal::CloseTerminalTabsToTheRight",
         );
         assert_menu_action(
             &items,
             "Close Tabs to the Left",
-            "pane::CloseItemsToTheLeft",
+            "zed_terminal::CloseTerminalTabsToTheLeft",
         );
-        assert_menu_action(&items, "Close All Tabs", "pane::CloseAllItems");
+        assert_menu_action(
+            &items,
+            "Close All Tabs",
+            "zed_terminal::CloseAllTerminalTabs",
+        );
     }
 
     #[test]
     fn shell_menu_exposes_tab_reorder_actions() {
         let items = shell_menu_items(Vec::new());
 
-        assert_menu_action(&items, "Move Tab Left", "pane::SwapItemLeft");
-        assert_menu_action(&items, "Move Tab Right", "pane::SwapItemRight");
-    }
-
-    #[test]
-    fn shell_menu_exposes_tab_pin_actions() {
-        let items = shell_menu_items(Vec::new());
-
-        assert_menu_action(&items, "Toggle Pin Tab", "pane::TogglePinTab");
-        assert_menu_action(&items, "Unpin All Tabs", "pane::UnpinAllTabs");
+        assert_menu_action(&items, "Move Tab Left", "zed_terminal::MoveTerminalTabLeft");
+        assert_menu_action(
+            &items,
+            "Move Tab Right",
+            "zed_terminal::MoveTerminalTabRight",
+        );
     }
 
     #[test]
@@ -31354,35 +31636,6 @@ mod tests {
     }
 
     #[test]
-    fn pane_menu_exposes_move_tab_to_split_actions() {
-        let items = pane_menu_items();
-
-        assert_menu_action(&items, "Move Tab to Split Right", "pane::SplitAndMoveRight");
-        assert_menu_action(&items, "Move Tab to Split Down", "pane::SplitAndMoveDown");
-        assert_menu_action(&items, "Move Tab to Split Left", "pane::SplitAndMoveLeft");
-        assert_menu_action(&items, "Move Tab to Split Up", "pane::SplitAndMoveUp");
-    }
-
-    #[test]
-    fn pane_menu_exposes_current_pane_tab_close_actions() {
-        let items = pane_menu_items();
-
-        assert_menu_action(&items, "Close Active Tab", "pane::CloseActiveItem");
-        assert_menu_action(&items, "Close Other Tabs in Pane", "pane::CloseOtherItems");
-        assert_menu_action(
-            &items,
-            "Close Tabs to the Right in Pane",
-            "pane::CloseItemsToTheRight",
-        );
-        assert_menu_action(
-            &items,
-            "Close Tabs to the Left in Pane",
-            "pane::CloseItemsToTheLeft",
-        );
-        assert_menu_action(&items, "Close All Tabs in Pane", "pane::CloseAllItems");
-    }
-
-    #[test]
     fn pane_menu_exposes_workspace_cleanup_actions() {
         let items = pane_menu_items();
 
@@ -31410,14 +31663,6 @@ mod tests {
         assert_menu_action(&items, "Next Pane", "workspace::ActivateNextPane");
         assert_menu_action(&items, "Previous Pane", "workspace::ActivatePreviousPane");
         assert_menu_action(&items, "Last Pane", "workspace::ActivateLastPane");
-    }
-
-    #[test]
-    fn pane_menu_exposes_pane_join_actions() {
-        let items = pane_menu_items();
-
-        assert_menu_action(&items, "Join Pane Into Next", "pane::JoinIntoNext");
-        assert_menu_action(&items, "Join All Panes", "pane::JoinAll");
     }
 
     #[test]
@@ -35265,7 +35510,7 @@ mod tests {
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "terminal::Paste",
-            "pane::CloseActiveItem",
+            "zed_terminal::CloseTerminalTab",
         ] {
             assert!(
                 schema.contains(action_name),
@@ -36861,7 +37106,7 @@ mod tests {
       "ctrl-k ctrl-t": "zed_terminal::NewTerminalTab"
     },
     "unbind": {
-      "ctrl-shift-w": "pane::CloseActiveItem"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
     }
   },
   {
@@ -37053,7 +37298,7 @@ mod tests {
       "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab"
     },
     "unbind": {
-      "ctrl-shift-w": "pane::CloseActiveItem"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
     }
   },
   {
