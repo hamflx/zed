@@ -371,35 +371,39 @@ Validate startup configuration without opening a terminal window:
 .\{{BINARY}} --validate-startup-config --validate-startup-config-format json
 ```
 
-Back up and restore settings without opening a terminal window:
+Back up, compare, and restore settings without opening a terminal window:
 
 ```powershell
 .\{{BINARY}} --backup-settings --backup-settings-file settings.backup.json
 .\{{BINARY}} --check-settings-backup --check-settings-backup-file settings.backup.json
+.\{{BINARY}} --diff-settings-backup --diff-settings-backup-file settings.backup.json
 .\{{BINARY}} --restore-settings --restore-settings-file settings.backup.json
 ```
 
-Back up and restore startup configuration without opening a terminal window:
+Back up, compare, and restore startup configuration without opening a terminal window:
 
 ```powershell
 .\{{BINARY}} --backup-startup-config --backup-startup-config-file terminal.backup.json
 .\{{BINARY}} --check-startup-config-backup --check-startup-config-backup-file terminal.backup.json
+.\{{BINARY}} --diff-startup-config-backup --diff-startup-config-backup-file terminal.backup.json
 .\{{BINARY}} --restore-startup-config --restore-startup-config-file terminal.backup.json
 ```
 
-Back up and restore key bindings without opening a terminal window:
+Back up, compare, and restore key bindings without opening a terminal window:
 
 ```powershell
 .\{{BINARY}} --backup-keymap --backup-keymap-file keymap.backup.json
 .\{{BINARY}} --check-keymap-backup --check-keymap-backup-file keymap.backup.json
+.\{{BINARY}} --diff-keymap-backup --diff-keymap-backup-file keymap.backup.json
 .\{{BINARY}} --restore-keymap --restore-keymap-file keymap.backup.json
 ```
 
-Back up and restore the complete user config set without opening a terminal window:
+Back up, compare, and restore the complete user config set without opening a terminal window:
 
 ```powershell
 .\{{BINARY}} --backup-config-bundle --backup-config-bundle-file zed-terminal-config.bundle.json
 .\{{BINARY}} --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json
+.\{{BINARY}} --diff-config-bundle --diff-config-bundle-file zed-terminal-config.bundle.json
 .\{{BINARY}} --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json
 ```
 
@@ -418,7 +422,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, settings backup/restore, startup config backup/restore, keymap backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -459,15 +463,19 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --validate-startup-config --validate-startup-config-format json",
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
+        ".\$BinaryFileName --diff-settings-backup --diff-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
         ".\$BinaryFileName --backup-startup-config --backup-startup-config-file terminal.backup.json",
         ".\$BinaryFileName --check-startup-config-backup --check-startup-config-backup-file terminal.backup.json",
+        ".\$BinaryFileName --diff-startup-config-backup --diff-startup-config-backup-file terminal.backup.json",
         ".\$BinaryFileName --restore-startup-config --restore-startup-config-file terminal.backup.json",
         ".\$BinaryFileName --backup-keymap --backup-keymap-file keymap.backup.json",
         ".\$BinaryFileName --check-keymap-backup --check-keymap-backup-file keymap.backup.json",
+        ".\$BinaryFileName --diff-keymap-backup --diff-keymap-backup-file keymap.backup.json",
         ".\$BinaryFileName --restore-keymap --restore-keymap-file keymap.backup.json",
         ".\$BinaryFileName --backup-config-bundle --backup-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json",
+        ".\$BinaryFileName --diff-config-bundle --diff-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --support-info",
         ".\$BinaryFileName --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json",
