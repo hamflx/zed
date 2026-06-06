@@ -84,6 +84,7 @@ actions!(
         OpenStartupProfileMutationBackupsDirectory,
         OpenStartupProfileMutationBackupsReport,
         RestoreLatestStartupProfileMutationBackup,
+        RestoreStartupProfileMutationBackup,
         CreateStartupProfile,
         ImportStartupProfile,
         OpenSettingsValidationReport,
@@ -25969,6 +25970,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupProfileMutationBackupsDirectory>(),
         TerminalActionSurface::new::<OpenStartupProfileMutationBackupsReport>(),
         TerminalActionSurface::new::<RestoreLatestStartupProfileMutationBackup>(),
+        TerminalActionSurface::new::<RestoreStartupProfileMutationBackup>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
@@ -26527,6 +26529,10 @@ fn shell_menu_items_with_visibility(
         "Restore Latest Profile Mutation Backup...",
         RestoreLatestStartupProfileMutationBackup,
     ));
+    shell_items.push(MenuItem::action(
+        "Restore Profile Mutation Backup...",
+        RestoreStartupProfileMutationBackup,
+    ));
     shell_items.extend([
         MenuItem::action(
             "Close Tab",
@@ -27015,6 +27021,61 @@ fn open_terminal_window(
                         .detach_and_log_err(cx);
                     },
                 );
+                workspace.register_action(|_, _: &RestoreStartupProfileMutationBackup, window, cx| {
+                    let prompt = window.prompt(
+                        PromptLevel::Warning,
+                        "Restore profile mutation backup from file?",
+                        Some("This opens a file picker, replaces terminal.json with the selected valid profile mutation backup, first saves the current terminal.json as another rollback backup, refreshes profile menus, and writes a restore report."),
+                        &["Choose Backup", "Cancel"],
+                        cx,
+                    );
+                    cx.spawn(async move |_, cx| {
+                        match prompt.await {
+                            Ok(0) => {
+                                let paths = cx.update(|cx| {
+                                    cx.prompt_for_paths(PathPromptOptions {
+                                        files: true,
+                                        directories: false,
+                                        multiple: false,
+                                        prompt: Some("Restore Profile Mutation Backup".into()),
+                                    })
+                                });
+                                let restore_file = match paths.await {
+                                    Ok(Ok(Some(mut paths))) => paths.pop(),
+                                    Ok(Ok(None)) => None,
+                                    Ok(Err(error)) => {
+                                        log::warn!(
+                                            "failed to open startup profile mutation backup restore picker: {error:#}"
+                                        );
+                                        return anyhow::Ok(());
+                                    }
+                                    Err(_) => {
+                                        log::warn!(
+                                            "startup profile mutation backup restore picker was canceled before returning"
+                                        );
+                                        return anyhow::Ok(());
+                                    }
+                                };
+                                if let Some(restore_file) = restore_file {
+                                    cx.update(|cx| {
+                                        restore_startup_profile_mutation_backup_action(
+                                            restore_file,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to confirm startup profile mutation backup file restore: {error:?}"
+                                );
+                            }
+                        }
+                        anyhow::Ok(())
+                    })
+                    .detach_and_log_err(cx);
+                });
                 let profile_terminal_window_app_state = app_state.clone();
                 workspace.register_action(
                     move |_, action: &NewTerminalWindowWithProfile, _, cx| {
@@ -28325,6 +28386,42 @@ fn restore_latest_startup_profile_mutation_backup_action(
     .detach();
 }
 
+fn restore_startup_profile_mutation_backup_action(restore_file: PathBuf, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_spawn(async move {
+                let restore = restore_startup_profile_mutation_backup(
+                    &active_terminal_startup_config_file(),
+                    &active_terminal_profile_mutation_backup_dir(),
+                    &restore_file,
+                )?;
+                write_startup_profile_mutation_restore_report_file(
+                    &active_terminal_profile_mutation_restore_report_file(),
+                    &restore,
+                )?;
+                anyhow::Ok(restore)
+            })
+            .await;
+        cx.update(|cx| match result {
+            Ok(restore) => {
+                log::info!(
+                    "restored startup config {} from profile mutation backup {} ({} tabs, {} profiles)",
+                    restore.restore.path.display(),
+                    restore.restore.restore_file.display(),
+                    restore.restore.tab_count,
+                    restore.restore.profile_count
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_mutation_restore_report_file());
+            }
+            Err(error) => {
+                log::warn!("failed to restore startup profile mutation backup: {error:#}");
+            }
+        });
+    })
+    .detach();
+}
+
 fn create_startup_profile_action(_: &CreateStartupProfile, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
@@ -29593,6 +29690,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupProfileMutationBackupsDirectory);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileMutationBackupsReport);
         assert_command_palette_action_visible(&filter, &RestoreLatestStartupProfileMutationBackup);
+        assert_command_palette_action_visible(&filter, &RestoreStartupProfileMutationBackup);
         assert_command_palette_action_visible(&filter, &OpenStartupToolsPicker);
         assert_command_palette_action_visible(
             &filter,
@@ -31055,6 +31153,11 @@ mod tests {
             &items,
             "Restore Latest Profile Mutation Backup...",
             "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+        );
+        assert_menu_action(
+            &items,
+            "Restore Profile Mutation Backup...",
+            "zed_terminal::RestoreStartupProfileMutationBackup",
         );
     }
 
@@ -32582,6 +32685,21 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<RestoreLatestStartupProfileMutationBackup>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_restore_startup_profile_mutation_backup_action_input() {
+        let action = <RestoreStartupProfileMutationBackup as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("restore startup profile mutation backup action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<RestoreStartupProfileMutationBackup>()
                 .is_some()
         );
     }
@@ -34642,6 +34760,7 @@ mod tests {
             "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsReport",
             "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+            "zed_terminal::RestoreStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
@@ -35594,6 +35713,16 @@ mod tests {
             TerminalKeymapActionInput::None
         );
 
+        let restore_startup_profile_mutation_backup = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::RestoreStartupProfileMutationBackup")
+            .expect("restore startup profile mutation backup action should be listed");
+        assert_eq!(
+            restore_startup_profile_mutation_backup.input,
+            TerminalKeymapActionInput::None
+        );
+
         let support_tools_picker = report
             .actions
             .iter()
@@ -35858,6 +35987,22 @@ mod tests {
         );
         assert!(
             restore_profile_mutation_backup_report.actions[0]
+                .default_bindings
+                .is_empty()
+        );
+
+        let restore_specific_profile_mutation_backup_report =
+            terminal_keymap_action_description_report(
+                cx,
+                "zed_terminal::RestoreStartupProfileMutationBackup",
+            )
+            .expect("restore specific profile mutation backup action description should build");
+        assert_eq!(
+            restore_specific_profile_mutation_backup_report.actions[0].input,
+            TerminalKeymapActionInput::None
+        );
+        assert!(
+            restore_specific_profile_mutation_backup_report.actions[0]
                 .default_bindings
                 .is_empty()
         );

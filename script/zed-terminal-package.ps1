@@ -708,6 +708,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
             "zed_terminal::OpenStartupProfileMutationBackupsReport",
             "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+            "zed_terminal::RestoreStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
@@ -1071,6 +1072,7 @@ function Invoke-KeymapDiscoverySmoke {
         "zed_terminal::OpenStartupProfileMutationBackupsDirectory",
         "zed_terminal::OpenStartupProfileMutationBackupsReport",
         "zed_terminal::RestoreLatestStartupProfileMutationBackup",
+        "zed_terminal::RestoreStartupProfileMutationBackup",
         "zed_terminal::OpenStartupProfileSlotsReport",
         "zed_terminal::OpenStartupProfileReferencesReport",
         "zed_terminal::OpenSupportBundleManifestFile",
@@ -1117,6 +1119,24 @@ function Invoke-KeymapDiscoverySmoke {
         @($restoreActionDescriptionJson.action.default_bindings).Count -ne 0
     ) {
         throw "zed-terminal --describe-keymap-action did not report the expected restore profile mutation backup action contract"
+    }
+
+    $restoreSpecificActionDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-keymap-action", "zed_terminal::RestoreStartupProfileMutationBackup",
+        "--describe-keymap-action-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $restoreSpecificActionDescriptionJson = $restoreSpecificActionDescription.Stdout | ConvertFrom-Json
+    if (
+        $restoreSpecificActionDescriptionJson.status -ne "ok" -or
+        $restoreSpecificActionDescriptionJson.default_keymap -ne "keymaps/zed-terminal.json" -or
+        $restoreSpecificActionDescriptionJson.action.name -ne "zed_terminal::RestoreStartupProfileMutationBackup" -or
+        $restoreSpecificActionDescriptionJson.action.namespace -ne "zed_terminal" -or
+        $restoreSpecificActionDescriptionJson.action.input -ne "none" -or
+        @($restoreSpecificActionDescriptionJson.action.default_bindings).Count -ne 0
+    ) {
+        throw "zed-terminal --describe-keymap-action did not report the expected restore specific profile mutation backup action contract"
     }
 
     $bindingDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
