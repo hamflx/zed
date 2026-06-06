@@ -405,6 +405,293 @@ function Assert-SettingsValidationJson {
     }
 }
 
+function Assert-SupportBundleFileReports {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Files,
+        [Parameter(Mandatory = $true)][hashtable]$ExpectedFiles,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if ($Files.Count -ne $ExpectedFiles.Count) {
+        throw "$Context reported $($Files.Count) files; expected $($ExpectedFiles.Count)"
+    }
+
+    foreach ($label in $ExpectedFiles.Keys) {
+        $matches = @($Files | Where-Object { $_.label -eq $label })
+        if ($matches.Count -ne 1) {
+            throw "$Context did not report exactly one '$label' file"
+        }
+
+        $expectedPath = $ExpectedFiles[$label]
+        $file = $matches[0]
+        if ($file.path -ne $expectedPath) {
+            throw "$Context reported unexpected path for '$label': $($file.path)"
+        }
+        if (-not (Test-Path -LiteralPath $expectedPath -PathType Leaf)) {
+            throw "$Context reported a missing file for '$label': $expectedPath"
+        }
+
+        $actualLength = (Get-Item -LiteralPath $expectedPath).Length
+        if ([int64]$file.byte_count -ne [int64]$actualLength -or [int64]$file.byte_count -le 0) {
+            throw "$Context reported an invalid byte count for '$label'"
+        }
+    }
+
+    foreach ($file in $Files) {
+        if (-not $ExpectedFiles.ContainsKey($file.label)) {
+            throw "$Context reported unexpected file label: $($file.label)"
+        }
+    }
+}
+
+function Get-SupportBundleMetadataEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $matches = @($Metadata.files | Where-Object { $_.label -eq $Label })
+    if ($matches.Count -ne 1) {
+        throw "zed-terminal support bundle metadata did not report exactly one '$Label' entry"
+    }
+    return $matches[0]
+}
+
+function Assert-SupportBundleMetadataEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ExpectedPath
+    )
+
+    $entry = Get-SupportBundleMetadataEntry -Metadata $Metadata -Label $Label
+    if ($entry.path -ne $ExpectedPath) {
+        throw "zed-terminal support bundle metadata reported unexpected path for '$Label': $($entry.path)"
+    }
+
+    if (Test-Path -LiteralPath $ExpectedPath -PathType Leaf) {
+        $actual = Get-Item -LiteralPath $ExpectedPath
+        if ($entry.exists -ne $true -or $entry.kind -ne "file" -or [int64]$entry.byte_count -ne [int64]$actual.Length) {
+            throw "zed-terminal support bundle metadata did not match the file at '$Label'"
+        }
+        return
+    }
+    if (Test-Path -LiteralPath $ExpectedPath -PathType Container) {
+        if ($entry.exists -ne $true -or $entry.kind -ne "directory" -or $null -ne $entry.byte_count) {
+            throw "zed-terminal support bundle metadata did not match the directory at '$Label'"
+        }
+        return
+    }
+
+    if ($entry.exists -ne $false -or $entry.kind -ne "missing" -or $null -ne $entry.byte_count) {
+        throw "zed-terminal support bundle metadata did not match the missing path at '$Label'"
+    }
+}
+
+function Assert-SupportBundlePathReport {
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)][string]$ExpectedDataDir,
+        [Parameter(Mandatory = $true)][string]$ExpectedConfigDir
+    )
+
+    $expectedLogsDir = Join-Path $ExpectedDataDir "logs"
+    if (
+        $Paths.mode -ne "custom" -or
+        $Paths.config_dir -ne $ExpectedConfigDir -or
+        $Paths.data_dir -ne $ExpectedDataDir -or
+        $Paths.logs_dir -ne $expectedLogsDir -or
+        $Paths.settings_file -ne (Join-Path $ExpectedConfigDir "settings.json") -or
+        $Paths.settings_schema_file -ne (Join-Path $ExpectedConfigDir "settings.schema.json") -or
+        $Paths.startup_config_file -ne (Join-Path $ExpectedConfigDir "terminal.json") -or
+        $Paths.startup_config_schema_file -ne (Join-Path $ExpectedConfigDir "terminal.schema.json") -or
+        $Paths.global_settings_file -ne (Join-Path $ExpectedConfigDir "global_settings.json") -or
+        $Paths.keymap_file -ne (Join-Path $ExpectedConfigDir "keymap.json") -or
+        $Paths.keymap_schema_file -ne (Join-Path $ExpectedConfigDir "keymap.schema.json") -or
+        $Paths.default_keymap_reference_file -ne (Join-Path $ExpectedConfigDir "default-keymap.json") -or
+        $Paths.themes_dir -ne (Join-Path $ExpectedConfigDir "themes") -or
+        $Paths.log_file -ne (Join-Path $expectedLogsDir "Zed Terminal.log")
+    ) {
+        throw "zed-terminal support bundle paths report did not match expected standalone paths"
+    }
+}
+
+function Assert-SupportBundleArtifacts {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$BundleDir,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter()][string[]]$SensitiveText = @()
+    )
+
+    $manifestFile = Join-Path $BundleDir "zed-terminal-support-bundle.json"
+    $metadataFile = Join-Path $BundleDir "zed-terminal-file-metadata.json"
+    $supportInfoFile = Join-Path $BundleDir "zed-terminal-support-info.txt"
+    $diagnosticsFile = Join-Path $BundleDir "zed-terminal-diagnostics.json"
+    $pathsFile = Join-Path $BundleDir "zed-terminal-paths.json"
+    $readmeFile = Join-Path $BundleDir "README.txt"
+    $expectedReportFiles = @{
+        manifest = $manifestFile
+        support_info = $supportInfoFile
+        diagnostics = $diagnosticsFile
+        paths = $pathsFile
+        file_metadata = $metadataFile
+        readme = $readmeFile
+    }
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.format -ne "zed-terminal-support-bundle" -or
+        $Report.version -ne 1 -or
+        $Report.bundle_dir -ne $BundleDir -or
+        $Report.manifest_file -ne $manifestFile -or
+        $Report.diagnostics_status -ne "ok" -or
+        $Report.file_count -ne 6
+    ) {
+        throw "zed-terminal --support-bundle did not report expected release diagnostics"
+    }
+    Assert-SupportBundleFileReports `
+        -Files @($Report.files) `
+        -ExpectedFiles $expectedReportFiles `
+        -Context "zed-terminal --support-bundle output"
+    $manifestReport = @($Report.files | Where-Object { $_.label -eq "manifest" })[0]
+    if ([int64]$Report.manifest_byte_count -ne [int64]$manifestReport.byte_count) {
+        throw "zed-terminal --support-bundle manifest byte count did not match its file report"
+    }
+
+    $actualFiles = @(Get-ChildItem -LiteralPath $BundleDir -File)
+    if ($actualFiles.Count -ne 6) {
+        throw "zed-terminal support bundle wrote $($actualFiles.Count) files; expected 6"
+    }
+    foreach ($file in $actualFiles) {
+        if (-not @(
+            "zed-terminal-support-bundle.json",
+            "zed-terminal-support-info.txt",
+            "zed-terminal-diagnostics.json",
+            "zed-terminal-paths.json",
+            "zed-terminal-file-metadata.json",
+            "README.txt"
+        ).Contains($file.Name)) {
+            throw "zed-terminal support bundle wrote unexpected file: $($file.Name)"
+        }
+    }
+
+    $manifest = Get-Content -LiteralPath $manifestFile -Raw | ConvertFrom-Json
+    if (
+        $manifest.format -ne "zed-terminal-support-bundle" -or
+        $manifest.version -ne 1 -or
+        $manifest.app_name -ne "Zed Terminal" -or
+        $manifest.package_name -ne "zed_terminal" -or
+        -not $manifest.package_version -or
+        -not $manifest.target_os -or
+        -not $manifest.target_arch -or
+        $null -eq $manifest.debug_assertions -or
+        $manifest.bundle_dir -ne $BundleDir -or
+        $manifest.diagnostics_status -ne "ok" -or
+        $manifest.path_mode -ne "custom" -or
+        $manifest.redaction.includes_raw_config_contents -ne $false -or
+        $manifest.redaction.includes_raw_log_contents -ne $false -or
+        $manifest.redaction.includes_environment_values -ne $false -or
+        $manifest.redaction.file_metadata_only -ne $true
+    ) {
+        throw "zed-terminal support bundle manifest did not report expected release metadata"
+    }
+    Assert-SupportBundleFileReports `
+        -Files @($manifest.files) `
+        -ExpectedFiles @{
+            support_info = $supportInfoFile
+            diagnostics = $diagnosticsFile
+            paths = $pathsFile
+            file_metadata = $metadataFile
+            readme = $readmeFile
+        } `
+        -Context "zed-terminal support bundle manifest"
+
+    $paths = Get-Content -LiteralPath $pathsFile -Raw | ConvertFrom-Json
+    Assert-SupportBundlePathReport `
+        -Paths $paths `
+        -ExpectedDataDir $DataDir `
+        -ExpectedConfigDir $ConfigDir
+
+    $diagnostics = Get-Content -LiteralPath $diagnosticsFile -Raw | ConvertFrom-Json
+    $doctorConfigLabels = @($diagnostics.config_files | ForEach-Object { $_.label })
+    if (
+        $diagnostics.status -ne "ok" -or
+        $diagnostics.settings.status -ne "ok" -or
+        $diagnostics.startup_config.status -ne "ok" -or
+        $diagnostics.keymap.status -ne "ok" -or
+        $doctorConfigLabels -notcontains "settings_schema_file" -or
+        $doctorConfigLabels -notcontains "startup_config_schema_file" -or
+        $doctorConfigLabels -notcontains "keymap_schema_file" -or
+        $doctorConfigLabels -notcontains "default_keymap_reference_file"
+    ) {
+        throw "zed-terminal support bundle diagnostics did not report expected healthy config checks"
+    }
+
+    $metadata = Get-Content -LiteralPath $metadataFile -Raw | ConvertFrom-Json
+    if (
+        $metadata.status -ne "ok" -or
+        $metadata.redaction.includes_raw_file_contents -ne $false -or
+        $metadata.redaction.includes_environment_values -ne $false -or
+        @($metadata.files).Count -ne 14
+    ) {
+        throw "zed-terminal support bundle metadata did not report expected redaction policy"
+    }
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "settings_file" -ExpectedPath $paths.settings_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "settings_schema_file" -ExpectedPath $paths.settings_schema_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "global_settings_file" -ExpectedPath $paths.global_settings_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "startup_config_file" -ExpectedPath $paths.startup_config_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "startup_config_schema_file" -ExpectedPath $paths.startup_config_schema_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "keymap_file" -ExpectedPath $paths.keymap_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "keymap_schema_file" -ExpectedPath $paths.keymap_schema_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "default_keymap_reference_file" -ExpectedPath $paths.default_keymap_reference_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "themes_dir" -ExpectedPath $paths.themes_dir
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "log_file" -ExpectedPath $paths.log_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "old_log_file" -ExpectedPath (Join-Path $paths.logs_dir "Zed Terminal.log.old")
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "logs_dir" -ExpectedPath $paths.logs_dir
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "config_dir" -ExpectedPath $paths.config_dir
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "data_dir" -ExpectedPath $paths.data_dir
+
+    $supportInfo = Get-Content -LiteralPath $supportInfoFile -Raw
+    if (
+        $supportInfo -notmatch "^Zed Terminal Support Info" -or
+        $supportInfo -notmatch "app_name: Zed Terminal" -or
+        $supportInfo -notmatch "paths:" -or
+        $supportInfo -notmatch "diagnostics:" -or
+        $supportInfo -notmatch "status: ok"
+    ) {
+        throw "zed-terminal support bundle support-info did not report expected diagnostics"
+    }
+
+    $readme = Get-Content -LiteralPath $readmeFile -Raw
+    foreach ($text in @(
+        "redacted diagnostics generated by zed-terminal",
+        "does not include raw config files",
+        "raw log contents",
+        "shell environment values",
+        "terminal buffer contents",
+        "file existence and byte counts only",
+        "zed-terminal-support-bundle.json",
+        "zed-terminal-diagnostics.json",
+        "zed-terminal-paths.json",
+        "zed-terminal-file-metadata.json"
+    )) {
+        if (-not $readme.Contains($text)) {
+            throw "zed-terminal support bundle README did not document expected redaction/file policy: $text"
+        }
+    }
+
+    $bundleText = Get-ChildItem -LiteralPath $BundleDir -File | ForEach-Object {
+        Get-Content -LiteralPath $_.FullName -Raw
+    } | Out-String
+    foreach ($secret in $SensitiveText) {
+        if ($bundleText.Contains($secret)) {
+            throw "zed-terminal support bundle leaked release redaction fixture text: $secret"
+        }
+    }
+}
+
 function Convert-KeyValueOutput {
     param([Parameter(Mandatory = $true)][object[]]$Output)
 
@@ -1506,61 +1793,16 @@ try {
                 "--support-bundle-dir", $supportBundleDir,
                 "--support-bundle-format", "json"
             )
-            if (
-                $supportBundleJson.status -ne "ok" -or
-                $supportBundleJson.format -ne "zed-terminal-support-bundle" -or
-                $supportBundleJson.bundle_dir -ne $supportBundleDir -or
-                $supportBundleJson.diagnostics_status -ne "ok" -or
-                $supportBundleJson.file_count -ne 6
-            ) {
-                throw "zed-terminal --support-bundle did not report expected release diagnostics"
-            }
-            $supportBundleManifestFile = Join-Path $supportBundleDir "zed-terminal-support-bundle.json"
-            $supportBundleMetadataFile = Join-Path $supportBundleDir "zed-terminal-file-metadata.json"
-            foreach ($file in @(
-                $supportBundleManifestFile,
-                $supportBundleMetadataFile,
-                (Join-Path $supportBundleDir "zed-terminal-support-info.txt"),
-                (Join-Path $supportBundleDir "zed-terminal-diagnostics.json"),
-                (Join-Path $supportBundleDir "zed-terminal-paths.json"),
-                (Join-Path $supportBundleDir "README.txt")
-            )) {
-                if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-                    throw "zed-terminal --support-bundle did not write expected release file: $file"
-                }
-            }
-            $supportBundleManifest = Get-Content -LiteralPath $supportBundleManifestFile -Raw | ConvertFrom-Json
-            if (
-                $supportBundleManifest.redaction.includes_raw_config_contents -ne $false -or
-                $supportBundleManifest.redaction.includes_raw_log_contents -ne $false -or
-                $supportBundleManifest.redaction.includes_environment_values -ne $false -or
-                $supportBundleManifest.redaction.file_metadata_only -ne $true
-            ) {
-                throw "zed-terminal support bundle manifest did not report expected redaction policy"
-            }
-            $supportBundleMetadata = Get-Content -LiteralPath $supportBundleMetadataFile -Raw | ConvertFrom-Json
-            $supportBundleMetadataLabels = @($supportBundleMetadata.files | ForEach-Object { $_.label })
-            if (
-                $supportBundleMetadata.redaction.includes_raw_file_contents -ne $false -or
-                $supportBundleMetadataLabels -notcontains "startup_config_file" -or
-                $supportBundleMetadataLabels -notcontains "settings_file" -or
-                $supportBundleMetadataLabels -notcontains "settings_schema_file" -or
-                $supportBundleMetadataLabels -notcontains "log_file"
-            ) {
-                throw "zed-terminal support bundle metadata did not report expected file metadata"
-            }
-            $supportBundleText = Get-ChildItem -LiteralPath $supportBundleDir -File | ForEach-Object {
-                Get-Content -LiteralPath $_.FullName -Raw
-            } | Out-String
-            foreach ($secret in @(
-                "do-not-log-release-support-startup-secret",
-                "do-not-log-release-support-settings-secret",
-                "do-not-log-release-support-log-secret"
-            )) {
-                if ($supportBundleText.Contains($secret)) {
-                    throw "zed-terminal support bundle leaked release redaction fixture text: $secret"
-                }
-            }
+            Assert-SupportBundleArtifacts `
+                -Report $supportBundleJson `
+                -BundleDir $supportBundleDir `
+                -DataDir $cliDataDir `
+                -ConfigDir $cliConfigDir `
+                -SensitiveText @(
+                    "do-not-log-release-support-startup-secret",
+                    "do-not-log-release-support-settings-secret",
+                    "do-not-log-release-support-log-secret"
+                )
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
