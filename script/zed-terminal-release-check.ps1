@@ -519,6 +519,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.version_info -ne "ok" -or
         $manifest.validation.paths -ne "ok" -or
         $manifest.validation.portable_paths -ne "ok" -or
+        $manifest.validation.settings_schema -ne "ok" -or
         $manifest.validation.settings_validation -ne "ok" -or
         $manifest.validation.settings_backup -ne "ok" -or
         $manifest.validation.config_bundle -ne "ok" -or
@@ -532,12 +533,13 @@ function Read-PackageSmokeSummary {
         $summary.validation.version_info -ne "ok" -or
         $summary.validation.paths -ne "ok" -or
         $summary.validation.portable_paths -ne "ok" -or
+        $summary.validation.settings_schema -ne "ok" -or
         $summary.validation.settings_validation -ne "ok" -or
         $summary.validation.settings_backup -ne "ok" -or
         $summary.validation.config_bundle -ne "ok" -or
         $summary.validation.support_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/settings validation/backup/config bundle/support bundle status"
+        throw "package smoke summary did not report expected path/version/settings schema/settings validation/backup/config bundle/support bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {

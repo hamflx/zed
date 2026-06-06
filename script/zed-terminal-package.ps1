@@ -334,7 +334,7 @@ Key files:
 - `terminal.json`: startup layout, profiles, titles, split panes, working directories, and startup commands.
 - `keymap.json`: user key bindings for the standalone app.
 - `settings.json` and `global_settings.json`: Zed settings loaded by the standalone terminal.
-- `terminal.schema.json` and `keymap.schema.json`: generated JSON schemas.
+- `settings.schema.json`, `terminal.schema.json`, and `keymap.schema.json`: generated JSON schemas.
 
 ## Diagnostics
 
@@ -433,6 +433,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json",
         "$PackageName.zip.sha256",
         "config-template/",
+        "settings.schema.json",
         "zed-terminal-package.json"
     )
 
@@ -911,6 +912,7 @@ function Assert-PackageManifest {
         "paths",
         "portable_paths",
         "init_config",
+        "settings_schema",
         "startup_schema",
         "keymap_schema",
         "default_keymap",
@@ -940,6 +942,7 @@ function Assert-PackageManifest {
         "LICENSE-APACHE",
         "default-keymap.json",
         "config-template\settings.json",
+        "config-template\settings.schema.json",
         "config-template\global_settings.json",
         "config-template\keymap.json",
         "config-template\default-keymap.json",
@@ -1390,6 +1393,7 @@ $manifest = [pscustomobject]@{
         paths = "ok"
         portable_paths = "ok"
         init_config = "ok"
+        settings_schema = "ok"
         startup_schema = "ok"
         keymap_schema = "ok"
         default_keymap = "ok"
