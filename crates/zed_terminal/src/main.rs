@@ -48,6 +48,7 @@ actions!(
     zed_terminal,
     [
         OpenSettingsFile,
+        OpenSettingsToolsPicker,
         OpenStartupConfigFile,
         OpenStartupConfigSchemaFile,
         OpenKeymapFile,
@@ -22425,6 +22426,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenProfileDescriptionReport>(),
         TerminalActionSurface::new::<OpenSupportBundleDirectory>(),
         TerminalActionSurface::new::<OpenSupportInfoReport>(),
+        TerminalActionSurface::new::<OpenSettingsToolsPicker>(),
         TerminalActionSurface::new::<OpenSettingsValidationReport>(),
         TerminalActionSurface::new::<OpenStartupConfigFile>(),
         TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
@@ -23096,6 +23098,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
         MenuItem::separator(),
         MenuItem::action("Open Support Tools...", OpenSupportToolsPicker),
+        MenuItem::action("Open Settings Tools...", OpenSettingsToolsPicker),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
         MenuItem::action(
             "Open Config Initialization Report",
@@ -23293,6 +23296,9 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &OpenSupportToolsPicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "support", window, cx);
+                });
+                workspace.register_action(|workspace, _: &OpenSettingsToolsPicker, window, cx| {
+                    command_palette::CommandPalette::toggle(workspace, "settings", window, cx);
                 });
                 workspace.register_action(|workspace, _: &OpenStartupToolsPicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "startup", window, cx);
@@ -25232,6 +25238,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenSupportBundleDirectory);
         assert_command_palette_action_visible(&filter, &OpenSupportToolsPicker);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
+        assert_command_palette_action_visible(&filter, &OpenSettingsToolsPicker);
         assert_command_palette_action_visible(&filter, &OpenSettingsValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
@@ -26377,6 +26384,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Settings Tools...",
+            "zed_terminal::OpenSettingsToolsPicker",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Tools...",
             "zed_terminal::OpenStartupToolsPicker",
         );
@@ -27342,6 +27354,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenSettingsValidationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_settings_tools_picker_action_input() {
+        let action =
+            <OpenSettingsToolsPicker as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open settings tools picker action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSettingsToolsPicker>()
                 .is_some()
         );
     }
@@ -29154,6 +29180,7 @@ mod tests {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::OpenKeymapToolsPicker",
+            "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
             "zed_terminal::OpenSupportToolsPicker",
@@ -29796,6 +29823,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenSupportToolsPicker")
             .expect("support tools picker action should be listed");
         assert_eq!(support_tools_picker.input, TerminalKeymapActionInput::None);
+
+        let settings_tools_picker = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenSettingsToolsPicker")
+            .expect("settings tools picker action should be listed");
+        assert_eq!(settings_tools_picker.input, TerminalKeymapActionInput::None);
 
         let keymap_tools_picker = report
             .actions
