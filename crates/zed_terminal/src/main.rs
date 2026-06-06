@@ -251,6 +251,9 @@ const TERMINAL_PROFILE_CREATION_REPORT_FILE: &str = "zed-terminal-profile-creati
 const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json";
 const TERMINAL_PROFILE_REMOVAL_REPORT_FILE: &str = "zed-terminal-profile-removal.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
+const TERMINAL_PROFILE_MUTATION_BACKUP_DIR: &str = "zed-terminal-profile-mutation-backups";
+const TERMINAL_PROFILE_MUTATION_BACKUP_FILE_PREFIX: &str = "terminal-before-profile-";
+const TERMINAL_PROFILE_MUTATION_BACKUP_FILE_EXTENSION: &str = ".json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
@@ -4274,6 +4277,15 @@ struct TerminalStartupProfileVisibilityUpdate {
     previous_hidden: bool,
     hidden: bool,
     changed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileMutationBackup {
+    action: &'static str,
+    path: PathBuf,
+    backup_file: PathBuf,
+    profile: Option<String>,
+    byte_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13167,10 +13179,19 @@ fn create_startup_profile(
     })
 }
 
+#[cfg(test)]
 fn create_startup_profile_with_available_name(
     path: &Path,
 ) -> Result<TerminalStartupProfileCreation> {
     let (profile, display_name) = available_startup_profile_creation_name(path)?;
+    create_startup_profile_with_available_name_parts(path, profile, display_name)
+}
+
+fn create_startup_profile_with_available_name_parts(
+    path: &Path,
+    profile: String,
+    display_name: String,
+) -> Result<TerminalStartupProfileCreation> {
     create_startup_profile(
         path,
         &profile,
@@ -15075,6 +15096,7 @@ fn import_startup_profile(
     })
 }
 
+#[cfg(test)]
 fn import_startup_profile_without_overwrite(
     path: &Path,
     import_file: &Path,
@@ -15094,20 +15116,6 @@ fn import_startup_profile_without_overwrite(
         });
     let profile = available_startup_profile_import_name(path, &preferred_profile)?;
     import_startup_profile(path, &profile, import_file, false)
-}
-
-fn import_startup_profile_from_selected_file(
-    import_file: PathBuf,
-) -> Result<TerminalStartupProfileImport> {
-    let import = import_startup_profile_without_overwrite(
-        &active_terminal_startup_config_file(),
-        &import_file,
-    )?;
-    write_startup_profile_import_report_file(
-        &active_terminal_profile_import_report_file(),
-        &import,
-    )?;
-    Ok(import)
 }
 
 fn available_startup_profile_import_name(path: &Path, preferred_profile: &str) -> Result<String> {
@@ -15946,6 +15954,88 @@ fn backup_startup_config(path: &Path, backup_file: &Path) -> Result<TerminalStar
         tab_count: validation.tab_count,
         profile_count: startup_config.profiles.len(),
     })
+}
+
+fn backup_startup_config_before_profile_mutation(
+    path: &Path,
+    action: &'static str,
+    profile: Option<&str>,
+) -> Result<Option<TerminalStartupProfileMutationBackup>> {
+    backup_startup_config_before_profile_mutation_at(
+        path,
+        &active_terminal_profile_mutation_backup_dir(),
+        action,
+        profile,
+        terminal_config_bundle_backup_timestamp_seconds(),
+    )
+}
+
+fn backup_startup_config_before_profile_mutation_at(
+    path: &Path,
+    backup_dir: &Path,
+    action: &'static str,
+    profile: Option<&str>,
+    timestamp_seconds: u64,
+) -> Result<Option<TerminalStartupProfileMutationBackup>> {
+    let metadata = match std_fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal startup config before profile mutation {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    if !metadata.is_file() {
+        bail!(
+            "terminal startup config {} is not a file before profile mutation",
+            path.display()
+        );
+    }
+
+    let backup_file =
+        terminal_profile_mutation_backup_file_at(backup_dir, action, profile, timestamp_seconds)?;
+    if paths_refer_to_same_file(path, &backup_file)? {
+        bail!(
+            "profile mutation backup file {} must be different from terminal startup config {}",
+            backup_file.display(),
+            path.display()
+        );
+    }
+
+    let text = std_fs::read_to_string(path).with_context(|| {
+        format!(
+            "failed to read terminal startup config before profile mutation {}",
+            path.display()
+        )
+    })?;
+    if let Some(parent) = backup_file.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create profile mutation backup directory {}",
+                parent.display()
+            )
+        })?;
+    }
+    std_fs::write(&backup_file, text).with_context(|| {
+        format!(
+            "failed to write terminal startup profile mutation backup {}",
+            backup_file.display()
+        )
+    })?;
+
+    Ok(Some(TerminalStartupProfileMutationBackup {
+        action,
+        path: path.to_path_buf(),
+        backup_file,
+        profile: profile.map(str::to_string),
+        byte_count: metadata.len(),
+    }))
 }
 
 fn restore_startup_config(
@@ -21949,8 +22039,10 @@ fn write_startup_profile_description_report_file(
 fn write_startup_profile_creation_report_file(
     path: &Path,
     creation: &TerminalStartupProfileCreation,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
 ) -> Result<()> {
-    let report = format_startup_profile_creation_json(creation)?;
+    let report =
+        attach_profile_mutation_backup(&format_startup_profile_creation_json(creation)?, backup)?;
     if let Some(parent) = path.parent() {
         std_fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -21971,8 +22063,9 @@ fn write_startup_profile_creation_report_file(
 fn write_startup_profile_copy_report_file(
     path: &Path,
     copy: &TerminalStartupProfileCopy,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
 ) -> Result<()> {
-    let report = format_startup_profile_copy_json(copy)?;
+    let report = attach_profile_mutation_backup(&format_startup_profile_copy_json(copy)?, backup)?;
     if let Some(parent) = path.parent() {
         std_fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -21993,8 +22086,10 @@ fn write_startup_profile_copy_report_file(
 fn write_startup_profile_removal_report_file(
     path: &Path,
     removal: &TerminalStartupProfileRemoval,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
 ) -> Result<()> {
-    let report = format_startup_profile_removal_json(removal)?;
+    let report =
+        attach_profile_mutation_backup(&format_startup_profile_removal_json(removal)?, backup)?;
     if let Some(parent) = path.parent() {
         std_fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -22015,8 +22110,10 @@ fn write_startup_profile_removal_report_file(
 fn write_startup_profile_import_report_file(
     path: &Path,
     import: &TerminalStartupProfileImport,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
 ) -> Result<()> {
-    let report = format_startup_profile_import_json(import)?;
+    let report =
+        attach_profile_mutation_backup(&format_startup_profile_import_json(import)?, backup)?;
     if let Some(parent) = path.parent() {
         std_fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -22663,6 +22760,41 @@ fn format_startup_profile_creation_json(
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal startup profile creation as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn profile_mutation_backup_json(
+    backup: Option<&TerminalStartupProfileMutationBackup>,
+) -> serde_json::Value {
+    backup
+        .map(|backup| {
+            serde_json::json!({
+                "action": backup.action,
+                "startup_config_file": backup.path.display().to_string(),
+                "backup_file": backup.backup_file.display().to_string(),
+                "profile": backup.profile.as_deref(),
+                "byte_count": backup.byte_count,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null)
+}
+
+fn attach_profile_mutation_backup(
+    report: &str,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
+) -> Result<String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(report).context("failed to parse startup profile report as json")?;
+    let object = value
+        .as_object_mut()
+        .context("startup profile report should be a json object")?;
+    object.insert(
+        "pre_mutation_backup".into(),
+        profile_mutation_backup_json(backup),
+    );
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize startup profile report")?;
     output.push('\n');
     Ok(output)
 }
@@ -24320,6 +24452,46 @@ fn terminal_config_bundle_backup_file_at(backup_dir: &Path, timestamp_seconds: u
         }
     }
     unreachable!("unbounded config bundle backup suffix iterator should always return")
+}
+
+fn active_terminal_profile_mutation_backup_dir() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
+}
+
+fn terminal_profile_mutation_backup_file_name(
+    action: &str,
+    profile: Option<&str>,
+    timestamp_seconds: u64,
+    suffix: Option<u32>,
+) -> Result<String> {
+    let action_stem = startup_profile_description_report_file_stem(action)?;
+    let profile_stem = match profile {
+        Some(profile) => startup_profile_description_report_file_stem(profile)?,
+        None => "startup".into(),
+    };
+    let suffix = suffix
+        .map(|suffix| format!("-{suffix}"))
+        .unwrap_or_default();
+    Ok(format!(
+        "{TERMINAL_PROFILE_MUTATION_BACKUP_FILE_PREFIX}{action_stem}-{profile_stem}-{timestamp_seconds}{suffix}{TERMINAL_PROFILE_MUTATION_BACKUP_FILE_EXTENSION}"
+    ))
+}
+
+fn terminal_profile_mutation_backup_file_at(
+    backup_dir: &Path,
+    action: &str,
+    profile: Option<&str>,
+    timestamp_seconds: u64,
+) -> Result<PathBuf> {
+    for suffix in std::iter::once(None).chain((1..).map(Some)) {
+        let file_name =
+            terminal_profile_mutation_backup_file_name(action, profile, timestamp_seconds, suffix)?;
+        let candidate = backup_dir.join(file_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    unreachable!("unbounded profile mutation backup suffix iterator should always return")
 }
 
 fn active_terminal_startup_layout_report_file() -> PathBuf {
@@ -27022,12 +27194,23 @@ fn create_startup_profile_action(_: &CreateStartupProfile, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
             .background_spawn(async move {
-                let creation = create_startup_profile_with_available_name(
-                    &active_terminal_startup_config_file(),
+                let startup_config_file = active_terminal_startup_config_file();
+                let (profile, display_name) =
+                    available_startup_profile_creation_name(&startup_config_file)?;
+                let backup = backup_startup_config_before_profile_mutation(
+                    &startup_config_file,
+                    "create-profile",
+                    Some(&profile),
+                )?;
+                let creation = create_startup_profile_with_available_name_parts(
+                    &startup_config_file,
+                    profile,
+                    display_name,
                 )?;
                 write_startup_profile_creation_report_file(
                     &active_terminal_profile_creation_report_file(),
                     &creation,
+                    backup.as_ref(),
                 )?;
                 anyhow::Ok(creation)
             })
@@ -27075,7 +27258,39 @@ fn import_startup_profile_action(_: &ImportStartupProfile, cx: &mut App) {
             return;
         };
         let result = cx
-            .background_spawn(async move { import_startup_profile_from_selected_file(import_file) })
+            .background_spawn(async move {
+                let startup_config_file = active_terminal_startup_config_file();
+                let imported = read_startup_profile_import_file(&import_file)?;
+                let preferred_profile = imported
+                    .source_profile
+                    .as_deref()
+                    .map(normalize_startup_profile_name)
+                    .transpose()?
+                    .unwrap_or_else(|| {
+                        import_file
+                            .file_stem()
+                            .and_then(|file_name| file_name.to_str())
+                            .map(str::to_string)
+                            .unwrap_or_else(|| "imported".into())
+                    });
+                let profile = available_startup_profile_import_name(
+                    &startup_config_file,
+                    &preferred_profile,
+                )?;
+                let backup = backup_startup_config_before_profile_mutation(
+                    &startup_config_file,
+                    "import-profile",
+                    Some(&profile),
+                )?;
+                let import =
+                    import_startup_profile(&startup_config_file, &profile, &import_file, false)?;
+                write_startup_profile_import_report_file(
+                    &active_terminal_profile_import_report_file(),
+                    &import,
+                    backup.as_ref(),
+                )?;
+                anyhow::Ok(import)
+            })
             .await;
         cx.update(|cx| match result {
             Ok(import) => {
@@ -27167,13 +27382,20 @@ fn copy_startup_profile_action(action: &CopyStartupProfile, cx: &mut App) {
             .background_spawn({
                 let source_profile = source_profile.clone();
                 async move {
+                    let startup_config_file = active_terminal_startup_config_file();
+                    let backup = backup_startup_config_before_profile_mutation(
+                        &startup_config_file,
+                        "copy-profile",
+                        Some(&source_profile),
+                    )?;
                     let copy = copy_startup_profile_to_available_name(
-                        &active_terminal_startup_config_file(),
+                        &startup_config_file,
                         &source_profile,
                     )?;
                     write_startup_profile_copy_report_file(
                         &active_terminal_profile_copy_report_file(),
                         &copy,
+                        backup.as_ref(),
                     )?;
                     anyhow::Ok(copy)
                 }
@@ -27204,14 +27426,21 @@ fn remove_startup_profile_after_confirmation(profile: String, cx: &mut App) {
             .background_spawn({
                 let profile = profile.clone();
                 async move {
+                    let startup_config_file = active_terminal_startup_config_file();
+                    let backup = backup_startup_config_before_profile_mutation(
+                        &startup_config_file,
+                        "remove-profile",
+                        Some(&profile),
+                    )?;
                     let removal = remove_startup_profile_with_references(
-                        &active_terminal_startup_config_file(),
+                        &startup_config_file,
                         &profile,
                         true,
                     )?;
                     write_startup_profile_removal_report_file(
                         &active_terminal_profile_removal_report_file(),
                         &removal,
+                        backup.as_ref(),
                     )?;
                     anyhow::Ok(removal)
                 }
@@ -27298,7 +27527,14 @@ fn open_themes_directory(_: &OpenThemesDirectory, cx: &mut App) {
 }
 
 fn set_default_startup_profile_action(action: &SetDefaultStartupProfile, cx: &mut App) {
-    match set_default_startup_profile(&active_terminal_startup_config_file(), &action.profile) {
+    let startup_config_file = active_terminal_startup_config_file();
+    match backup_startup_config_before_profile_mutation(
+        &startup_config_file,
+        "set-default-profile",
+        Some(&action.profile),
+    )
+    .and_then(|_| set_default_startup_profile(&startup_config_file, &action.profile))
+    {
         Ok(update) => {
             log::info!(
                 "set default startup profile to {:?} in {:?}",
@@ -27317,7 +27553,14 @@ fn set_default_startup_profile_action(action: &SetDefaultStartupProfile, cx: &mu
 }
 
 fn clear_default_startup_profile_action(_: &ClearDefaultStartupProfile, cx: &mut App) {
-    match clear_default_startup_profile(&active_terminal_startup_config_file()) {
+    let startup_config_file = active_terminal_startup_config_file();
+    match backup_startup_config_before_profile_mutation(
+        &startup_config_file,
+        "clear-default-profile",
+        None,
+    )
+    .and_then(|_| clear_default_startup_profile(&startup_config_file))
+    {
         Ok(update) => {
             log::info!("cleared default startup profile in {:?}", update.path);
             set_app_menus(cx);
@@ -27337,7 +27580,15 @@ fn show_startup_profile_action(action: &ShowStartupProfile, cx: &mut App) {
 }
 
 fn set_startup_profile_visibility_action(profile: &str, hidden: bool, cx: &mut App) {
-    match set_startup_profile_visibility(&active_terminal_startup_config_file(), profile, hidden) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let action = if hidden {
+        "hide-profile"
+    } else {
+        "show-profile"
+    };
+    match backup_startup_config_before_profile_mutation(&startup_config_file, action, Some(profile))
+        .and_then(|_| set_startup_profile_visibility(&startup_config_file, profile, hidden))
+    {
         Ok(update) => {
             log::info!(
                 "set startup profile {:?} hidden={} in {:?}",
@@ -43335,7 +43586,7 @@ mod tests {
             total_profile_count: 1,
         };
 
-        write_startup_profile_creation_report_file(&report_file, &creation)
+        write_startup_profile_creation_report_file(&report_file, &creation, None)
             .expect("profile creation report should write");
 
         let report =
@@ -43346,6 +43597,7 @@ mod tests {
         assert_eq!(report_json["profile"], "new-profile");
         assert_eq!(report_json["display_name"], "New Profile");
         assert_eq!(report_json["total_profile_count"], 1);
+        assert!(report_json["pre_mutation_backup"].is_null());
         assert!(!report.contains("do-not-log"));
         assert!(!report.contains("TOKEN"));
 
@@ -43365,7 +43617,7 @@ mod tests {
             total_profile_count: 3,
         };
 
-        write_startup_profile_copy_report_file(&report_file, &copy)
+        write_startup_profile_copy_report_file(&report_file, &copy, None)
             .expect("profile copy report should write");
 
         let report =
@@ -43376,6 +43628,52 @@ mod tests {
         assert_eq!(report_json["source_profile"], "work");
         assert_eq!(report_json["profile"], "work-copy");
         assert_eq!(report_json["copied_tab_count"], 2);
+        assert!(report_json["pre_mutation_backup"].is_null());
+        assert!(!report.contains("do-not-log"));
+        assert!(!report.contains("TOKEN"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_copy_report_file_includes_backup_metadata() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir.join("logs").join("zed-terminal-profile-copy.json");
+        let backup = TerminalStartupProfileMutationBackup {
+            action: "copy-profile",
+            path: root_dir.join("terminal.json"),
+            backup_file: root_dir
+                .join("logs")
+                .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
+                .join("terminal-before-profile-copy-profile-work-42.json"),
+            profile: Some("work".into()),
+            byte_count: 128,
+        };
+        let copy = TerminalStartupProfileCopy {
+            path: root_dir.join("terminal.json"),
+            source_profile: "work".into(),
+            profile: "work-copy".into(),
+            changed: true,
+            copied_tab_count: 1,
+            total_profile_count: 2,
+        };
+
+        write_startup_profile_copy_report_file(&report_file, &copy, Some(&backup))
+            .expect("profile copy report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile copy report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile copy report should parse");
+        assert_eq!(report_json["pre_mutation_backup"]["action"], "copy-profile");
+        assert_eq!(report_json["pre_mutation_backup"]["profile"], "work");
+        assert_eq!(report_json["pre_mutation_backup"]["byte_count"], 128);
+        assert!(
+            report_json["pre_mutation_backup"]["backup_file"]
+                .as_str()
+                .expect("backup file should be a string")
+                .contains(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
+        );
         assert!(!report.contains("do-not-log"));
         assert!(!report.contains("TOKEN"));
 
@@ -43399,7 +43697,7 @@ mod tests {
             removed_profile_tab_count: 1,
         };
 
-        write_startup_profile_removal_report_file(&report_file, &removal)
+        write_startup_profile_removal_report_file(&report_file, &removal, None)
             .expect("profile removal report should write");
 
         let report =
@@ -43410,6 +43708,7 @@ mod tests {
         assert_eq!(report_json["profile"], "work");
         assert_eq!(report_json["removed_reference_count"], 3);
         assert_eq!(report_json["cleared_default_profile"], true);
+        assert!(report_json["pre_mutation_backup"].is_null());
         assert!(!report.contains("do-not-log"));
         assert!(!report.contains("TOKEN"));
 
@@ -43697,7 +43996,7 @@ mod tests {
             total_profile_count: 2,
         };
 
-        write_startup_profile_import_report_file(&report_file, &import)
+        write_startup_profile_import_report_file(&report_file, &import, None)
             .expect("profile import report should write");
 
         let report =
@@ -43708,6 +44007,7 @@ mod tests {
         assert_eq!(report_json["source_profile"], "work");
         assert_eq!(report_json["profile"], "work-imported");
         assert_eq!(report_json["env_keys"], serde_json::json!(["TOKEN"]));
+        assert!(report_json["pre_mutation_backup"].is_null());
         assert!(!report.contains("do-not-log"));
 
         std_fs::remove_dir_all(root_dir).ok();
@@ -44581,6 +44881,115 @@ mod tests {
             std_fs::read_to_string(&startup_config_file)
                 .expect("failed to read startup config after rejected backup"),
             "{}\n"
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn backup_startup_config_before_profile_mutation_preserves_original_jsonc() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("config").join("terminal.json");
+        let backup_dir = root_dir
+            .join("logs")
+            .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR);
+        std_fs::create_dir_all(startup_config_file.parent().unwrap())
+            .expect("failed to create config dir");
+        let original = r#"// keep comment
+{
+  "profiles": {
+    "work": {
+      "display_name": "Work",
+      "env": {
+        "TOKEN": "do-not-log"
+      }
+    }
+  }
+}
+"#;
+        std_fs::write(&startup_config_file, original).expect("failed to write startup config");
+
+        let backup = backup_startup_config_before_profile_mutation_at(
+            &startup_config_file,
+            &backup_dir,
+            "copy-profile",
+            Some("work"),
+            42,
+        )
+        .expect("profile mutation backup should succeed")
+        .expect("existing startup config should be backed up");
+
+        assert_eq!(backup.action, "copy-profile");
+        assert_eq!(backup.path, startup_config_file);
+        assert_eq!(backup.profile.as_deref(), Some("work"));
+        assert_eq!(backup.byte_count, original.len() as u64);
+        assert!(backup.backup_file.starts_with(&backup_dir));
+        assert!(
+            backup
+                .backup_file
+                .parent()
+                .expect("backup should have parent")
+                .ends_with(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
+        );
+        let file_name = backup
+            .backup_file
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .expect("backup file name should be utf8");
+        assert_eq!(
+            file_name,
+            "terminal-before-profile-copy-profile-work-42.json"
+        );
+
+        let backup_text =
+            std_fs::read_to_string(&backup.backup_file).expect("failed to read backup");
+        assert_eq!(backup_text, original);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn backup_startup_config_before_profile_mutation_skips_missing_config() {
+        let root_dir = temp_test_dir();
+        let startup_config_file = root_dir.join("terminal.json");
+        let backup_dir = root_dir
+            .join("logs")
+            .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR);
+
+        let backup = backup_startup_config_before_profile_mutation_at(
+            &startup_config_file,
+            &backup_dir,
+            "create-profile",
+            None,
+            42,
+        )
+        .expect("missing startup config should not fail");
+
+        assert_eq!(backup, None);
+        assert!(!startup_config_file.exists());
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn terminal_profile_mutation_backup_file_at_suffixes_same_second_collisions() {
+        let root_dir = temp_test_dir();
+        let backup_dir = root_dir
+            .join("logs")
+            .join(TERMINAL_PROFILE_MUTATION_BACKUP_DIR);
+        std_fs::create_dir_all(&backup_dir).expect("failed to create backup dir");
+        let first = backup_dir.join("terminal-before-profile-copy-profile-work-42.json");
+        std_fs::write(&first, "{}\n").expect("failed to write existing backup");
+
+        let backup_file =
+            terminal_profile_mutation_backup_file_at(&backup_dir, "copy-profile", Some("work"), 42)
+                .expect("backup file should resolve");
+
+        assert_eq!(
+            backup_file
+                .file_name()
+                .and_then(|file_name| file_name.to_str()),
+            Some("terminal-before-profile-copy-profile-work-42-1.json")
         );
 
         std_fs::remove_dir_all(root_dir).ok();
