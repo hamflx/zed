@@ -460,6 +460,7 @@ Inspect and restore profile mutation rollback backups without opening a terminal
 ```powershell
 .\{{BINARY}} --list-profile-mutation-backups --list-profile-mutation-backups-format json
 .\{{BINARY}} --restore-latest-profile-mutation-backup --restore-latest-profile-mutation-backup-format json
+.\{{BINARY}} --restore-profile-mutation-backup --restore-profile-mutation-backup-file terminal-before-profile-copy-profile-package-specific-43.json --restore-profile-mutation-backup-format json
 ```
 
 Back up, compare, and restore key bindings without opening a terminal window:
@@ -557,6 +558,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --restore-startup-config --restore-startup-config-file terminal.backup.json",
         ".\$BinaryFileName --list-profile-mutation-backups --list-profile-mutation-backups-format json",
         ".\$BinaryFileName --restore-latest-profile-mutation-backup --restore-latest-profile-mutation-backup-format json",
+        ".\$BinaryFileName --restore-profile-mutation-backup --restore-profile-mutation-backup-file terminal-before-profile-copy-profile-package-specific-43.json --restore-profile-mutation-backup-format json",
         ".\$BinaryFileName --backup-keymap --backup-keymap-file keymap.backup.json",
         ".\$BinaryFileName --check-keymap-backup --check-keymap-backup-file keymap.backup.json",
         ".\$BinaryFileName --diff-keymap-backup --diff-keymap-backup-file keymap.backup.json",
@@ -2142,6 +2144,7 @@ function Invoke-ProfileMutationBackupSmoke {
 
     $originalStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
     $backupFile = Join-Path $backupDir "terminal-before-profile-copy-profile-package-smoke-42.json"
+    $specificBackupFile = Join-Path $backupDir "terminal-before-profile-copy-profile-package-specific-43.json"
     $backupPayload = @'
 {
   "profiles": {
@@ -2154,7 +2157,23 @@ function Invoke-ProfileMutationBackupSmoke {
   }
 }
 '@
+    $specificBackupPayload = @'
+{
+  "profiles": {
+    "package-specific": {
+      "display_name": "Package Specific Profile",
+      "env": {
+        "PACKAGE_SPECIFIC_PROFILE_MUTATION_SECRET": "do-not-log-specific"
+      }
+    }
+  }
+}
+'@
     Set-Content -LiteralPath $backupFile -Value $backupPayload -Encoding ascii -NoNewline
+    Set-Content -LiteralPath $specificBackupFile -Value $specificBackupPayload -Encoding ascii -NoNewline
+    $backupTimestamp = [DateTime]::UtcNow
+    (Get-Item -LiteralPath $specificBackupFile).LastWriteTimeUtc = $backupTimestamp
+    (Get-Item -LiteralPath $backupFile).LastWriteTimeUtc = $backupTimestamp.AddMinutes(5)
 
     $list = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
         "--user-data-dir", $DataDir,
@@ -2165,22 +2184,29 @@ function Invoke-ProfileMutationBackupSmoke {
     $listJson = $list.Stdout | ConvertFrom-Json
     $listBackups = @($listJson.backups)
     $listBackup = $listBackups | Where-Object { $_.path -eq $backupFile } | Select-Object -First 1
+    $specificListBackup = $listBackups | Where-Object { $_.path -eq $specificBackupFile } | Select-Object -First 1
     if (
         ($listJson.status -ne "ok" -and $listJson.status -ne "warning") -or
-        [int64]$listJson.backup_count -lt 1 -or
-        [int64]$listJson.valid_count -lt 1 -or
+        [int64]$listJson.backup_count -lt 2 -or
+        [int64]$listJson.valid_count -lt 2 -or
         -not $listBackup -or
+        -not $specificListBackup -or
         $listBackup.valid -ne $true -or
+        $specificListBackup.valid -ne $true -or
         $listBackup.file_name -ne "terminal-before-profile-copy-profile-package-smoke-42.json" -or
+        $specificListBackup.file_name -ne "terminal-before-profile-copy-profile-package-specific-43.json" -or
         $listBackup.action -ne "copy-profile" -or
+        $specificListBackup.action -ne "copy-profile" -or
         $listBackup.profile_stem -ne "package-smoke" -or
-        [int64]$listBackup.profile_count -ne 1
+        $specificListBackup.profile_stem -ne "package-specific" -or
+        [int64]$listBackup.profile_count -ne 1 -or
+        [int64]$specificListBackup.profile_count -ne 1
     ) {
         throw "zed-terminal --list-profile-mutation-backups did not report the expected rollback backup metadata"
     }
     Assert-ProfileMutationBackupOutputRedacted `
         -Output $list.Stdout `
-        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log")
+        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log", "Package Specific Profile", "PACKAGE_SPECIFIC_PROFILE_MUTATION_SECRET", "do-not-log-specific")
 
     Set-Content -LiteralPath $startupConfigFile -Value "{ broken startup config" -NoNewline
     $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
@@ -2205,11 +2231,42 @@ function Invoke-ProfileMutationBackupSmoke {
     }
     Assert-ProfileMutationBackupOutputRedacted `
         -Output $restore.Stdout `
-        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log")
+        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log", "Package Specific Profile", "PACKAGE_SPECIFIC_PROFILE_MUTATION_SECRET", "do-not-log-specific")
 
     $restoredStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
     if ($restoredStartupConfigText -ne $backupPayload) {
         throw "zed-terminal --restore-latest-profile-mutation-backup did not restore terminal.json from the rollback backup"
+    }
+
+    Set-Content -LiteralPath $startupConfigFile -Value "{ broken startup config for specific restore" -NoNewline
+    $specificRestore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-profile-mutation-backup",
+        "--restore-profile-mutation-backup-file", $specificBackupFile,
+        "--restore-profile-mutation-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $specificRestoreJson = $specificRestore.Stdout | ConvertFrom-Json
+    if (
+        $specificRestoreJson.status -ne "ok" -or
+        $specificRestoreJson.startup_config_file -ne $startupConfigFile -or
+        $specificRestoreJson.restore_file -ne $specificBackupFile -or
+        [int64]$specificRestoreJson.byte_count -le 0 -or
+        [int64]$specificRestoreJson.profile_count -ne 1 -or
+        -not $specificRestoreJson.pre_restore_backup -or
+        $specificRestoreJson.pre_restore_backup.action -ne "restore-profile-mutation-backup" -or
+        $specificRestoreJson.pre_restore_backup.startup_config_file -ne $startupConfigFile -or
+        [int64]$specificRestoreJson.pre_restore_backup.byte_count -le 0
+    ) {
+        throw "zed-terminal --restore-profile-mutation-backup did not report the expected restore metadata"
+    }
+    Assert-ProfileMutationBackupOutputRedacted `
+        -Output $specificRestore.Stdout `
+        -SensitiveText @("Package Secret Profile", "PACKAGE_PROFILE_MUTATION_SECRET", "do-not-log", "Package Specific Profile", "PACKAGE_SPECIFIC_PROFILE_MUTATION_SECRET", "do-not-log-specific")
+
+    $specificRestoredStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
+    if ($specificRestoredStartupConfigText -ne $specificBackupPayload) {
+        throw "zed-terminal --restore-profile-mutation-backup did not restore terminal.json from the requested rollback backup"
     }
 
     Set-Content -LiteralPath $startupConfigFile -Value $originalStartupConfigText -NoNewline

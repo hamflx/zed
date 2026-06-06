@@ -1770,6 +1770,8 @@ try {
                 "--list-profile-mutation-backups-format <text\|json>",
                 "--restore-latest-profile-mutation-backup",
                 "--restore-latest-profile-mutation-backup-format <text\|json>",
+                "--restore-profile-mutation-backup --restore-profile-mutation-backup-file <FILE>",
+                "--restore-profile-mutation-backup-format <text\|json>",
                 "Settings backup and restore options:",
                 "--backup-settings --backup-settings-file <FILE>",
                 "--backup-settings-format <text\|json>",
@@ -3240,6 +3242,7 @@ try {
             $profileMutationBackupDir = Join-Path $mutationCliDataDir "logs\zed-terminal-profile-mutation-backups"
             New-Item -ItemType Directory -Force -Path $profileMutationBackupDir | Out-Null
             $profileMutationBackupFile = Join-Path $profileMutationBackupDir "terminal-before-profile-copy-profile-release-smoke-42.json"
+            $specificProfileMutationBackupFile = Join-Path $profileMutationBackupDir "terminal-before-profile-copy-profile-release-specific-41.json"
             $profileMutationBackupPayload = @'
 {
   "profiles": {
@@ -3252,8 +3255,23 @@ try {
   }
 }
 '@
+            $specificProfileMutationBackupPayload = @'
+{
+  "profiles": {
+    "release-specific": {
+      "display_name": "Release Specific Secret Profile",
+      "env": {
+        "RELEASE_SPECIFIC_PROFILE_MUTATION_SECRET": "release-specific-profile-mutation-secret"
+      }
+    }
+  }
+}
+'@
             Set-Content -LiteralPath $profileMutationBackupFile -Value $profileMutationBackupPayload -Encoding ascii -NoNewline
-            (Get-Item -LiteralPath $profileMutationBackupFile).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes(5)
+            Set-Content -LiteralPath $specificProfileMutationBackupFile -Value $specificProfileMutationBackupPayload -Encoding ascii -NoNewline
+            $profileMutationBackupTimestamp = [DateTime]::UtcNow
+            (Get-Item -LiteralPath $specificProfileMutationBackupFile).LastWriteTimeUtc = $profileMutationBackupTimestamp
+            (Get-Item -LiteralPath $profileMutationBackupFile).LastWriteTimeUtc = $profileMutationBackupTimestamp.AddMinutes(5)
             $profileMutationBackups = Invoke-NativeJsonCommandResult "mutation-list-profile-mutation-backups" @(
                 "--user-data-dir", $mutationCliDataDir,
                 "--config-dir", $mutationCliConfigDir,
@@ -3262,20 +3280,26 @@ try {
             )
             $profileMutationBackupEntries = @($profileMutationBackups.backups)
             $profileMutationBackupEntry = $profileMutationBackupEntries | Where-Object { $_.path -eq $profileMutationBackupFile } | Select-Object -First 1
+            $specificProfileMutationBackupEntry = $profileMutationBackupEntries | Where-Object { $_.path -eq $specificProfileMutationBackupFile } | Select-Object -First 1
             if (
                 ($profileMutationBackups.status -ne "ok" -and $profileMutationBackups.status -ne "warning") -or
-                [int64]$profileMutationBackups.backup_count -lt 1 -or
-                [int64]$profileMutationBackups.valid_count -lt 1 -or
+                [int64]$profileMutationBackups.backup_count -lt 2 -or
+                [int64]$profileMutationBackups.valid_count -lt 2 -or
                 -not $profileMutationBackupEntry -or
+                -not $specificProfileMutationBackupEntry -or
                 $profileMutationBackupEntry.valid -ne $true -or
+                $specificProfileMutationBackupEntry.valid -ne $true -or
                 $profileMutationBackupEntry.action -ne "copy-profile" -or
+                $specificProfileMutationBackupEntry.action -ne "copy-profile" -or
                 $profileMutationBackupEntry.profile_stem -ne "release-smoke" -or
-                [int64]$profileMutationBackupEntry.profile_count -ne 1
+                $specificProfileMutationBackupEntry.profile_stem -ne "release-specific" -or
+                [int64]$profileMutationBackupEntry.profile_count -ne 1 -or
+                [int64]$specificProfileMutationBackupEntry.profile_count -ne 1
             ) {
                 throw "Profile mutation backup list did not report the expected rollback metadata."
             }
             $profileMutationBackupsText = $profileMutationBackups | ConvertTo-Json -Depth 10
-            if ($profileMutationBackupsText -match "Release Secret Profile" -or $profileMutationBackupsText -match "RELEASE_PROFILE_MUTATION_SECRET" -or $profileMutationBackupsText -match "release-profile-mutation-secret") {
+            if ($profileMutationBackupsText -match "Release Secret Profile" -or $profileMutationBackupsText -match "RELEASE_PROFILE_MUTATION_SECRET" -or $profileMutationBackupsText -match "release-profile-mutation-secret" -or $profileMutationBackupsText -match "Release Specific Secret Profile" -or $profileMutationBackupsText -match "RELEASE_SPECIFIC_PROFILE_MUTATION_SECRET" -or $profileMutationBackupsText -match "release-specific-profile-mutation-secret") {
                 throw "Profile mutation backup list output leaked startup config contents."
             }
             Set-Content -LiteralPath $mutationStartupConfigFile -Value "{ broken terminal config" -NoNewline
@@ -3298,12 +3322,40 @@ try {
                 throw "Profile mutation backup restore did not report the expected restore metadata."
             }
             $profileMutationRestoreText = $profileMutationRestore | ConvertTo-Json -Depth 10
-            if ($profileMutationRestoreText -match "Release Secret Profile" -or $profileMutationRestoreText -match "RELEASE_PROFILE_MUTATION_SECRET" -or $profileMutationRestoreText -match "release-profile-mutation-secret") {
+            if ($profileMutationRestoreText -match "Release Secret Profile" -or $profileMutationRestoreText -match "RELEASE_PROFILE_MUTATION_SECRET" -or $profileMutationRestoreText -match "release-profile-mutation-secret" -or $profileMutationRestoreText -match "Release Specific Secret Profile" -or $profileMutationRestoreText -match "RELEASE_SPECIFIC_PROFILE_MUTATION_SECRET" -or $profileMutationRestoreText -match "release-specific-profile-mutation-secret") {
                 throw "Profile mutation backup restore output leaked startup config contents."
             }
             $profileMutationRestoredStartupText = Get-Content -Raw -LiteralPath $mutationStartupConfigFile
             if ($profileMutationRestoredStartupText -ne $profileMutationBackupPayload) {
                 throw "Profile mutation backup restore did not restore terminal.json from the newest valid rollback backup."
+            }
+            Set-Content -LiteralPath $mutationStartupConfigFile -Value "{ broken terminal config for specific restore" -NoNewline
+            $specificProfileMutationRestore = Invoke-NativeJsonCommandResult "mutation-restore-profile-mutation-backup" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--restore-profile-mutation-backup",
+                "--restore-profile-mutation-backup-file", $specificProfileMutationBackupFile,
+                "--restore-profile-mutation-backup-format", "json"
+            )
+            if (
+                $specificProfileMutationRestore.status -ne "ok" -or
+                $specificProfileMutationRestore.startup_config_file -ne $mutationStartupConfigFile -or
+                $specificProfileMutationRestore.restore_file -ne $specificProfileMutationBackupFile -or
+                [int64]$specificProfileMutationRestore.profile_count -ne 1 -or
+                -not $specificProfileMutationRestore.pre_restore_backup -or
+                $specificProfileMutationRestore.pre_restore_backup.action -ne "restore-profile-mutation-backup" -or
+                $specificProfileMutationRestore.pre_restore_backup.startup_config_file -ne $mutationStartupConfigFile -or
+                [int64]$specificProfileMutationRestore.pre_restore_backup.byte_count -le 0
+            ) {
+                throw "Profile mutation backup specific restore did not report the expected restore metadata."
+            }
+            $specificProfileMutationRestoreText = $specificProfileMutationRestore | ConvertTo-Json -Depth 10
+            if ($specificProfileMutationRestoreText -match "Release Secret Profile" -or $specificProfileMutationRestoreText -match "RELEASE_PROFILE_MUTATION_SECRET" -or $specificProfileMutationRestoreText -match "release-profile-mutation-secret" -or $specificProfileMutationRestoreText -match "Release Specific Secret Profile" -or $specificProfileMutationRestoreText -match "RELEASE_SPECIFIC_PROFILE_MUTATION_SECRET" -or $specificProfileMutationRestoreText -match "release-specific-profile-mutation-secret") {
+                throw "Profile mutation backup specific restore output leaked startup config contents."
+            }
+            $specificProfileMutationRestoredStartupText = Get-Content -Raw -LiteralPath $mutationStartupConfigFile
+            if ($specificProfileMutationRestoredStartupText -ne $specificProfileMutationBackupPayload) {
+                throw "Profile mutation backup specific restore did not restore terminal.json from the requested rollback backup."
             }
             Set-Content -LiteralPath $mutationStartupConfigFile -Value $restoredStartupFileText -NoNewline
             $mutationProfileExportFile = Join-Path $mutationCliConfigDir "work-profile-export.json"
