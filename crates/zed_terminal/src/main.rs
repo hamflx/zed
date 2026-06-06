@@ -139,6 +139,14 @@ struct NewTerminalSplitWithProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct NewTerminalSplitWithProfileSlot {
+    slot: usize,
+    direction: TerminalStartupSplitDirection,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct SetDefaultStartupProfile {
     profile: String,
 }
@@ -22218,16 +22226,29 @@ fn visible_profile_name_for_slot(
         .map(|profile| profile.name))
 }
 
-fn launch_tab_for_visible_profile_slot(slot: usize) -> Result<Option<LaunchTab>> {
-    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
-    let Some(profile_name) = visible_profile_name_for_slot(&startup_config, slot)? else {
+fn profile_launch_tab_for_visible_slot(
+    startup_config: &TerminalStartupConfig,
+    slot: usize,
+    split: Option<TerminalStartupSplitDirection>,
+) -> Result<Option<LaunchTab>> {
+    let Some(profile_name) = visible_profile_name_for_slot(startup_config, slot)? else {
         return Ok(None);
     };
 
-    startup_config
-        .profile_initial_tab(&profile_name)
-        .with_context(|| format!("failed to resolve startup profile {profile_name:?}"))
-        .map(Some)
+    match split {
+        Some(split) => startup_config.profile_launch_tab(&profile_name, Some(split)),
+        None => startup_config.profile_initial_tab(&profile_name),
+    }
+    .with_context(|| format!("failed to resolve startup profile {profile_name:?}"))
+    .map(Some)
+}
+
+fn launch_tab_for_visible_profile_slot(
+    slot: usize,
+    split: Option<TerminalStartupSplitDirection>,
+) -> Result<Option<LaunchTab>> {
+    let startup_config = TerminalStartupConfig::load(&active_terminal_startup_config_file())?;
+    profile_launch_tab_for_visible_slot(&startup_config, slot, split)
 }
 
 fn launch_options_for_profile_window(profile: &str) -> Result<LaunchOptions> {
@@ -22718,6 +22739,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<NewTerminalSplitRight>(),
         TerminalActionSurface::new::<NewTerminalSplitUp>(),
         TerminalActionSurface::new::<NewTerminalSplitWithProfile>(),
+        TerminalActionSurface::new::<NewTerminalSplitWithProfileSlot>(),
         TerminalActionSurface::new::<NewTerminalTabWithProfile>(),
         TerminalActionSurface::new::<NewTerminalTabWithProfileSlot>(),
         TerminalActionSurface::new::<OpenConfigDirectory>(),
@@ -23863,7 +23885,7 @@ fn open_terminal_window(
                 let profile_slot_project = project.clone();
                 workspace.register_action(
                     move |workspace, action: &NewTerminalTabWithProfileSlot, window, cx| {
-                        match launch_tab_for_visible_profile_slot(action.slot) {
+                        match launch_tab_for_visible_profile_slot(action.slot, None) {
                             Ok(Some(tab)) => {
                                 if let Some(working_directory) = tab.working_directory.clone() {
                                     profile_slot_project.update(cx, |project, cx| {
@@ -23907,6 +23929,38 @@ fn open_terminal_window(
                                 log::warn!(
                                     "failed to split terminal for profile {:?}: {error:#}",
                                     action.profile
+                                );
+                            }
+                        }
+                    },
+                );
+                let profile_split_slot_project = project.clone();
+                workspace.register_action(
+                    move |workspace, action: &NewTerminalSplitWithProfileSlot, window, cx| {
+                        match launch_tab_for_visible_profile_slot(
+                            action.slot,
+                            Some(action.direction),
+                        ) {
+                            Ok(Some(tab)) => {
+                                if let Some(working_directory) = tab.working_directory.clone() {
+                                    profile_split_slot_project.update(cx, |project, cx| {
+                                        project
+                                            .find_or_create_worktree(&working_directory, true, cx)
+                                            .detach_and_log_err(cx);
+                                    });
+                                }
+                                add_launch_tab(workspace, window, cx, tab).detach_and_log_err(cx);
+                            }
+                            Ok(None) => {
+                                log::warn!(
+                                    "startup profile split slot {} has no visible profile",
+                                    action.slot
+                                );
+                            }
+                            Err(error) => {
+                                log::warn!(
+                                    "failed to split terminal for startup profile slot {}: {error:#}",
+                                    action.slot
                                 );
                             }
                         }
@@ -25579,6 +25633,13 @@ mod tests {
         );
         assert_command_palette_action_visible(
             &filter,
+            &NewTerminalSplitWithProfileSlot {
+                slot: 1,
+                direction: TerminalStartupSplitDirection::Right,
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &SetDefaultStartupProfile {
                 profile: "work".into(),
             },
@@ -25883,6 +25944,47 @@ mod tests {
         let error =
             visible_profile_name_for_slot(&config, 0).expect_err("slot 0 should be rejected");
         assert!(format!("{error:#}").contains("1-based"));
+    }
+
+    #[test]
+    fn visible_profile_slot_launch_tab_applies_split_direction() {
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "alpha".into(),
+            TerminalStartupProfileConfig {
+                title: Some("Alpha".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "hidden".into(),
+            TerminalStartupProfileConfig {
+                hidden: true,
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        profiles.insert(
+            "omega".into(),
+            TerminalStartupProfileConfig {
+                title: Some("Omega".into()),
+                ..TerminalStartupProfileConfig::default()
+            },
+        );
+        let config = TerminalStartupConfig {
+            profiles,
+            ..TerminalStartupConfig::default()
+        };
+
+        let tab = profile_launch_tab_for_visible_slot(
+            &config,
+            2,
+            Some(TerminalStartupSplitDirection::Left),
+        )
+        .expect("profile slot split should resolve")
+        .expect("slot 2 should select the second visible profile");
+
+        assert_eq!(tab.title.as_deref(), Some("Omega"));
+        assert_eq!(tab.split, Some(TerminalStartupSplitDirection::Left));
     }
 
     #[test]
@@ -27441,6 +27543,45 @@ mod tests {
                 "extra": true
             }))
             .expect_err("unknown profile split action fields should be rejected");
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_new_terminal_split_with_profile_slot_action_input() {
+        let action =
+            <NewTerminalSplitWithProfileSlot as Action>::build(gpui::private::serde_json::json!({
+                "slot": 2,
+                "direction": "right"
+            }))
+            .expect("profile slot split action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<NewTerminalSplitWithProfileSlot>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &NewTerminalSplitWithProfileSlot {
+                slot: 2,
+                direction: TerminalStartupSplitDirection::Right,
+            }
+        );
+
+        let error =
+            <NewTerminalSplitWithProfileSlot as Action>::build(gpui::private::serde_json::json!({
+                "slot": 2,
+                "direction": "diagonal"
+            }))
+            .expect_err("unknown profile slot split directions should be rejected");
+        assert!(format!("{error:#}").contains("unknown variant"));
+
+        let error =
+            <NewTerminalSplitWithProfileSlot as Action>::build(gpui::private::serde_json::json!({
+                "slot": 2,
+                "direction": "right",
+                "extra": true
+            }))
+            .expect_err("unknown profile slot split action fields should be rejected");
         assert!(format!("{error:#}").contains("unknown field"));
     }
 
@@ -29751,6 +29892,7 @@ mod tests {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::NewTerminalTabWithProfileSlot",
+            "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
@@ -30397,6 +30539,13 @@ mod tests {
             .expect("profile new tab action should be listed");
         assert_eq!(profile_tab.input, TerminalKeymapActionInput::Object);
 
+        let profile_split_slot = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::NewTerminalSplitWithProfileSlot")
+            .expect("profile slot split action should be listed");
+        assert_eq!(profile_split_slot.input, TerminalKeymapActionInput::Object);
+
         let profile_slot_tab = report
             .actions
             .iter()
@@ -30561,6 +30710,21 @@ mod tests {
                         && binding.context.is_none()
                         && binding.input.as_deref() == Some("{\"slot\":1}")
                 })
+        );
+
+        let profile_split_slot_report = terminal_keymap_action_description_report(
+            cx,
+            "zed_terminal::NewTerminalSplitWithProfileSlot",
+        )
+        .expect("profile slot split keymap action description should build");
+        assert_eq!(
+            profile_split_slot_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(
+            profile_split_slot_report.actions[0]
+                .default_bindings
+                .is_empty()
         );
 
         let profile_config_report =

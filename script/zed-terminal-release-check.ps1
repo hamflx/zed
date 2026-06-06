@@ -1630,6 +1630,7 @@ try {
                 "zed_terminal::NewTerminalTab",
                 "zed_terminal::NewTerminalTabWithProfile",
                 "zed_terminal::NewTerminalTabWithProfileSlot",
+                "zed_terminal::NewTerminalSplitWithProfileSlot",
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
                 "zed_terminal::OpenConfigInitializationReport",
@@ -1680,6 +1681,10 @@ try {
             }
             if (-not ($profileSlotTabAction.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-9" -and $null -eq $_.context -and $_.input -eq '{"slot":9}' })) {
                 throw "Keymap action list is missing the profile slot 9 default binding."
+            }
+            $profileSlotSplitAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::NewTerminalSplitWithProfileSlot" } | Select-Object -First 1
+            if (-not $profileSlotSplitAction -or $profileSlotSplitAction.namespace -ne "zed_terminal" -or $profileSlotSplitAction.input -ne "object") {
+                throw "Keymap action list did not mark NewTerminalSplitWithProfileSlot as an object-input action."
             }
             $configBundleBackupAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigBundleBackupDirectory" } | Select-Object -First 1
             if (-not $configBundleBackupAction -or $configBundleBackupAction.namespace -ne "zed_terminal" -or $configBundleBackupAction.input -ne "none") {
@@ -1780,6 +1785,15 @@ try {
             }
             if (-not ($profileSlotTabActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-shift-9" -and $null -eq $_.context -and $_.input -eq '{"slot":9}' })) {
                 throw "Keymap action description is missing the profile slot 9 default binding."
+            }
+            $profileSlotSplitActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-profile-slot-split" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::NewTerminalSplitWithProfileSlot",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($profileSlotSplitActionDescription.action.name -ne "zed_terminal::NewTerminalSplitWithProfileSlot" -or $profileSlotSplitActionDescription.action.namespace -ne "zed_terminal" -or $profileSlotSplitActionDescription.action.input -ne "object") {
+                throw "Keymap action description did not report the expected profile-slot-split input contract."
             }
             $configBundleBackupActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-bundle-backup" @(
                 "--user-data-dir", $cliDataDir,
@@ -1920,6 +1934,7 @@ try {
                 $newTabActionDescription,
                 $profileTabActionDescription,
                 $profileSlotTabActionDescription,
+                $profileSlotSplitActionDescription,
                 $configBundleBackupActionDescription,
                 $configBundleBackupsActionDescription,
                 $configInitializationReportActionDescription,
