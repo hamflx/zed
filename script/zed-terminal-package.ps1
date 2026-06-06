@@ -379,6 +379,14 @@ Back up and restore settings without opening a terminal window:
 .\{{BINARY}} --restore-settings --restore-settings-file settings.backup.json
 ```
 
+Back up and restore startup configuration without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --backup-startup-config --backup-startup-config-file terminal.backup.json
+.\{{BINARY}} --check-startup-config-backup --check-startup-config-backup-file terminal.backup.json
+.\{{BINARY}} --restore-startup-config --restore-startup-config-file terminal.backup.json
+```
+
 Back up and restore key bindings without opening a terminal window:
 
 ```powershell
@@ -410,7 +418,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, keymap validation, settings backup/restore, keymap backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, settings backup/restore, startup config backup/restore, keymap backup/restore, complete config bundle backup/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -452,6 +460,9 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --backup-settings --backup-settings-file settings.backup.json",
         ".\$BinaryFileName --check-settings-backup --check-settings-backup-file settings.backup.json",
         ".\$BinaryFileName --restore-settings --restore-settings-file settings.backup.json",
+        ".\$BinaryFileName --backup-startup-config --backup-startup-config-file terminal.backup.json",
+        ".\$BinaryFileName --check-startup-config-backup --check-startup-config-backup-file terminal.backup.json",
+        ".\$BinaryFileName --restore-startup-config --restore-startup-config-file terminal.backup.json",
         ".\$BinaryFileName --backup-keymap --backup-keymap-file keymap.backup.json",
         ".\$BinaryFileName --check-keymap-backup --check-keymap-backup-file keymap.backup.json",
         ".\$BinaryFileName --restore-keymap --restore-keymap-file keymap.backup.json",
@@ -759,6 +770,100 @@ function Assert-SettingsRestoreJson {
     }
 }
 
+function Assert-StartupConfigBackupJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$StartupConfigFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $StartupConfigFile -or
+        $Report.backup_file -ne $BackupFile -or
+        [int64]$Report.byte_count -le 0 -or
+        [int64]$Report.layout_count -le 0 -or
+        [int64]$Report.tab_count -le 0 -or
+        [int64]$Report.profile_count -lt 0
+    ) {
+        throw "zed-terminal --backup-startup-config did not report expected startup config backup status"
+    }
+}
+
+function Assert-StartupConfigBackupCheckJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$StartupConfigFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][bool]$ExpectedMatches
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $StartupConfigFile -or
+        $Report.backup_file -ne $BackupFile -or
+        $Report.matches -ne $ExpectedMatches -or
+        [int64]$Report.startup_byte_count -le 0 -or
+        [int64]$Report.backup_byte_count -le 0 -or
+        [int64]$Report.startup_layout_count -le 0 -or
+        [int64]$Report.backup_layout_count -le 0 -or
+        [int64]$Report.startup_tab_count -le 0 -or
+        [int64]$Report.backup_tab_count -le 0 -or
+        [int64]$Report.startup_profile_count -lt 0 -or
+        [int64]$Report.backup_profile_count -lt 0
+    ) {
+        throw "zed-terminal --check-startup-config-backup did not report expected startup config backup check status"
+    }
+}
+
+function Assert-StartupConfigBackupDiffJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$StartupConfigFile,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][bool]$ExpectedTextMatches,
+        [Parameter(Mandatory = $true)][bool]$ExpectedConfigMatches
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $StartupConfigFile -or
+        $Report.backup_file -ne $BackupFile -or
+        $Report.text_matches -ne $ExpectedTextMatches -or
+        $Report.config_matches -ne $ExpectedConfigMatches -or
+        [int64]$Report.startup_byte_count -le 0 -or
+        [int64]$Report.backup_byte_count -le 0 -or
+        [int64]$Report.startup_layout_count -le 0 -or
+        [int64]$Report.backup_layout_count -le 0 -or
+        [int64]$Report.startup_tab_count -le 0 -or
+        [int64]$Report.backup_tab_count -le 0 -or
+        [int64]$Report.startup_profile_count -lt 0 -or
+        [int64]$Report.backup_profile_count -lt 0
+    ) {
+        throw "zed-terminal --diff-startup-config-backup did not report expected startup config backup diff status"
+    }
+}
+
+function Assert-StartupConfigRestoreJson {
+    param(
+        [Parameter(Mandatory = $true)]$Report,
+        [Parameter(Mandatory = $true)][string]$StartupConfigFile,
+        [Parameter(Mandatory = $true)][string]$RestoreFile
+    )
+
+    if (
+        $Report.status -ne "ok" -or
+        $Report.startup_config_file -ne $StartupConfigFile -or
+        $Report.restore_file -ne $RestoreFile -or
+        [int64]$Report.byte_count -le 0 -or
+        [int64]$Report.layout_count -le 0 -or
+        [int64]$Report.tab_count -le 0 -or
+        [int64]$Report.profile_count -lt 0
+    ) {
+        throw "zed-terminal --restore-startup-config did not report expected startup config restore status"
+    }
+}
+
 function Assert-KeymapBackupJson {
     param(
         [Parameter(Mandatory = $true)]$Report,
@@ -1062,6 +1167,91 @@ function Invoke-SettingsBackupSmoke {
     Assert-SettingsBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $BackupFile $true
 }
 
+function Invoke-StartupConfigBackupSmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$BackupFile,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $backup = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--backup-startup-config",
+        "--backup-startup-config-file", $BackupFile,
+        "--backup-startup-config-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-StartupConfigBackupJson ($backup.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile
+    if (-not (Test-Path -LiteralPath $BackupFile -PathType Leaf)) {
+        throw "zed-terminal --backup-startup-config did not write the requested backup file"
+    }
+
+    $backupText = Get-Content -LiteralPath $BackupFile -Raw
+    $startupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
+    if ($backupText -ne $startupConfigText) {
+        throw "zed-terminal --backup-startup-config did not preserve terminal.json exactly"
+    }
+
+    $check = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-startup-config-backup",
+        "--check-startup-config-backup-file", $BackupFile,
+        "--check-startup-config-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-StartupConfigBackupCheckJson ($check.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile $true
+
+    $diff = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-startup-config-backup",
+        "--diff-startup-config-backup-file", $BackupFile,
+        "--diff-startup-config-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-StartupConfigBackupDiffJson ($diff.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile $true $true
+
+    Add-Content -LiteralPath $startupConfigFile -Value "`n// package startup config drift"
+    $drift = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--diff-startup-config-backup",
+        "--diff-startup-config-backup-file", $BackupFile,
+        "--diff-startup-config-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $driftJson = $drift.Stdout | ConvertFrom-Json
+    Assert-StartupConfigBackupDiffJson $driftJson $startupConfigFile $BackupFile $false $true
+    if (@($driftJson.categories) -notcontains "text") {
+        throw "zed-terminal --diff-startup-config-backup did not distinguish text-only startup config drift"
+    }
+
+    Set-Content -LiteralPath $startupConfigFile -Value "{ broken startup config" -NoNewline
+    $restore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--restore-startup-config",
+        "--restore-startup-config-file", $BackupFile,
+        "--restore-startup-config-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-StartupConfigRestoreJson ($restore.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile
+
+    $restoredStartupConfigText = Get-Content -LiteralPath $startupConfigFile -Raw
+    if ($restoredStartupConfigText -ne $backupText) {
+        throw "zed-terminal --restore-startup-config did not restore terminal.json exactly"
+    }
+
+    $postRestore = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--check-startup-config-backup",
+        "--check-startup-config-backup-file", $BackupFile,
+        "--check-startup-config-backup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-StartupConfigBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $startupConfigFile $BackupFile $true
+}
+
 function Invoke-KeymapBackupSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
@@ -1276,6 +1466,7 @@ function Assert-PackageManifest {
         "settings_validation",
         "keymap_validation",
         "settings_backup",
+        "startup_backup",
         "keymap_backup",
         "config_bundle",
         "doctor",
@@ -1498,6 +1689,13 @@ function Assert-PackageZipArchive {
         -DataDir $extractedDataDir `
         -ConfigDir $extractedConfigDir `
         -BackupFile (Join-Path $ValidationRoot "zip-settings.backup.json") `
+        -WorkingDirectory $extractedPackageDir
+
+    Invoke-StartupConfigBackupSmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -BackupFile (Join-Path $ValidationRoot "zip-terminal.backup.json") `
         -WorkingDirectory $extractedPackageDir
 
     Invoke-KeymapBackupSmoke `
@@ -1739,6 +1937,13 @@ Invoke-SettingsBackupSmoke `
     -BackupFile (Join-Path $runDir "settings.backup.json") `
     -WorkingDirectory $packageDir
 
+Invoke-StartupConfigBackupSmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -BackupFile (Join-Path $runDir "terminal.backup.json") `
+    -WorkingDirectory $packageDir
+
 Invoke-KeymapBackupSmoke `
     -Binary $packagedBinary `
     -DataDir $validationDataDir `
@@ -1817,6 +2022,7 @@ $manifest = [pscustomobject]@{
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
+        startup_backup = "ok"
         keymap_backup = "ok"
         config_bundle = "ok"
         doctor = "ok"
