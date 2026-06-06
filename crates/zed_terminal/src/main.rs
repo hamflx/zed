@@ -57,6 +57,7 @@ actions!(
         OpenKeymapToolsPicker,
         OpenConfigInitializationReport,
         OpenConfigBundleBackupDirectory,
+        OpenConfigBundleBackupsDirectory,
         OpenKeymapActionCatalogReport,
         OpenActiveKeymapBindingsReport,
         OpenConfigDirectory,
@@ -22171,6 +22172,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_support_bundle_directory);
     cx.on_action(open_config_initialization_report);
     cx.on_action(open_config_bundle_backup_directory);
+    cx.on_action(open_config_bundle_backups_directory);
     cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
@@ -22408,6 +22410,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
         TerminalActionSurface::new::<OpenConfigInitializationReport>(),
         TerminalActionSurface::new::<OpenConfigBundleBackupDirectory>(),
+        TerminalActionSurface::new::<OpenConfigBundleBackupsDirectory>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -23096,6 +23099,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenConfigInitializationReport,
         ),
         MenuItem::action("Back Up Config Bundle...", OpenConfigBundleBackupDirectory),
+        MenuItem::action(
+            "Open Config Bundle Backups Directory",
+            OpenConfigBundleBackupsDirectory,
+        ),
         MenuItem::action("Open Startup Tools...", OpenStartupToolsPicker),
         MenuItem::action("Open Startup Config File", OpenStartupConfigFile),
         MenuItem::action(
@@ -24125,6 +24132,14 @@ fn open_config_bundle_backup_directory(_: &OpenConfigBundleBackupDirectory, cx: 
             log::warn!("failed to back up terminal config bundle: {error:#}");
         }
     }
+}
+
+fn open_config_bundle_backups_directory(_: &OpenConfigBundleBackupsDirectory, cx: &mut App) {
+    open_directory(
+        &active_terminal_config_bundle_backup_dir(),
+        "config bundle backups",
+        cx,
+    );
 }
 
 fn open_config_initialization_report(_: &OpenConfigInitializationReport, cx: &mut App) {
@@ -25199,6 +25214,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
         assert_command_palette_action_visible(&filter, &OpenConfigInitializationReport);
         assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupDirectory);
+        assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupsDirectory);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -26364,6 +26380,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Config Bundle Backups Directory",
+            "zed_terminal::OpenConfigBundleBackupsDirectory",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Config Schema File",
             "zed_terminal::OpenStartupConfigSchemaFile",
         );
@@ -27195,6 +27216,21 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenConfigBundleBackupDirectory>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_config_bundle_backups_directory_action_input() {
+        let action = <OpenConfigBundleBackupsDirectory as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open config bundle backups directory action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenConfigBundleBackupsDirectory>()
                 .is_some()
         );
     }
