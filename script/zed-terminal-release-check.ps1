@@ -2,6 +2,7 @@
 Param(
     [Parameter()][string]$Binary,
     [Parameter()][string]$OutputDir,
+    [Parameter()][string]$CargoTargetDir,
     [Parameter()][string]$VisualBaselineImage,
     [Parameter()][string]$SplitVisualBaselineImage,
     [Parameter()][int]$StartupTimeoutSeconds = 20,
@@ -21,8 +22,15 @@ Param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+if (-not $CargoTargetDir -and -not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    $CargoTargetDir = $env:CARGO_TARGET_DIR
+}
+if ($CargoTargetDir) {
+    $CargoTargetDir = [System.IO.Path]::GetFullPath($CargoTargetDir)
+}
 if (-not $Binary) {
-    $Binary = Join-Path $repoRoot "target\debug\zed-terminal.exe"
+    $targetRoot = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
+    $Binary = Join-Path $targetRoot "debug\zed-terminal.exe"
 }
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repoRoot "target\zed-terminal-release-check"
@@ -256,6 +264,19 @@ function Invoke-NativeCommand {
     )
 
     $null = Invoke-NativeCommandResult -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+}
+
+function New-CargoArguments {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter()][switch]$UseTargetDir
+    )
+
+    $cargoArguments = @("+stable") + $Arguments
+    if ($UseTargetDir -and $CargoTargetDir) {
+        $cargoArguments += @("--target-dir", $CargoTargetDir)
+    }
+    return $cargoArguments
 }
 
 function Get-GitSourceInfo {
@@ -1091,6 +1112,9 @@ function Read-PackageSmokeSummary {
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {
         throw "package smoke summary metadata did not match the validated manifest"
     }
+    if ([string]$manifest.cargo_target_dir -ne [string]$summary.cargo_target_dir) {
+        throw "package smoke cargo target directory metadata did not match the validated manifest"
+    }
     if (
         -not $manifest.source_control -or
         -not $summary.source_control -or
@@ -1136,6 +1160,7 @@ function Read-PackageSmokeSummary {
         package_name = [string]$summary.package_name
         version = [string]$summary.version
         build_profile = [string]$summary.build_profile
+        cargo_target_dir = [string]$summary.cargo_target_dir
         platform = [string]$summary.platform
         architecture = [string]$summary.architecture
         git_commit = [string]$summary.git_commit
@@ -1445,6 +1470,7 @@ function New-ReleaseReportMarkdown {
     $lines += "| Release mode | $(Format-MarkdownValue $Summary.release_mode) |"
     $lines += "| Run directory | $(Format-MarkdownValue $Summary.run_dir) |"
     $lines += "| Binary | $(Format-MarkdownValue $Summary.binary) |"
+    $lines += "| Cargo target directory | $(Format-MarkdownValue $Summary.cargo_target_dir) |"
     $lines += "| Log file | $(Format-MarkdownValue $Summary.log_file) |"
     $lines += "| Summary file | $(Format-MarkdownValue $Summary.summary_file) |"
     $lines += "| Report file | $(Format-MarkdownValue $Summary.report_file) |"
@@ -1494,6 +1520,7 @@ function New-ReleaseReportMarkdown {
         $lines += "| Package | $(Format-MarkdownValue $package.package_name) |"
         $lines += "| Version | $(Format-MarkdownValue $package.version) |"
         $lines += "| Build profile | $(Format-MarkdownValue $package.build_profile) |"
+        $lines += "| Cargo target directory | $(Format-MarkdownValue $package.cargo_target_dir) |"
         if ($package.source_control) {
             $lines += "| Git commit | $(Format-MarkdownValue $package.source_control.git_commit) |"
             $lines += "| Git branch | $(Format-MarkdownValue $package.source_control.git_branch) |"
@@ -1584,6 +1611,7 @@ function Write-ReleaseSummary {
         release_blockers = $releaseBlockers
         run_dir = $runDir
         binary = $Binary
+        cargo_target_dir = $CargoTargetDir
         log_file = $releaseLog
         summary_file = $summaryFile
         report_file = $reportFile
@@ -1643,12 +1671,12 @@ try {
 
     if (-not $SkipCargo) {
         Invoke-Step "cargo fmt zed_terminal check" {
-            Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "fmt", "--package", "zed_terminal", "--check")
+            Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("fmt", "--package", "zed_terminal", "--check"))
         }
 
         if (-not $SkipRustTests) {
             Invoke-Step "cargo test zed_terminal" {
-                Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "test", "-p", "zed_terminal", "--bin", "zed-terminal")
+                Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("test", "-p", "zed_terminal", "--bin", "zed-terminal") -UseTargetDir)
             }
         }
 
@@ -1660,14 +1688,14 @@ try {
                 } else {
                     $env:RUSTFLAGS = "$previousRustFlags -D warnings"
                 }
-                Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "check", "-p", "zed_terminal")
+                Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("check", "-p", "zed_terminal") -UseTargetDir)
             } finally {
                 $env:RUSTFLAGS = $previousRustFlags
             }
         }
 
         Invoke-Step "cargo build zed_terminal" {
-            Invoke-NativeCommand -FilePath "cargo" -Arguments @("+stable", "build", "-p", "zed_terminal", "--bin", "zed-terminal")
+            Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("build", "-p", "zed_terminal", "--bin", "zed-terminal") -UseTargetDir)
         }
     }
 
@@ -1680,7 +1708,7 @@ try {
     if (-not $SkipPackage) {
         Invoke-Step "package smoke" {
             $packageSummaryFile = Join-Path $packageSmokeDir "zed-terminal-package-summary.json"
-            Invoke-NativeCommand -FilePath "powershell" -Arguments @(
+            $packageArgs = @(
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
                 "-File", (Join-Path $repoRoot "script\zed-terminal-package.ps1"),
@@ -1691,6 +1719,10 @@ try {
                 "-OutputDir", $packageSmokeDir,
                 "-SummaryFile", $packageSummaryFile
             )
+            if ($CargoTargetDir) {
+                $packageArgs += @("-CargoTargetDir", $CargoTargetDir)
+            }
+            Invoke-NativeCommand -FilePath "powershell" -Arguments $packageArgs
             $script:PackageSmoke = Read-PackageSmokeSummary -SummaryFile $packageSummaryFile
         }
     }

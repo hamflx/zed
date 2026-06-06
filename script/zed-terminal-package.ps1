@@ -3,6 +3,7 @@ Param(
     [Parameter()][string]$Binary,
     [Parameter()][string]$OutputDir,
     [Parameter()][ValidateSet("debug", "release")][string]$BuildProfile = "release",
+    [Parameter()][string]$CargoTargetDir,
     [Parameter()][string]$Version,
     [Parameter()][string]$SummaryFile,
     [Parameter()][switch]$SkipBuild,
@@ -12,6 +13,12 @@ Param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+if (-not $CargoTargetDir -and -not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+    $CargoTargetDir = $env:CARGO_TARGET_DIR
+}
+if ($CargoTargetDir) {
+    $CargoTargetDir = [System.IO.Path]::GetFullPath($CargoTargetDir)
+}
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repoRoot "target\zed-terminal-package"
 }
@@ -222,7 +229,8 @@ function Resolve-BinaryPath {
     }
 
     $binaryName = if ((Get-PlatformName) -eq "windows") { "zed-terminal.exe" } else { "zed-terminal" }
-    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot "target\$BuildProfile\$binaryName"))
+    $targetRoot = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
+    return [System.IO.Path]::GetFullPath((Join-Path $targetRoot "$BuildProfile\$binaryName"))
 }
 
 function Copy-RequiredFile {
@@ -2369,6 +2377,7 @@ function Assert-PackageManifest {
         [Parameter(Mandatory = $true)][string]$PackageName,
         [Parameter(Mandatory = $true)][string]$Version,
         [Parameter(Mandatory = $true)][string]$BuildProfile,
+        [AllowNull()][string]$CargoTargetDir,
         [Parameter(Mandatory = $true)][string]$Platform,
         [Parameter(Mandatory = $true)][string]$Architecture,
         [Parameter(Mandatory = $true)][string]$BinaryFileName,
@@ -2386,6 +2395,7 @@ function Assert-PackageManifest {
         $manifest.package_name -ne $PackageName -or
         $manifest.version -ne $Version -or
         $manifest.build_profile -ne $BuildProfile -or
+        [string]$manifest.cargo_target_dir -ne [string]$CargoTargetDir -or
         $manifest.platform -ne $Platform -or
         $manifest.architecture -ne $Architecture -or
         $manifest.binary -ne $BinaryFileName -or
@@ -2544,6 +2554,7 @@ function Assert-PackageZipArchive {
         [Parameter(Mandatory = $true)][string]$PackageName,
         [Parameter(Mandatory = $true)][string]$Version,
         [Parameter(Mandatory = $true)][string]$BuildProfile,
+        [AllowNull()][string]$CargoTargetDir,
         [Parameter(Mandatory = $true)][string]$Platform,
         [Parameter(Mandatory = $true)][string]$Architecture,
         [Parameter(Mandatory = $true)][string]$BinaryFileName,
@@ -2574,6 +2585,7 @@ function Assert-PackageZipArchive {
         -PackageName $PackageName `
         -Version $Version `
         -BuildProfile $BuildProfile `
+        -CargoTargetDir $CargoTargetDir `
         -Platform $Platform `
         -Architecture $Architecture `
         -BinaryFileName $BinaryFileName `
@@ -2781,7 +2793,11 @@ if (-not $Binary -and -not $SkipBuild) {
     if ($BuildProfile -eq "release") {
         $cargoArgs += "--release"
     }
-    Write-Host "building zed-terminal ($BuildProfile)"
+    if ($CargoTargetDir) {
+        $cargoArgs += @("--target-dir", $CargoTargetDir)
+    }
+    $targetLabel = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
+    Write-Host "building zed-terminal ($BuildProfile, target: $targetLabel)"
     Invoke-CheckedProcess -FilePath "cargo" -Arguments $cargoArgs -EchoOutput | Out-Null
 }
 
@@ -3055,6 +3071,7 @@ $manifest = [pscustomobject]@{
     package_name = $packageName
     version = $version
     build_profile = $BuildProfile
+    cargo_target_dir = $CargoTargetDir
     platform = $platform
     architecture = $architecture
     git_commit = $gitCommit
@@ -3104,6 +3121,7 @@ Assert-PackageManifest `
     -PackageName $packageName `
     -Version $version `
     -BuildProfile $BuildProfile `
+    -CargoTargetDir $CargoTargetDir `
     -Platform $platform `
     -Architecture $architecture `
     -BinaryFileName $binaryFileName `
@@ -3122,6 +3140,7 @@ if ($Zip) {
         -PackageName $packageName `
         -Version $version `
         -BuildProfile $BuildProfile `
+        -CargoTargetDir $CargoTargetDir `
         -Platform $platform `
         -Architecture $architecture `
         -BinaryFileName $binaryFileName `
@@ -3144,6 +3163,7 @@ $packageSummary = [pscustomobject]@{
     package_name = $packageName
     version = $version
     build_profile = $BuildProfile
+    cargo_target_dir = $CargoTargetDir
     platform = $platform
     architecture = $architecture
     git_commit = $gitCommit
