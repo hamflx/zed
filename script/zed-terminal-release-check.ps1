@@ -940,8 +940,10 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::NewTerminalTabWithProfileSlot",
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
+            "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
+            "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -1704,6 +1706,8 @@ try {
                 "--diff-config-bundle-format <text\|json>",
                 "--restore-config-bundle --restore-config-bundle-file <FILE>",
                 "--restore-config-bundle-format <text\|json>",
+                "--list-config-bundle-backups",
+                "--list-config-bundle-backups-format <text\|json>",
                 "Support bundle options:",
                 "--support-bundle --support-bundle-dir <DIR>",
                 "--support-bundle-format <text\|json>",
@@ -1953,6 +1957,7 @@ try {
                 "zed_terminal::OpenConfigBundleBackupFile",
                 "zed_terminal::OpenConfigBundleBackupDirectory",
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
+                "zed_terminal::OpenConfigBundleBackupsReport",
                 "zed_terminal::OpenConfigInitializationReport",
                 "zed_terminal::OpenKeymapToolsPicker",
                 "zed_terminal::OpenSettingsSchemaFile",
@@ -2023,6 +2028,10 @@ try {
             $configBundleBackupsAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigBundleBackupsDirectory" } | Select-Object -First 1
             if (-not $configBundleBackupsAction -or $configBundleBackupsAction.namespace -ne "zed_terminal" -or $configBundleBackupsAction.input -ne "none") {
                 throw "Keymap action list is missing the OpenConfigBundleBackupsDirectory action metadata."
+            }
+            $configBundleBackupsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigBundleBackupsReport" } | Select-Object -First 1
+            if (-not $configBundleBackupsReportAction -or $configBundleBackupsReportAction.namespace -ne "zed_terminal" -or $configBundleBackupsReportAction.input -ne "none") {
+                throw "Keymap action list is missing the OpenConfigBundleBackupsReport action metadata."
             }
             $configInitializationReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenConfigInitializationReport" } | Select-Object -First 1
             if (-not $configInitializationReportAction -or $configInitializationReportAction.namespace -ne "zed_terminal" -or $configInitializationReportAction.input -ne "none") {
@@ -2169,6 +2178,15 @@ try {
             if ($configBundleBackupsActionDescription.action.name -ne "zed_terminal::OpenConfigBundleBackupsDirectory" -or $configBundleBackupsActionDescription.action.namespace -ne "zed_terminal" -or $configBundleBackupsActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected config bundle backups directory action contract."
             }
+            $configBundleBackupsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-bundle-backups-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenConfigBundleBackupsReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($configBundleBackupsReportActionDescription.action.name -ne "zed_terminal::OpenConfigBundleBackupsReport" -or $configBundleBackupsReportActionDescription.action.namespace -ne "zed_terminal" -or $configBundleBackupsReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected config bundle backups report action contract."
+            }
             $configInitializationReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-config-initialization-report" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -2313,6 +2331,7 @@ try {
                 $configBundleBackupActionDescription,
                 $configBundleBackupFileActionDescription,
                 $configBundleBackupsActionDescription,
+                $configBundleBackupsReportActionDescription,
                 $configInitializationReportActionDescription,
                 $profileConfigActionDescription,
                 $profilePickerActionDescription,
@@ -2586,7 +2605,7 @@ try {
             if ($restoredSettingsFileText -notmatch "do-not-log-settings" -or $restoredSettingsFileText -notmatch '"theme": "One Dark"') {
                 throw "Settings restore did not restore settings.json from the backup package."
             }
-            $mutationConfigBundleFile = Join-Path $mutationCliConfigDir "backups\zed-terminal-config.bundle.json"
+            $mutationConfigBundleFile = Join-Path (Join-Path $mutationCliDataDir "logs\zed-terminal-config-bundles") "zed-terminal-config-bundle-release-check.json"
             $configBundle = Invoke-NativeJsonCommandResult "mutation-backup-config-bundle" @(
                 "--user-data-dir", $mutationCliDataDir,
                 "--config-dir", $mutationCliConfigDir,
@@ -2606,6 +2625,21 @@ try {
             $configBundleFileText = Get-Content -Raw -LiteralPath $mutationConfigBundleFile
             if ($configBundleFileText -notmatch "do-not-log-settings" -or $configBundleFileText -notmatch "do-not-log-keymap") {
                 throw "Config bundle package did not preserve the full config payload."
+            }
+            $configBundleBackups = Invoke-NativeJsonCommandResult "mutation-list-config-bundle-backups" @(
+                "--user-data-dir", $mutationCliDataDir,
+                "--config-dir", $mutationCliConfigDir,
+                "--list-config-bundle-backups",
+                "--list-config-bundle-backups-format", "json"
+            )
+            $configBundleBackupEntries = @($configBundleBackups.backups)
+            $configBundleBackupEntry = $configBundleBackupEntries | Where-Object { $_.path -eq $mutationConfigBundleFile } | Select-Object -First 1
+            if ($configBundleBackups.status -ne "ok" -or [int64]$configBundleBackups.backup_count -lt 1 -or [int64]$configBundleBackups.valid_count -lt 1 -or [int64]$configBundleBackups.invalid_count -ne 0 -or -not $configBundleBackupEntry -or $configBundleBackupEntry.valid -ne $true -or $configBundleBackupEntry.format -ne "zed-terminal-config-bundle" -or [int64]$configBundleBackupEntry.version -ne 1 -or [int64]$configBundleBackupEntry.file_count -ne 4) {
+                throw "Config bundle backups list did not report the expected backup index."
+            }
+            $configBundleBackupsText = $configBundleBackups | ConvertTo-Json -Depth 10
+            if ($configBundleBackupsText -match "do-not-log-settings" -or $configBundleBackupsText -match "One Dark" -or $configBundleBackupsText -match "do-not-log-keymap") {
+                throw "Config bundle backups list output leaked config file contents."
             }
             $configBundleCheck = Invoke-NativeJsonCommandResult "mutation-check-config-bundle-match" @(
                 "--user-data-dir", $mutationCliDataDir,

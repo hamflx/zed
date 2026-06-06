@@ -461,6 +461,7 @@ Back up, compare, and restore the complete user config set without opening a ter
 .\{{BINARY}} --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json
 .\{{BINARY}} --diff-config-bundle --diff-config-bundle-file zed-terminal-config.bundle.json
 .\{{BINARY}} --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json
+.\{{BINARY}} --list-config-bundle-backups --list-config-bundle-backups-format json
 ```
 
 Generate support information without opening a terminal window:
@@ -478,7 +479,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore/list, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -543,6 +544,7 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --check-config-bundle --check-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --diff-config-bundle --diff-config-bundle-file zed-terminal-config.bundle.json",
         ".\$BinaryFileName --restore-config-bundle --restore-config-bundle-file zed-terminal-config.bundle.json",
+        ".\$BinaryFileName --list-config-bundle-backups --list-config-bundle-backups-format json",
         ".\$BinaryFileName --support-info",
         ".\$BinaryFileName --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json",
         "$PackageName.zip.sha256",
@@ -668,6 +670,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenConfigBundleBackupFile",
             "zed_terminal::OpenConfigBundleBackupDirectory",
             "zed_terminal::OpenConfigBundleBackupsDirectory",
+            "zed_terminal::OpenConfigBundleBackupsReport",
             "zed_terminal::OpenConfigInitializationReport",
             "zed_terminal::OpenKeymapToolsPicker",
             "zed_terminal::OpenSettingsSchemaFile",
@@ -1022,6 +1025,7 @@ function Invoke-KeymapDiscoverySmoke {
     foreach ($actionName in @(
         "zed_terminal::OpenActiveKeymapBindingsReport",
         "zed_terminal::OpenConfigBundleBackupFile",
+        "zed_terminal::OpenConfigBundleBackupsReport",
         "zed_terminal::OpenKeymapActionCatalogReport",
         "zed_terminal::OpenStartupProfileSlotsReport",
         "zed_terminal::OpenSupportBundleManifestFile",
@@ -2211,6 +2215,29 @@ function Invoke-ConfigBundleSmoke {
     }
     if ($backupJson.bundle_byte_count -le 0) {
         throw "zed-terminal --backup-config-bundle reported an invalid bundle size"
+    }
+
+    $indexedBundleFile = Join-Path (Join-Path $DataDir "logs\zed-terminal-config-bundles") "zed-terminal-config-bundle-package-smoke.json"
+    $indexedBackup = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--backup-config-bundle",
+        "--backup-config-bundle-file", $indexedBundleFile,
+        "--backup-config-bundle-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    Assert-ConfigBundleJson ($indexedBackup.Stdout | ConvertFrom-Json) $indexedBundleFile $false
+
+    $indexedBackups = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-config-bundle-backups",
+        "--list-config-bundle-backups-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $indexedBackupsJson = $indexedBackups.Stdout | ConvertFrom-Json
+    $indexedBackupEntries = @($indexedBackupsJson.backups)
+    $indexedBackupEntry = $indexedBackupEntries | Where-Object { $_.path -eq $indexedBundleFile } | Select-Object -First 1
+    if ($indexedBackupsJson.status -ne "ok" -or [int64]$indexedBackupsJson.backup_count -lt 1 -or [int64]$indexedBackupsJson.valid_count -lt 1 -or [int64]$indexedBackupsJson.invalid_count -ne 0 -or -not $indexedBackupEntry -or $indexedBackupEntry.valid -ne $true -or $indexedBackupEntry.format -ne "zed-terminal-config-bundle" -or [int64]$indexedBackupEntry.version -ne 1 -or [int64]$indexedBackupEntry.file_count -ne 4) {
+        throw "zed-terminal --list-config-bundle-backups did not report the expected config bundle backup index"
     }
 
     $check = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
