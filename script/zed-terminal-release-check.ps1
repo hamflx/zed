@@ -1097,6 +1097,7 @@ try {
                 "--restore-startup-config-format <text\|json>",
                 "--validate-settings",
                 "--validate-settings-format <text\|json>",
+                "--print-settings-schema",
                 "Settings backup and restore options:",
                 "--backup-settings --backup-settings-file <FILE>",
                 "--backup-settings-format <text\|json>",
@@ -1312,6 +1313,32 @@ try {
                     throw "Startup config schema is missing expected property '$propertyName'."
                 }
             }
+            $settingsSchema = Invoke-NativeJsonCommandResult "print-settings-schema" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--print-settings-schema"
+            )
+            if ($settingsSchema.title -ne "UserSettingsContent" -or $settingsSchema.type -ne "object") {
+                throw "Settings schema did not report the UserSettingsContent object contract."
+            }
+            if (-not $settingsSchema.properties.PSObject.Properties["theme"]) {
+                throw "Settings schema is missing expected property 'theme'."
+            }
+            $settingsSchemaText = $settingsSchema | ConvertTo-Json -Depth 100
+            foreach ($actionName in @(
+                "zed_terminal::OpenSettingsSchemaFile",
+                "zed_terminal::OpenSettingsToolsPicker",
+                "zed_terminal::OpenStartupConfigSchemaFile",
+                "zed_terminal::OpenKeymapSchemaFile",
+                "zed_terminal::NewTerminalTab"
+            )) {
+                if ($settingsSchemaText -notmatch [regex]::Escape($actionName)) {
+                    throw "Settings schema is missing expected action '$actionName'."
+                }
+            }
+            if ($settingsSchemaText -match [regex]::Escape("workspace::NewFile")) {
+                throw "Settings schema exposed a non-terminal action."
+            }
             $keymapSchema = Invoke-NativeJsonCommandResult "print-keymap-schema" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -1328,6 +1355,7 @@ try {
                 "zed_terminal::OpenConfigBundleBackupsDirectory",
                 "zed_terminal::OpenConfigInitializationReport",
                 "zed_terminal::OpenKeymapToolsPicker",
+                "zed_terminal::OpenSettingsSchemaFile",
                 "zed_terminal::OpenSettingsToolsPicker",
                 "zed_terminal::OpenStartupProfileConfig",
                 "zed_terminal::OpenStartupProfilePicker",
@@ -1395,6 +1423,10 @@ try {
             $settingsToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSettingsToolsPicker" } | Select-Object -First 1
             if (-not $settingsToolsPickerAction -or $settingsToolsPickerAction.namespace -ne "zed_terminal" -or $settingsToolsPickerAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenSettingsToolsPicker no-input metadata."
+            }
+            $settingsSchemaFileAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenSettingsSchemaFile" } | Select-Object -First 1
+            if (-not $settingsSchemaFileAction -or $settingsSchemaFileAction.namespace -ne "zed_terminal" -or $settingsSchemaFileAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenSettingsSchemaFile no-input metadata."
             }
             $keymapToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenKeymapToolsPicker" } | Select-Object -First 1
             if (-not $keymapToolsPickerAction -or $keymapToolsPickerAction.namespace -ne "zed_terminal" -or $keymapToolsPickerAction.input -ne "none") {
@@ -1516,6 +1548,15 @@ try {
             )
             if ($settingsToolsPickerActionDescription.action.name -ne "zed_terminal::OpenSettingsToolsPicker" -or $settingsToolsPickerActionDescription.action.namespace -ne "zed_terminal" -or $settingsToolsPickerActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected settings tools picker action contract."
+            }
+            $settingsSchemaFileActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-settings-schema-file" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenSettingsSchemaFile",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($settingsSchemaFileActionDescription.action.name -ne "zed_terminal::OpenSettingsSchemaFile" -or $settingsSchemaFileActionDescription.action.namespace -ne "zed_terminal" -or $settingsSchemaFileActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected settings schema file action contract."
             }
             $keymapToolsPickerActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-keymap-tools-picker" @(
                 "--user-data-dir", $cliDataDir,

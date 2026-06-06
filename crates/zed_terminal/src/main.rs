@@ -48,6 +48,7 @@ actions!(
     zed_terminal,
     [
         OpenSettingsFile,
+        OpenSettingsSchemaFile,
         OpenSettingsToolsPicker,
         OpenStartupConfigFile,
         OpenStartupConfigSchemaFile,
@@ -170,6 +171,7 @@ const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
+const TERMINAL_SETTINGS_SCHEMA_FILE: &str = "settings.schema.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
 const TERMINAL_KEYMAP_SCHEMA_FILE: &str = "keymap.schema.json";
 const TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE: &str = "default-keymap.json";
@@ -274,6 +276,8 @@ Startup config backup and restore options:
           Validate settings.json and global_settings.json without opening a terminal window
       --validate-settings-format <text|json>
           Set the output format for --validate-settings
+      --print-settings-schema
+          Print the JSON Schema for settings.json without opening a terminal window
 
 Settings backup and restore options:
       --backup-settings --backup-settings-file <FILE>
@@ -442,6 +446,7 @@ Profile transfer, startup config file, keymap file, version metadata, and path i
             "validate_settings",
             "validate_startup_config",
             "validate_keymap",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
@@ -2425,6 +2430,63 @@ struct Cli {
     validate_settings_format: Option<TerminalSettingsValidationOutputFormat>,
 
     #[arg(
+        long = "print-settings-schema",
+        conflicts_with_all = [
+            "print_paths",
+            "list_profiles",
+            "all_profiles",
+            "describe_profile",
+            "describe_startup",
+            "print_startup_layout",
+            "set_default_profile",
+            "clear_default_profile",
+            "create_profile",
+            "update_profile",
+            "update_profile_startup",
+            "update_startup",
+            "update_startup_env",
+            "add_startup_tab",
+            "add_profile_startup_tab",
+            "update_startup_tab",
+            "update_profile_startup_tab",
+            "remove_startup_tab",
+            "remove_profile_startup_tab",
+            "move_startup_tab",
+            "move_profile_startup_tab",
+            "update_profile_env",
+            "copy_profile",
+            "remove_profile",
+            "rename_profile",
+            "hide_profile",
+            "show_profile",
+            "validate_settings",
+            "validate_startup_config",
+            "validate_keymap",
+            "print_startup_config_schema",
+            "print_default_keymap",
+            "init_config",
+            "support_info",
+            "doctor",
+            "no_startup_config",
+            "profile",
+            "working_directory",
+            "directory",
+            "title",
+            "new_tabs",
+            "new_tab_titles",
+            "new_tab_profiles",
+            "new_tab_profile_titles",
+            "new_tab_profile_splits",
+            "new_tab_command_directories",
+            "new_tab_command_titles",
+            "new_tab_commands",
+            "command"
+        ],
+        help = "Print the JSON Schema for settings.json without opening a terminal window"
+    )]
+    print_settings_schema: bool,
+
+    #[arg(
         long = "validate-startup-config",
         conflicts_with_all = [
             "list_profiles",
@@ -2436,6 +2498,7 @@ struct Cli {
             "remove_profile",
             "rename_profile",
             "validate_keymap",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
@@ -2507,6 +2570,7 @@ struct Cli {
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "validate_keymap",
@@ -2548,6 +2612,7 @@ struct Cli {
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
@@ -2607,6 +2672,7 @@ struct Cli {
             "hide_profile",
             "show_profile",
             "validate_startup_config",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
@@ -2643,6 +2709,7 @@ struct Cli {
             "remove_profile",
             "rename_profile",
             "validate_startup_config",
+            "print_settings_schema",
             "print_startup_config_schema",
             "print_default_keymap",
             "init_config",
@@ -2992,6 +3059,9 @@ enum TerminalCliCommand {
         path_options: TerminalPathOptions,
         format: TerminalSettingsValidationOutputFormat,
     },
+    PrintSettingsSchema {
+        path_options: TerminalPathOptions,
+    },
     ValidateStartupConfig {
         path_options: TerminalPathOptions,
         startup_config: TerminalStartupConfig,
@@ -3139,6 +3209,11 @@ struct TerminalSettingsRestoreCommand {
     path_options: TerminalPathOptions,
     restore_file: PathBuf,
     format: TerminalSettingsRestoreOutputFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSettingsSchemaCommand {
+    path_options: TerminalPathOptions,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -5255,6 +5330,7 @@ impl TerminalCliCommand {
             || cli.hide_profile.is_some()
             || cli.show_profile.is_some()
             || cli.validate_settings
+            || cli.print_settings_schema
             || cli.validate_keymap
             || cli.print_startup_config_schema
             || cli.print_default_keymap
@@ -5657,6 +5733,10 @@ impl TerminalCliCommand {
             });
         }
 
+        if cli.print_settings_schema {
+            return Ok(Self::PrintSettingsSchema { path_options });
+        }
+
         if cli.validate_startup_config {
             return Ok(Self::ValidateStartupConfig {
                 path_options,
@@ -5731,6 +5811,7 @@ impl TerminalCliCommand {
             Self::SetProfileVisibility { path_options, .. } => path_options,
             Self::RenameProfile { path_options, .. } => path_options,
             Self::ValidateSettings { path_options, .. } => path_options,
+            Self::PrintSettingsSchema { path_options } => path_options,
             Self::ValidateStartupConfig { path_options, .. } => path_options,
             Self::PrintStartupLayout { launch_options, .. } => &launch_options.path_options,
             Self::PrintStartupConfigSchema { path_options } => path_options,
@@ -6562,6 +6643,87 @@ impl TerminalKeymapSchemaCommand {
             }
             None => Ok(None),
         }
+    }
+}
+
+impl TerminalSettingsSchemaCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalSettingsSchemaParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--print-settings-schema" => {
+                    if inline_value.is_some() {
+                        bail!("--print-settings-schema does not accept a value");
+                    }
+                    parser.mode_name("--print-settings-schema")?;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+}
+
+#[derive(Default)]
+struct TerminalSettingsSchemaParser {
+    path_options: TerminalPathCliOptions,
+    seen_settings_schema_option: bool,
+    pre_settings_schema_arg: Option<String>,
+}
+
+impl TerminalSettingsSchemaParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<()> {
+        self.seen_settings_schema_option = true;
+        if let Some(arg) = &self.pre_settings_schema_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        Ok(())
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_settings_schema_option {
+            bail!("--print-settings-schema cannot be used with {arg}");
+        }
+        if self.pre_settings_schema_arg.is_none() {
+            self.pre_settings_schema_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalSettingsSchemaCommand>> {
+        if !self.seen_settings_schema_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+        Ok(Some(TerminalSettingsSchemaCommand { path_options }))
     }
 }
 
@@ -8973,6 +9135,18 @@ fn main() {
         }
     }
 
+    match TerminalSettingsSchemaCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_settings_schema_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalSettingsFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_settings_file_command(command);
@@ -9084,6 +9258,7 @@ fn main() {
             }
         }
         TerminalCliCommand::ValidateSettings { format, .. } => run_settings_validation(format),
+        TerminalCliCommand::PrintSettingsSchema { .. } => run_settings_schema_printing(),
         TerminalCliCommand::PrintStartupLayout { .. } => {
             unreachable!("startup layout printing is handled before path install")
         }
@@ -9380,6 +9555,15 @@ fn run_terminal_keymap_discovery_command(command: TerminalKeymapDiscoveryCommand
     }
 }
 
+fn run_terminal_settings_schema_command(command: TerminalSettingsSchemaCommand) {
+    if let Err(error) = install_terminal_paths(&command.path_options) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    run_settings_schema_printing();
+}
+
 fn run_terminal_settings_file_command(command: TerminalSettingsFileCommand) {
     if let Err(error) = install_terminal_paths(command.path_options()) {
         eprintln!("failed to run zed terminal: {error:#}");
@@ -9663,6 +9847,27 @@ fn run_settings_validation(format: TerminalSettingsValidationOutputFormat) {
             if report.has_errors() {
                 cx.quit();
                 process::exit(2);
+            }
+            cx.quit();
+        });
+}
+
+fn run_settings_schema_printing() {
+    gpui_platform::application()
+        .with_assets(Assets)
+        .run(move |cx| {
+            match format_settings_schema(cx) {
+                Ok(output) => {
+                    print!("{output}");
+                    io::stdout()
+                        .flush()
+                        .expect("failed to flush settings schema output");
+                }
+                Err(error) => {
+                    eprintln!("failed to print terminal settings schema: {error:#}");
+                    io::stderr().flush().ok();
+                    process::exit(2);
+                }
             }
             cx.quit();
         });
@@ -18840,6 +19045,42 @@ fn format_keymap_schema(cx: &mut App) -> Result<String> {
     Ok(output)
 }
 
+fn format_settings_schema(cx: &mut App) -> Result<String> {
+    let language_names: Vec<String> = Vec::new();
+    let font_names = cx.text_system().all_font_names();
+    let mut theme_names = Vec::new();
+    let mut icon_theme_names = Vec::new();
+    if let Some(registry) = ThemeRegistry::try_global(cx) {
+        theme_names.extend(registry.list_names());
+        icon_theme_names.extend(
+            registry
+                .list_icon_themes()
+                .into_iter()
+                .map(|icon_theme| icon_theme.name),
+        );
+    }
+    let lsp_adapter_names: Vec<String> = Vec::new();
+    let action_names = terminal_action_surfaces()
+        .into_iter()
+        .map(|action| action.name())
+        .collect::<Vec<_>>();
+    let schema = settings::SettingsStore::json_schema(&settings::SettingsJsonSchemaParams {
+        language_names: &language_names,
+        font_names: &font_names,
+        theme_names: &theme_names,
+        icon_theme_names: &icon_theme_names,
+        lsp_adapter_names: &lsp_adapter_names,
+        action_names: &action_names,
+        action_documentation: cx.action_documentation(),
+        deprecations: cx.deprecated_actions_to_preferred_actions(),
+        deprecation_messages: cx.action_deprecation_messages(),
+    });
+    let mut output =
+        serde_json::to_string_pretty(&schema).context("failed to serialize settings schema")?;
+    output.push('\n');
+    Ok(output)
+}
+
 fn terminal_keymap_action_list_report(cx: &mut App) -> Result<TerminalKeymapActionListReport> {
     let mut default_bindings_by_action =
         BTreeMap::<&'static str, Vec<TerminalKeymapActionBinding>>::new();
@@ -19582,6 +19823,17 @@ fn write_keymap_schema_file(path: &Path, cx: &mut App) -> Result<()> {
 
     std_fs::write(path, schema)
         .with_context(|| format!("failed to write keymap schema {}", path.display()))
+}
+
+fn write_settings_schema_file(path: &Path, cx: &mut App) -> Result<()> {
+    let schema = format_settings_schema(cx)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    }
+
+    std_fs::write(path, schema)
+        .with_context(|| format!("failed to write settings schema {}", path.display()))
 }
 
 fn write_diagnostics_report_file(path: &Path, report: &TerminalDoctorReport) -> Result<()> {
@@ -21965,6 +22217,14 @@ fn active_terminal_startup_config_schema_file() -> PathBuf {
     terminal_startup_config_schema_file(paths::config_dir())
 }
 
+fn terminal_settings_schema_file(config_dir: &Path) -> PathBuf {
+    config_dir.join(TERMINAL_SETTINGS_SCHEMA_FILE)
+}
+
+fn active_terminal_settings_schema_file() -> PathBuf {
+    terminal_settings_schema_file(paths::config_dir())
+}
+
 fn terminal_default_keymap_reference_file(config_dir: &Path) -> PathBuf {
     config_dir.join(TERMINAL_DEFAULT_KEYMAP_REFERENCE_FILE)
 }
@@ -22160,6 +22420,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &zed_actions::Quit, cx| cx.quit());
     cx.on_action(open_settings_file);
+    cx.on_action(open_settings_schema_file);
     cx.on_action(open_startup_config_file);
     cx.on_action(open_startup_config_schema_file);
     cx.on_action(open_keymap_file);
@@ -22427,6 +22688,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenSupportBundleDirectory>(),
         TerminalActionSurface::new::<OpenSupportInfoReport>(),
         TerminalActionSurface::new::<OpenSettingsToolsPicker>(),
+        TerminalActionSurface::new::<OpenSettingsSchemaFile>(),
         TerminalActionSurface::new::<OpenSettingsValidationReport>(),
         TerminalActionSurface::new::<OpenStartupConfigFile>(),
         TerminalActionSurface::new::<OpenStartupConfigSchemaFile>(),
@@ -23099,6 +23361,7 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::separator(),
         MenuItem::action("Open Settings Tools...", OpenSettingsToolsPicker),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
+        MenuItem::action("Open Settings Schema File", OpenSettingsSchemaFile),
         MenuItem::action(
             "Open Settings Validation Report",
             OpenSettingsValidationReport,
@@ -23995,6 +24258,16 @@ fn open_settings_file(_: &OpenSettingsFile, cx: &mut App) {
         return;
     }
     cx.open_with_system(paths::settings_file());
+}
+
+fn open_settings_schema_file(_: &OpenSettingsSchemaFile, cx: &mut App) {
+    let settings_schema_file = active_terminal_settings_schema_file();
+    if let Err(error) = write_settings_schema_file(&settings_schema_file, cx) {
+        log::warn!("failed to write settings schema file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&settings_schema_file);
 }
 
 fn open_startup_config_file(_: &OpenStartupConfigFile, cx: &mut App) {
@@ -25255,6 +25528,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenSupportToolsPicker);
         assert_command_palette_action_visible(&filter, &CopySupportInfoToClipboard);
         assert_command_palette_action_visible(&filter, &OpenSettingsToolsPicker);
+        assert_command_palette_action_visible(&filter, &OpenSettingsSchemaFile);
         assert_command_palette_action_visible(&filter, &OpenSettingsValidationReport);
         assert_command_palette_action_visible(&filter, &OpenStartupConfigValidationReport);
         assert_command_palette_action_visible(&filter, &OpenKeymapValidationReport);
@@ -26405,6 +26679,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Settings Schema File",
+            "zed_terminal::OpenSettingsSchemaFile",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Tools...",
             "zed_terminal::OpenStartupToolsPicker",
         );
@@ -26538,6 +26817,7 @@ mod tests {
                 "---",
                 "Open Settings Tools...",
                 "Open Settings File",
+                "Open Settings Schema File",
                 "Open Settings Validation Report",
                 "Open Config Initialization Report",
                 "Back Up Config Bundle...",
@@ -27421,6 +27701,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenSettingsValidationReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_settings_schema_file_action_input() {
+        let action =
+            <OpenSettingsSchemaFile as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open settings schema file action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSettingsSchemaFile>()
                 .is_some()
         );
     }
@@ -29234,6 +29528,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn formats_settings_schema(cx: &mut App) {
+        let schema = format_settings_schema(cx).expect("settings schema should format");
+        let schema_json: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema).expect("settings schema should parse as json");
+
+        assert_eq!(schema_json["title"], "UserSettingsContent");
+        assert_eq!(schema_json["type"], "object");
+        assert!(schema.ends_with('\n'));
+        assert!(
+            schema_json
+                .get("properties")
+                .and_then(gpui::private::serde_json::Value::as_object)
+                .expect("settings schema should contain root properties")
+                .contains_key("theme"),
+            "settings schema should include common Zed settings: {schema}"
+        );
+
+        for action_name in [
+            "zed_terminal::OpenSettingsSchemaFile",
+            "zed_terminal::OpenSettingsToolsPicker",
+            "zed_terminal::OpenStartupConfigSchemaFile",
+            "zed_terminal::OpenKeymapSchemaFile",
+            "zed_terminal::NewTerminalTab",
+        ] {
+            assert!(
+                schema.contains(action_name),
+                "settings schema should include {action_name}: {schema}"
+            );
+        }
+
+        assert!(
+            !schema.contains("workspace::NewFile"),
+            "settings schema should stay scoped to standalone terminal actions: {schema}"
+        );
+    }
+
+    #[gpui::test]
     fn formats_keymap_schema(cx: &mut App) {
         let schema = format_keymap_schema(cx).expect("keymap schema should format");
         let schema_json: gpui::private::serde_json::Value =
@@ -29247,6 +29578,7 @@ mod tests {
             "zed_terminal::NewTerminalTab",
             "zed_terminal::NewTerminalTabWithProfile",
             "zed_terminal::OpenKeymapToolsPicker",
+            "zed_terminal::OpenSettingsSchemaFile",
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
@@ -29817,6 +30149,29 @@ mod tests {
     }
 
     #[gpui::test]
+    fn writes_settings_schema_file_by_refreshing_existing_content(cx: &mut App) {
+        let root_dir = temp_test_dir();
+        let schema_file = root_dir.join("config").join("settings.schema.json");
+        std_fs::create_dir_all(schema_file.parent().unwrap()).expect("failed to create config dir");
+        std_fs::write(&schema_file, "{ stale schema }\n").expect("failed to write stale schema");
+
+        write_settings_schema_file(&schema_file, cx).expect("settings schema file should write");
+
+        let schema_text =
+            std_fs::read_to_string(&schema_file).expect("failed to read settings schema file");
+        let schema_json: gpui::private::serde_json::Value =
+            serde_json::from_str(&schema_text).expect("settings schema file should parse as json");
+        assert_eq!(schema_json["title"], "UserSettingsContent");
+        assert!(
+            schema_text.contains("zed_terminal::OpenSettingsSchemaFile"),
+            "schema file should include standalone settings schema action: {schema_text}"
+        );
+        assert_ne!(schema_text, "{ stale schema }\n");
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[gpui::test]
     fn writes_keymap_schema_file_by_refreshing_existing_content(cx: &mut App) {
         let root_dir = temp_test_dir();
         let schema_file = root_dir.join("config").join("keymap.schema.json");
@@ -29897,6 +30252,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenSettingsToolsPicker")
             .expect("settings tools picker action should be listed");
         assert_eq!(settings_tools_picker.input, TerminalKeymapActionInput::None);
+
+        let settings_schema_file = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenSettingsSchemaFile")
+            .expect("settings schema file action should be listed");
+        assert_eq!(settings_schema_file.input, TerminalKeymapActionInput::None);
 
         let keymap_tools_picker = report
             .actions
@@ -40668,6 +41030,46 @@ mod tests {
     }
 
     #[test]
+    fn print_settings_schema_mode_does_not_load_startup_config_file() {
+        let data_dir = temp_test_dir();
+        let config_dir = data_dir.join("config");
+        std_fs::create_dir_all(&config_dir).expect("failed to create config dir");
+        std_fs::write(
+            terminal_startup_config_file(&config_dir),
+            "{ broken terminal config",
+        )
+        .expect("failed to write broken startup config");
+
+        let command = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--print-settings-schema",
+        ])
+        .expect("settings schema mode should parse")
+        .expect("settings schema mode should resolve");
+
+        assert_eq!(command.path_options.data_dir, data_dir);
+        assert_eq!(command.path_options.config_dir, config_dir);
+
+        let cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--print-settings-schema",
+        ])
+        .expect("failed to parse cli args");
+        let command = TerminalCliCommand::from_cli_and_config_file(cli)
+            .expect("settings schema printing should not load terminal.json");
+        assert!(matches!(
+            command,
+            TerminalCliCommand::PrintSettingsSchema { .. }
+        ));
+
+        std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
     fn print_keymap_schema_mode_does_not_load_startup_config_file() {
         let data_dir = temp_test_dir();
         let config_dir = data_dir.join("config");
@@ -42586,6 +42988,7 @@ mod tests {
         assert!(help.contains("--restore-startup-config-format <text|json>"));
         assert!(help.contains("--validate-settings"));
         assert!(help.contains("--validate-settings-format <text|json>"));
+        assert!(help.contains("--print-settings-schema"));
         assert!(help.contains("Settings backup and restore options:"));
         assert!(help.contains("--backup-settings --backup-settings-file <FILE>"));
         assert!(help.contains("--backup-settings-format <text|json>"));
@@ -47199,6 +47602,94 @@ mod tests {
             "--all-profiles",
         ])
         .expect_err("hidden profile listing should conflict with schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        std_fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn print_settings_schema_rejects_startup_only_arguments() {
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --profile"));
+
+        let dir = temp_test_dir();
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "-d",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup directory should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with -d"));
+
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--new-tab-command",
+            "cmd /C echo tab",
+        ])
+        .expect_err("startup tab command should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command"));
+
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--new-tab-command-directory",
+            dir.to_str().unwrap(),
+        ])
+        .expect_err("startup tab command directory should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --new-tab-command-directory"));
+
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--",
+            "cmd",
+        ])
+        .expect_err("startup command should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --"));
+
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--paths",
+            "--print-settings-schema",
+        ])
+        .expect_err("path inspection should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --paths"));
+
+        let error = TerminalSettingsSchemaCommand::from_args([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--print-keymap-schema",
+        ])
+        .expect_err("keymap schema printing should conflict with settings schema printing");
+        assert!(format!("{error:#}").contains("cannot be used with --print-keymap-schema"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--validate-settings",
+        ])
+        .expect_err("settings validation should conflict with settings schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error = Cli::try_parse_from([
+            "zed-terminal",
+            "--print-settings-schema",
+            "--print-startup-config-schema",
+        ])
+        .expect_err("startup schema printing should conflict with settings schema printing");
+        assert!(error.to_string().contains("cannot be used with"));
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--print-settings-schema", "--init-config"])
+                .expect_err("config initialization should conflict with settings schema printing");
         assert!(error.to_string().contains("cannot be used with"));
 
         std_fs::remove_dir_all(dir).ok();

@@ -1266,6 +1266,13 @@ $startupSchema = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
 )
 Set-Content -LiteralPath (Join-Path $configTemplateDir "terminal.schema.json") -Value $startupSchema.Stdout -Encoding utf8
 
+$settingsSchema = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--print-settings-schema"
+)
+Set-Content -LiteralPath (Join-Path $configTemplateDir "settings.schema.json") -Value $settingsSchema.Stdout -Encoding utf8
+
 $keymapSchema = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -1280,7 +1287,7 @@ $defaultKeymap = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
 )
 Set-Content -LiteralPath (Join-Path $configTemplateDir "default-keymap.json") -Value $defaultKeymap.Stdout -Encoding utf8
 
-foreach ($templateFile in @("settings.json", "global_settings.json", "keymap.json", "default-keymap.json", "terminal.json", "terminal.schema.json", "keymap.schema.json")) {
+foreach ($templateFile in @("settings.json", "settings.schema.json", "global_settings.json", "keymap.json", "default-keymap.json", "terminal.json", "terminal.schema.json", "keymap.schema.json")) {
     $path = Join-Path $configTemplateDir $templateFile
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "package config template is missing $templateFile"
