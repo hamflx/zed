@@ -317,6 +317,8 @@ Inspect the active standalone paths without opening a terminal window:
 .\{{BINARY}} --paths --paths-format json
 ```
 
+The JSON path report includes the settings, startup, and keymap schema files plus the bundled default keymap reference path.
+
 ## Verify Download
 
 When a release includes the sibling `{{PACKAGE}}.zip.sha256` file, verify the archive before extracting it. The checksum sidecar is shipped next to the zip file, not inside this package directory.
@@ -808,17 +810,57 @@ function Assert-PortablePathsJson {
     $expectedDataDir = Join-Path $ExpectedPackageDir "data"
     $expectedConfigDir = Join-Path $ExpectedPackageDir "config"
 
+    Assert-PathsJson `
+        -Paths $Paths `
+        -ExpectedMode "portable" `
+        -ExpectedDataDir $expectedDataDir `
+        -ExpectedConfigDir $expectedConfigDir
+}
+
+function Assert-PathsJson {
+    param(
+        [Parameter(Mandatory = $true)]$Paths,
+        [Parameter(Mandatory = $true)][ValidateSet("custom", "portable")][string]$ExpectedMode,
+        [Parameter(Mandatory = $true)][string]$ExpectedDataDir,
+        [Parameter(Mandatory = $true)][string]$ExpectedConfigDir,
+        [Parameter()][switch]$RequireConfigAssets
+    )
+
+    $expectedLogsDir = Join-Path $ExpectedDataDir "logs"
     if (
-        $Paths.mode -ne "portable" -or
-        $Paths.data_dir -ne $expectedDataDir -or
+        $Paths.mode -ne $ExpectedMode -or
         $Paths.config_dir -ne $expectedConfigDir -or
-        $Paths.logs_dir -ne (Join-Path $expectedDataDir "logs") -or
+        $Paths.data_dir -ne $ExpectedDataDir -or
+        $Paths.logs_dir -ne $expectedLogsDir -or
         $Paths.settings_file -ne (Join-Path $expectedConfigDir "settings.json") -or
+        $Paths.settings_schema_file -ne (Join-Path $expectedConfigDir "settings.schema.json") -or
         $Paths.startup_config_file -ne (Join-Path $expectedConfigDir "terminal.json") -or
+        $Paths.startup_config_schema_file -ne (Join-Path $expectedConfigDir "terminal.schema.json") -or
+        $Paths.global_settings_file -ne (Join-Path $expectedConfigDir "global_settings.json") -or
         $Paths.keymap_file -ne (Join-Path $expectedConfigDir "keymap.json") -or
-        $Paths.log_file -ne (Join-Path (Join-Path $expectedDataDir "logs") "Zed Terminal.log")
+        $Paths.keymap_schema_file -ne (Join-Path $expectedConfigDir "keymap.schema.json") -or
+        $Paths.default_keymap_reference_file -ne (Join-Path $expectedConfigDir "default-keymap.json") -or
+        $Paths.themes_dir -ne (Join-Path $expectedConfigDir "themes") -or
+        $Paths.log_file -ne (Join-Path $expectedLogsDir "Zed Terminal.log")
     ) {
-        throw "zed-terminal --portable --paths did not report expected package-local paths"
+        throw "zed-terminal --paths did not report expected $ExpectedMode standalone paths"
+    }
+
+    if ($RequireConfigAssets) {
+        foreach ($path in @(
+            $Paths.settings_file,
+            $Paths.settings_schema_file,
+            $Paths.startup_config_file,
+            $Paths.startup_config_schema_file,
+            $Paths.global_settings_file,
+            $Paths.keymap_file,
+            $Paths.keymap_schema_file,
+            $Paths.default_keymap_reference_file
+        )) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "zed-terminal --paths reported a missing config-template asset: $path"
+            }
+        }
     }
 }
 
@@ -2132,9 +2174,12 @@ function Assert-PackageZipArchive {
         "--paths-format", "json"
     ) -WorkingDirectory $extractedPackageDir
     $pathsJson = $paths.Stdout | ConvertFrom-Json
-    if ($pathsJson.config_dir -ne $extractedConfigDir -or $pathsJson.data_dir -ne $extractedDataDir) {
-        throw "extracted package zed-terminal --paths did not report the expected standalone paths"
-    }
+    Assert-PathsJson `
+        -Paths $pathsJson `
+        -ExpectedMode "custom" `
+        -ExpectedDataDir $extractedDataDir `
+        -ExpectedConfigDir $extractedConfigDir `
+        -RequireConfigAssets
 
     $portablePaths = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--portable",
@@ -2359,9 +2404,11 @@ $paths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--paths-format", "json"
 )
 $pathsJson = $paths.Stdout | ConvertFrom-Json
-if ($pathsJson.config_dir -ne $validationConfigDir -or $pathsJson.data_dir -ne $validationDataDir) {
-    throw "packaged zed-terminal --paths did not report the expected standalone paths"
-}
+Assert-PathsJson `
+    -Paths $pathsJson `
+    -ExpectedMode "custom" `
+    -ExpectedDataDir $validationDataDir `
+    -ExpectedConfigDir $validationConfigDir
 
 $portablePaths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--portable",
@@ -2414,6 +2461,19 @@ foreach ($templateFile in @("settings.json", "settings.schema.json", "global_set
     }
 }
 Assert-PackageConfigTemplateSchemas -ConfigTemplateDir $configTemplateDir
+
+$configTemplatePaths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
+    "--user-data-dir", $validationDataDir,
+    "--config-dir", $configTemplateDir,
+    "--paths",
+    "--paths-format", "json"
+) -WorkingDirectory $packageDir
+Assert-PathsJson `
+    -Paths ($configTemplatePaths.Stdout | ConvertFrom-Json) `
+    -ExpectedMode "custom" `
+    -ExpectedDataDir $validationDataDir `
+    -ExpectedConfigDir $configTemplateDir `
+    -RequireConfigAssets
 
 $doctor = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
