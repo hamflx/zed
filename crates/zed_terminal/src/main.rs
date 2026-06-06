@@ -22,7 +22,7 @@ use fs::RealFs;
 use futures::StreamExt;
 use gpui::{
     Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, KeyContext,
-    Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, SharedString,
+    Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel, SharedString,
     SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds, WindowOptions,
     actions, is_no_action, is_unbind, px, size,
 };
@@ -204,6 +204,13 @@ struct CopyStartupProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct RemoveStartupProfile {
+    profile: String,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct ExportStartupProfile {
     profile: String,
 }
@@ -240,6 +247,7 @@ const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-s
 const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
     "zed-terminal-profile-references.json";
 const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json";
+const TERMINAL_PROFILE_REMOVAL_REPORT_FILE: &str = "zed-terminal-profile-removal.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
@@ -21925,6 +21933,28 @@ fn write_startup_profile_copy_report_file(
     })
 }
 
+fn write_startup_profile_removal_report_file(
+    path: &Path,
+    removal: &TerminalStartupProfileRemoval,
+) -> Result<()> {
+    let report = format_startup_profile_removal_json(removal)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile removal report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile removal report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_import_report_file(
     path: &Path,
     import: &TerminalStartupProfileImport,
@@ -24259,6 +24289,10 @@ fn active_terminal_profile_copy_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_COPY_REPORT_FILE)
 }
 
+fn active_terminal_profile_removal_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_REMOVAL_REPORT_FILE)
+}
+
 fn active_terminal_profile_import_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_IMPORT_REPORT_FILE)
 }
@@ -24685,6 +24719,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupProfileReferencesReport>(),
         TerminalActionSurface::new::<OpenStartupToolsPicker>(),
         TerminalActionSurface::new::<OpenThemesDirectory>(),
+        TerminalActionSurface::new::<RemoveStartupProfile>(),
         TerminalActionSurface::new::<ResetPaneSizes>(),
         TerminalActionSurface::new::<ResizePaneDown>(),
         TerminalActionSurface::new::<ResizePaneLeft>(),
@@ -24805,6 +24840,14 @@ fn terminal_profile_command_palette_items(
                 query,
                 format!("Show Profile: {label}"),
                 ShowStartupProfile {
+                    profile: profile_name.clone(),
+                }
+                .boxed_clone(),
+            ));
+            items.push(terminal_profile_command_palette_item(
+                query,
+                format!("Remove Profile: {label}"),
+                RemoveStartupProfile {
                     profile: profile_name,
                 }
                 .boxed_clone(),
@@ -24875,6 +24918,14 @@ fn terminal_profile_command_palette_items(
             query,
             format!("Export Profile: {label}"),
             ExportStartupProfile {
+                profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Remove Profile: {label}"),
+            RemoveStartupProfile {
                 profile: profile_name.clone(),
             }
             .boxed_clone(),
@@ -25165,13 +25216,33 @@ fn shell_menu_items_with_visibility(
                 )
             }),
         )));
+        shell_items.push(MenuItem::submenu(Menu::new("Remove Profile").items(
+            visible_profile_entries.iter().cloned().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    RemoveStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
     }
     if !hidden_profile_entries.is_empty() {
         shell_items.push(MenuItem::submenu(Menu::new("Show Profile").items(
-            hidden_profile_entries.into_iter().map(|entry| {
+            hidden_profile_entries.iter().cloned().map(|entry| {
                 MenuItem::action(
                     entry.label,
                     ShowStartupProfile {
+                        profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+        shell_items.push(MenuItem::submenu(Menu::new("Remove Hidden Profile").items(
+            hidden_profile_entries.into_iter().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    RemoveStartupProfile {
                         profile: entry.profile,
                     },
                 )
@@ -25618,6 +25689,31 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &OpenKeymapToolsPicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "keymap", window, cx);
+                });
+                workspace.register_action(|_, action: &RemoveStartupProfile, window, cx| {
+                    let profile = action.profile.clone();
+                    let prompt = window.prompt(
+                        PromptLevel::Warning,
+                        &format!("Remove startup profile \"{profile}\"?"),
+                        Some("This updates terminal.json, clears references to the removed profile, refreshes the profile menus, and writes a removal report."),
+                        &["Remove Profile", "Cancel"],
+                        cx,
+                    );
+                    cx.spawn(async move |_, cx| {
+                        match prompt.await {
+                            Ok(0) => {
+                                cx.update(|cx| {
+                                    remove_startup_profile_after_confirmation(profile, cx)
+                                });
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                log::warn!("failed to confirm startup profile removal: {error:?}");
+                            }
+                        }
+                        anyhow::Ok(())
+                    })
+                    .detach_and_log_err(cx);
                 });
                 let profile_terminal_window_app_state = app_state.clone();
                 workspace.register_action(
@@ -27005,6 +27101,44 @@ fn copy_startup_profile_action(action: &CopyStartupProfile, cx: &mut App) {
     .detach();
 }
 
+fn remove_startup_profile_after_confirmation(profile: String, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_spawn({
+                let profile = profile.clone();
+                async move {
+                    let removal = remove_startup_profile_with_references(
+                        &active_terminal_startup_config_file(),
+                        &profile,
+                        true,
+                    )?;
+                    write_startup_profile_removal_report_file(
+                        &active_terminal_profile_removal_report_file(),
+                        &removal,
+                    )?;
+                    anyhow::Ok(removal)
+                }
+            })
+            .await;
+        cx.update(|cx| match result {
+            Ok(removal) => {
+                log::info!(
+                    "removed startup profile {:?} (changed={}, removed {} references)",
+                    removal.profile,
+                    removal.changed,
+                    removal.removed_reference_count
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_removal_report_file());
+            }
+            Err(error) => {
+                log::warn!("failed to remove startup profile {profile:?}: {error:#}");
+            }
+        });
+    })
+    .detach();
+}
+
 fn export_startup_profile_action(action: &ExportStartupProfile, cx: &mut App) {
     let export_file = match active_terminal_profile_export_file(&action.profile) {
         Ok(path) => path,
@@ -27412,6 +27546,8 @@ mod tests {
         } else if let Some(action) = action.as_any().downcast_ref::<HideStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<CopyStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<RemoveStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<ExportStartupProfile>() {
             &action.profile
@@ -27923,6 +28059,12 @@ mod tests {
         );
         assert_command_palette_action_visible(
             &filter,
+            &RemoveStartupProfile {
+                profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
             &ExportStartupProfile {
                 profile: "work".into(),
             },
@@ -28107,6 +28249,7 @@ mod tests {
                 "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Copy Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Export Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Remove Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Hide Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
             ]
         );
@@ -28138,7 +28281,8 @@ mod tests {
         assert_open_profile_description_report_action(&result.results[8], "work");
         assert_copy_profile_action(&result.results[9], "work");
         assert_export_profile_action(&result.results[10], "work");
-        assert_hide_profile_action(&result.results[11], "work");
+        assert_remove_profile_action(&result.results[11], "work");
+        assert_hide_profile_action(&result.results[12], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -28178,6 +28322,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 "Show Profile: Hidden Shell (hidden)",
+                "Remove Profile: Hidden Shell (hidden)",
                 "New Tab With Profile: Work Shell (work)",
                 "New Window With Profile: Work Shell (work)",
                 "Split Right With Profile: Work Shell (work)",
@@ -28189,15 +28334,18 @@ mod tests {
                 "Open Description Report For Profile: Work Shell (work)",
                 "Copy Profile: Work Shell (work)",
                 "Export Profile: Work Shell (work)",
+                "Remove Profile: Work Shell (work)",
                 "Hide Profile: Work Shell (work)",
             ]
         );
 
         assert_show_profile_action(&result.results[0], "hidden");
-        assert_profile_tab_action(&result.results[1], "work");
-        assert_copy_profile_action(&result.results[10], "work");
-        assert_export_profile_action(&result.results[11], "work");
-        assert_hide_profile_action(&result.results[12], "work");
+        assert_remove_profile_action(&result.results[1], "hidden");
+        assert_profile_tab_action(&result.results[2], "work");
+        assert_copy_profile_action(&result.results[11], "work");
+        assert_export_profile_action(&result.results[12], "work");
+        assert_remove_profile_action(&result.results[13], "work");
+        assert_hide_profile_action(&result.results[14], "work");
     }
 
     #[test]
@@ -28517,6 +28665,36 @@ mod tests {
     }
 
     #[test]
+    fn terminal_profile_command_palette_searches_profile_remove_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "remove",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+                reference_count: 0,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Remove Profile: Work Shell (work) - Project shell - icon terminal"]
+        );
+        assert_remove_profile_action(&result.results[0], "work");
+    }
+
+    #[test]
     fn terminal_profile_split_directions_cover_full_pane_model() {
         assert_eq!(
             terminal_profile_split_direction_entries()
@@ -28690,6 +28868,18 @@ mod tests {
             .as_any()
             .downcast_ref::<CopyStartupProfile>()
             .expect("expected copy startup profile action");
+        assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_remove_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<RemoveStartupProfile>()
+            .expect("expected remove startup profile action");
         assert_eq!(action.profile, expected_profile);
     }
 
@@ -29319,6 +29509,12 @@ mod tests {
             "Work Shell (work)",
             "work",
         );
+        assert_profile_submenu_action::<RemoveStartupProfile>(
+            &items,
+            "Remove Profile",
+            "Work Shell (work)",
+            "work",
+        );
     }
 
     #[test]
@@ -29337,6 +29533,12 @@ mod tests {
         assert_profile_submenu_action::<ShowStartupProfile>(
             &items,
             "Show Profile",
+            "Secret (secret)",
+            "secret",
+        );
+        assert_profile_submenu_action::<RemoveStartupProfile>(
+            &items,
+            "Remove Hidden Profile",
             "Secret (secret)",
             "secret",
         );
@@ -30192,6 +30394,32 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown startup profile copy action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_remove_startup_profile_action_input() {
+        let action = <RemoveStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("remove startup profile action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<RemoveStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &RemoveStartupProfile {
+                profile: "work".into()
+            }
+        );
+
+        let error = <RemoveStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
+        )
+        .expect_err("unknown startup profile remove action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -32836,6 +33064,7 @@ mod tests {
             "zed_terminal::NewTerminalWindowWithProfileSlot",
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::CopyStartupProfile",
+            "zed_terminal::RemoveStartupProfile",
             "zed_terminal::ExportStartupProfile",
             "zed_terminal::ImportStartupProfile",
             "zed_terminal::OpenConfigBundleBackupFile",
@@ -33670,6 +33899,13 @@ mod tests {
             .expect("profile copy action should be listed");
         assert_eq!(profile_copy.input, TerminalKeymapActionInput::Object);
 
+        let profile_remove = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::RemoveStartupProfile")
+            .expect("profile remove action should be listed");
+        assert_eq!(profile_remove.input, TerminalKeymapActionInput::Object);
+
         let profile_import = report
             .actions
             .iter()
@@ -33946,6 +34182,15 @@ mod tests {
             TerminalKeymapActionInput::Object
         );
         assert!(profile_copy_report.actions[0].default_bindings.is_empty());
+
+        let profile_remove_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::RemoveStartupProfile")
+                .expect("profile remove action description should build");
+        assert_eq!(
+            profile_remove_report.actions[0].input,
+            TerminalKeymapActionInput::Object
+        );
+        assert!(profile_remove_report.actions[0].default_bindings.is_empty());
 
         let profile_import_report =
             terminal_keymap_action_description_report(cx, "zed_terminal::ImportStartupProfile")
@@ -42912,6 +43157,40 @@ mod tests {
         assert_eq!(report_json["source_profile"], "work");
         assert_eq!(report_json["profile"], "work-copy");
         assert_eq!(report_json["copied_tab_count"], 2);
+        assert!(!report.contains("do-not-log"));
+        assert!(!report.contains("TOKEN"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_removal_report_file_redacts_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join("zed-terminal-profile-removal.json");
+        let removal = TerminalStartupProfileRemoval {
+            path: root_dir.join("terminal.json"),
+            profile: "work".into(),
+            changed: true,
+            remaining_profile_count: 1,
+            removed_reference_count: 3,
+            cleared_default_profile: true,
+            removed_root_tab_count: 1,
+            removed_profile_tab_count: 1,
+        };
+
+        write_startup_profile_removal_report_file(&report_file, &removal)
+            .expect("profile removal report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile removal report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile removal report should parse");
+        assert_eq!(report_json["status"], "ok");
+        assert_eq!(report_json["profile"], "work");
+        assert_eq!(report_json["removed_reference_count"], 3);
+        assert_eq!(report_json["cleared_default_profile"], true);
         assert!(!report.contains("do-not-log"));
         assert!(!report.contains("TOKEN"));
 
