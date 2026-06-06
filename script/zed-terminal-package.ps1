@@ -326,6 +326,13 @@ Preview the resolved startup layout without opening a window:
 .\{{BINARY}} --print-startup-layout --startup-layout-format json
 ```
 
+Inspect startup profiles and root startup configuration without opening a window:
+
+```powershell
+.\{{BINARY}} --list-profiles --list-profiles-format json
+.\{{BINARY}} --describe-startup --describe-startup-format json
+```
+
 ## Configuration
 
 Use `--init-config` to create user-editable files under the active config directory. The packaged `config-template/` directory is a generated reference containing first-run config files, the default keymap, and JSON schemas for editor support.
@@ -457,6 +464,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --init-config",
         ".\$BinaryFileName --print-startup-layout",
         ".\$BinaryFileName --print-startup-layout --startup-layout-format json",
+        ".\$BinaryFileName --list-profiles --list-profiles-format json",
+        ".\$BinaryFileName --describe-startup --describe-startup-format json",
         ".\$BinaryFileName --doctor",
         ".\$BinaryFileName --validate-settings",
         ".\$BinaryFileName --validate-settings --validate-settings-format json",
@@ -762,6 +771,47 @@ function Assert-StartupLayoutJson {
         ) {
             throw "zed-terminal --print-startup-layout reported an invalid startup tab entry"
         }
+    }
+}
+
+function Assert-StartupDiscoveryJson {
+    param(
+        [Parameter(Mandatory = $true)]$StartupDescription,
+        [Parameter(Mandatory = $true)]$ProfileList,
+        [Parameter(Mandatory = $true)][string]$ExpectedStartupConfigFile
+    )
+
+    $startupTabs = @($StartupDescription.tabs)
+    $profiles = @($ProfileList.profiles)
+    if (
+        $StartupDescription.status -ne "ok" -or
+        $StartupDescription.source -ne "file" -or
+        $StartupDescription.startup_config_file -ne $ExpectedStartupConfigFile -or
+        $null -eq $StartupDescription.shell -or
+        $startupTabs.Count -ne [int64]$StartupDescription.tab_count -or
+        [int64]$StartupDescription.profile_count -lt 0 -or
+        [int64]$StartupDescription.visible_profile_count -lt 0 -or
+        [int64]$StartupDescription.hidden_profile_count -lt 0
+    ) {
+        throw "zed-terminal --describe-startup did not report expected startup discovery status"
+    }
+
+    if (
+        $ProfileList.startup_config_file -ne $ExpectedStartupConfigFile -or
+        $ProfileList.include_hidden -ne $false -or
+        $profiles.Count -ne [int64]$ProfileList.visible_count -or
+        [int64]$ProfileList.total_count -lt [int64]$ProfileList.visible_count -or
+        [int64]$ProfileList.hidden_count -lt 0
+    ) {
+        throw "zed-terminal --list-profiles did not report expected startup profile discovery status"
+    }
+
+    if (
+        [int64]$StartupDescription.profile_count -ne [int64]$ProfileList.total_count -or
+        [int64]$StartupDescription.visible_profile_count -ne [int64]$ProfileList.visible_count -or
+        [int64]$StartupDescription.hidden_profile_count -ne [int64]$ProfileList.hidden_count
+    ) {
+        throw "zed-terminal startup discovery commands reported inconsistent profile counts"
     }
 }
 
@@ -1382,6 +1432,35 @@ function Invoke-KeymapBackupSmoke {
     Assert-KeymapBackupCheckJson ($postRestore.Stdout | ConvertFrom-Json) $keymapFile $BackupFile $true
 }
 
+function Invoke-StartupDiscoverySmoke {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$DataDir,
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $startupDescription = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--describe-startup",
+        "--describe-startup-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+
+    $profileList = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--list-profiles",
+        "--list-profiles-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+
+    Assert-StartupDiscoveryJson `
+        -StartupDescription ($startupDescription.Stdout | ConvertFrom-Json) `
+        -ProfileList ($profileList.Stdout | ConvertFrom-Json) `
+        -ExpectedStartupConfigFile $startupConfigFile
+}
+
 function Invoke-ConfigBundleSmoke {
     param(
         [Parameter(Mandatory = $true)][string]$Binary,
@@ -1508,6 +1587,7 @@ function Assert-PackageManifest {
         "keymap_schema",
         "default_keymap",
         "startup_layout",
+        "startup_discovery",
         "startup_validation",
         "settings_validation",
         "keymap_validation",
@@ -1729,6 +1809,12 @@ function Assert-PackageZipArchive {
     Assert-StartupLayoutJson `
         -Report ($startupLayout.Stdout | ConvertFrom-Json) `
         -ExpectedStartupConfigFile (Join-Path $extractedConfigDir "terminal.json")
+
+    Invoke-StartupDiscoverySmoke `
+        -Binary $extractedBinary `
+        -DataDir $extractedDataDir `
+        -ConfigDir $extractedConfigDir `
+        -WorkingDirectory $extractedPackageDir
 
     $keymapValidation = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
@@ -1986,6 +2072,12 @@ Assert-StartupLayoutJson `
     -Report ($startupLayout.Stdout | ConvertFrom-Json) `
     -ExpectedStartupConfigFile (Join-Path $configTemplateDir "terminal.json")
 
+Invoke-StartupDiscoverySmoke `
+    -Binary $packagedBinary `
+    -DataDir $validationDataDir `
+    -ConfigDir $configTemplateDir `
+    -WorkingDirectory $packageDir
+
 $keymapValidation = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
     "--config-dir", $configTemplateDir,
@@ -2085,6 +2177,7 @@ $manifest = [pscustomobject]@{
         keymap_schema = "ok"
         default_keymap = "ok"
         startup_layout = "ok"
+        startup_discovery = "ok"
         startup_validation = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
