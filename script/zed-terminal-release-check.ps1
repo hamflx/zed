@@ -645,6 +645,7 @@ function Read-PackageSmokeSummary {
         $manifest.validation.startup_schema -ne "ok" -or
         $manifest.validation.keymap_schema -ne "ok" -or
         $manifest.validation.default_keymap_reference -ne "ok" -or
+        $manifest.validation.licenses -ne "ok" -or
         $manifest.validation.startup_layout -ne "ok" -or
         $manifest.validation.startup_discovery -ne "ok" -or
         $manifest.validation.startup_validation -ne "ok" -or
@@ -668,6 +669,7 @@ function Read-PackageSmokeSummary {
         $summary.validation.startup_schema -ne "ok" -or
         $summary.validation.keymap_schema -ne "ok" -or
         $summary.validation.default_keymap_reference -ne "ok" -or
+        $summary.validation.licenses -ne "ok" -or
         $summary.validation.startup_layout -ne "ok" -or
         $summary.validation.startup_discovery -ne "ok" -or
         $summary.validation.startup_validation -ne "ok" -or
@@ -679,7 +681,7 @@ function Read-PackageSmokeSummary {
         $summary.validation.config_bundle -ne "ok" -or
         $summary.validation.support_bundle -ne "ok"
     ) {
-        throw "package smoke summary did not report expected path/version/schema/startup/settings/keymap validation/backup/config bundle/support bundle status"
+        throw "package smoke summary did not report expected path/version/schema/license/startup/settings/keymap validation/backup/config bundle/support bundle status"
     }
 
     if ($manifest.version -ne $summary.version -or $manifest.build_profile -ne $summary.build_profile -or $manifest.platform -ne $summary.platform -or $manifest.architecture -ne $summary.architecture) {

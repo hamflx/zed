@@ -430,7 +430,7 @@ Generate support information without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, settings backup/check/diff/restore, startup config backup/check/diff/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore, doctor, support-info, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -494,7 +494,9 @@ function Assert-PackageReadme {
         "$PackageName.zip.sha256",
         "config-template/",
         "settings.schema.json",
-        "zed-terminal-package.json"
+        "zed-terminal-package.json",
+        "LICENSE-GPL",
+        "LICENSE-APACHE"
     )
 
     foreach ($snippet in $requiredSnippets) {
@@ -663,6 +665,44 @@ function Assert-PackageDefaultKeymapReferences {
             $templateDefaultKeymapText.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0
         ) {
             throw "package default keymap references are missing expected binding content: $snippet"
+        }
+    }
+}
+
+function Assert-PackageLicenses {
+    param([Parameter(Mandatory = $true)][string]$PackageDir)
+
+    foreach ($license in @(
+        [pscustomobject]@{
+            Name = "LICENSE-GPL"
+            RequiredSnippet = "GNU GENERAL PUBLIC LICENSE"
+        },
+        [pscustomobject]@{
+            Name = "LICENSE-APACHE"
+            RequiredSnippet = "Apache License"
+        }
+    )) {
+        $repoLicenseFile = Join-Path $repoRoot $license.Name
+        $packageLicenseFile = Join-Path $PackageDir $license.Name
+        if (-not (Test-Path -LiteralPath $repoLicenseFile -PathType Leaf)) {
+            throw "repository license file was not found: $repoLicenseFile"
+        }
+        if (-not (Test-Path -LiteralPath $packageLicenseFile -PathType Leaf)) {
+            throw "package license file was not written: $packageLicenseFile"
+        }
+
+        $licenseText = Get-Content -LiteralPath $packageLicenseFile -Raw
+        if ([string]::IsNullOrWhiteSpace($licenseText)) {
+            throw "package license file must not be empty: $($license.Name)"
+        }
+        if ($licenseText.IndexOf($license.RequiredSnippet, [System.StringComparison]::Ordinal) -lt 0) {
+            throw "package license file is missing expected content: $($license.Name)"
+        }
+
+        $repoHash = (Get-FileHash -LiteralPath $repoLicenseFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        $packageHash = (Get-FileHash -LiteralPath $packageLicenseFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($packageHash -ne $repoHash) {
+            throw "package license file did not match repository source: $($license.Name)"
         }
     }
 }
@@ -1628,6 +1668,7 @@ function Assert-PackageManifest {
         "keymap_schema",
         "default_keymap",
         "default_keymap_reference",
+        "licenses",
         "startup_layout",
         "startup_discovery",
         "startup_validation",
@@ -1708,6 +1749,7 @@ function Assert-PackageManifest {
 
     Assert-PackageConfigTemplateSchemas -ConfigTemplateDir (Join-Path $PackageDir "config-template")
     Assert-PackageDefaultKeymapReferences -PackageDir $PackageDir
+    Assert-PackageLicenses -PackageDir $PackageDir
 
     $actualFiles = @(Get-ChildItem -LiteralPath $PackageDir -Recurse -File |
         Where-Object { $_.FullName -ne $ManifestFile }
@@ -2223,6 +2265,7 @@ $manifest = [pscustomobject]@{
         startup_discovery = "ok"
         startup_validation = "ok"
         default_keymap_reference = "ok"
+        licenses = "ok"
         settings_validation = "ok"
         keymap_validation = "ok"
         settings_backup = "ok"
