@@ -74,6 +74,7 @@ actions!(
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
         OpenStartupProfilesReport,
+        OpenStartupProfileSlotsReport,
         OpenSettingsValidationReport,
         OpenStartupConfigValidationReport,
         OpenKeymapValidationReport,
@@ -213,6 +214,7 @@ const TERMINAL_CONFIG_BUNDLE_BACKUP_FILE_EXTENSION: &str = ".json";
 const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
+const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
 const TERMINAL_SETTINGS_VALIDATION_REPORT_FILE: &str = "zed-terminal-settings-validation.json";
 const TERMINAL_STARTUP_CONFIG_VALIDATION_REPORT_FILE: &str = "zed-terminal-startup-validation.json";
 const TERMINAL_KEYMAP_VALIDATION_REPORT_FILE: &str = "zed-terminal-keymap-validation.json";
@@ -20550,6 +20552,28 @@ fn write_startup_profiles_report_file(
         .with_context(|| format!("failed to write startup profiles report {}", path.display()))
 }
 
+fn write_startup_profile_slots_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileSlotReport,
+) -> Result<()> {
+    let report = format_startup_profile_slots_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile slots report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile slots report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_description_report_file(
     path: &Path,
     report: &TerminalStartupProfileDescription,
@@ -22864,6 +22888,10 @@ fn active_terminal_startup_profiles_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILES_REPORT_FILE)
 }
 
+fn active_terminal_startup_profile_slots_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE)
+}
+
 fn active_terminal_settings_validation_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_SETTINGS_VALIDATION_REPORT_FILE)
 }
@@ -22984,6 +23012,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
     cx.on_action(open_startup_profiles_report);
+    cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_settings_validation_report);
     cx.on_action(open_startup_config_validation_report);
     cx.on_action(open_keymap_validation_report);
@@ -23247,6 +23276,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<OpenStartupProfileConfig>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
+        TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
         TerminalActionSurface::new::<OpenStartupToolsPicker>(),
         TerminalActionSurface::new::<OpenThemesDirectory>(),
         TerminalActionSurface::new::<ResetPaneSizes>(),
@@ -23940,6 +23970,10 @@ fn app_menu_items() -> Vec<MenuItem> {
             OpenStartupDescriptionReport,
         ),
         MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
+        MenuItem::action(
+            "Open Startup Profile Slots Report",
+            OpenStartupProfileSlotsReport,
+        ),
         MenuItem::separator(),
         MenuItem::action("Open Keymap Tools...", OpenKeymapToolsPicker),
         MenuItem::action("Open Keymap File", zed_actions::OpenKeymapFile),
@@ -25233,6 +25267,27 @@ fn open_startup_profiles_report(_: &OpenStartupProfilesReport, cx: &mut App) {
     cx.open_with_system(&startup_profiles_report_file);
 }
 
+fn open_startup_profile_slots_report(_: &OpenStartupProfileSlotsReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_profile_slots_report_file = active_terminal_startup_profile_slots_report_file();
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!("failed to load startup config for startup profile slots report: {error:#}");
+            return;
+        }
+    };
+    let report = startup_profile_slot_report(&startup_config, &startup_config_file);
+    if let Err(error) =
+        write_startup_profile_slots_report_file(&startup_profile_slots_report_file, &report)
+    {
+        log::warn!("failed to write startup profile slots report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_profile_slots_report_file);
+}
+
 fn open_settings_validation_report(_: &OpenSettingsValidationReport, cx: &mut App) {
     let validation_report_file = active_terminal_settings_validation_report_file();
     let report = validate_terminal_settings_files(
@@ -26196,6 +26251,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileSlotsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupToolsPicker);
         assert_command_palette_action_visible(
             &filter,
@@ -27545,6 +27601,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Profile Slots Report",
+            "zed_terminal::OpenStartupProfileSlotsReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Settings Validation Report",
             "zed_terminal::OpenSettingsValidationReport",
         );
@@ -27651,6 +27712,7 @@ mod tests {
                 "Open Startup Layout Report",
                 "Open Startup Description Report",
                 "Open Startup Profiles Report",
+                "Open Startup Profile Slots Report",
                 "---",
                 "Open Keymap Tools...",
                 "Open Keymap File",
@@ -28546,6 +28608,20 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupProfilesReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_startup_profile_slots_report_action_input() {
+        let action =
+            <OpenStartupProfileSlotsReport as Action>::build(gpui::private::serde_json::json!({}))
+                .expect("open startup profile slots report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfileSlotsReport>()
                 .is_some()
         );
     }
@@ -30620,6 +30696,7 @@ mod tests {
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "terminal::Paste",
@@ -31310,6 +31387,16 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenStartupToolsPicker")
             .expect("startup tools picker action should be listed");
         assert_eq!(startup_tools_picker.input, TerminalKeymapActionInput::None);
+
+        let startup_profile_slots_report = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileSlotsReport")
+            .expect("startup profile slots report action should be listed");
+        assert_eq!(
+            startup_profile_slots_report.input,
+            TerminalKeymapActionInput::None
+        );
 
         let support_tools_picker = report
             .actions
@@ -32505,6 +32592,39 @@ mod tests {
         assert_eq!(json["profiles"][0]["hidden"], true);
         assert_eq!(json["profiles"][1]["name"], "work");
         assert_eq!(json["profiles"][1]["is_default"], true);
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profile_slots_report_file_as_profile_slots_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE);
+        let report = startup_profile_slot_report(
+            &sample_startup_profile_list_config(),
+            Path::new("terminal.json"),
+        );
+
+        write_startup_profile_slots_report_file(&report_file, &report)
+            .expect("startup profile slots report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read profile slots report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("profile slots report should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["slot_count"], 9);
+        assert_eq!(json["mapped_count"], 1);
+        assert_eq!(json["slots"][0]["slot"], 1);
+        assert_eq!(json["slots"][0]["shortcut"], "ctrl-shift-1");
+        assert_eq!(json["slots"][0]["profile"]["name"], "work");
+        assert_eq!(json["slots"][1]["slot"], 2);
+        assert!(json["slots"][1]["profile"].is_null());
+        assert!(!report_text.contains("secret"));
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();

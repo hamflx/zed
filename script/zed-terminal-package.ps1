@@ -673,6 +673,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenSettingsToolsPicker",
             "zed_terminal::OpenStartupProfileConfig",
             "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "zed_terminal::OpenActiveKeymapBindingsReport",
@@ -1019,6 +1020,7 @@ function Invoke-KeymapDiscoverySmoke {
     foreach ($actionName in @(
         "zed_terminal::OpenActiveKeymapBindingsReport",
         "zed_terminal::OpenKeymapActionCatalogReport",
+        "zed_terminal::OpenStartupProfileSlotsReport",
         "terminal::Paste"
     )) {
         if (-not (@($actionsJson.actions) | Where-Object { $_.name -eq $actionName } | Select-Object -First 1)) {
