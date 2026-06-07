@@ -506,6 +506,13 @@ Inspect and clear saved session storage without opening a terminal window:
 .\{{BINARY}} --clear-saved-session --clear-saved-session-format json
 ```
 
+Inspect and clear saved window geometry without opening a terminal window:
+
+```powershell
+.\{{BINARY}} --window-state-report --window-state-report-format json
+.\{{BINARY}} --clear-window-state --clear-window-state-format json
+```
+
 ## Included Files
 
 - `{{BINARY}}`: standalone Zed Terminal executable.
@@ -514,7 +521,7 @@ Inspect and clear saved session storage without opening a terminal window:
 - `zed-terminal-package.json`: package manifest with version/build metadata, validation status, file sizes, and SHA256 hashes.
 - `LICENSE-GPL` and `LICENSE-APACHE`: repository license files.
 
-The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, profile mutation backup list/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore/list, doctor, support-info, session report/clear, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
+The package is validated before release packaging: the binary must pass help, path inspection, config initialization, schema generation, default keymap generation, settings validation, startup config validation, keymap validation, default keymap discovery, active keymap discovery, settings backup/check/diff/restore, startup config backup/check/diff/restore, profile mutation backup list/restore, keymap backup/check/diff/restore, complete config bundle backup/check/diff/restore/list, doctor, support-info, session report/clear, window state report/clear, redacted support bundle, README, license file, manifest, zip extraction, and checksum sidecar checks.
 '@
 
     return $template.Replace("{{PACKAGE}}", $PackageName).Replace("{{BINARY}}", $BinaryFileName)
@@ -589,6 +596,8 @@ function Assert-PackageReadme {
         ".\$BinaryFileName --support-bundle --support-bundle-dir zed-terminal-support-bundle --support-bundle-format json",
         ".\$BinaryFileName --session-report --session-report-format json",
         ".\$BinaryFileName --clear-saved-session --clear-saved-session-format json",
+        ".\$BinaryFileName --window-state-report --window-state-report-format json",
+        ".\$BinaryFileName --clear-window-state --clear-window-state-format json",
         "$PackageName.zip.sha256",
         "config-template/",
         "settings.schema.json",
@@ -2138,6 +2147,40 @@ function Invoke-SupportBundleSmoke {
         (Test-Path -LiteralPath $sessionBuffersDir)
     ) {
         throw "zed-terminal --clear-saved-session did not remove saved session storage"
+    }
+
+    $windowStateFile = Join-Path $DataDir "window-state.json"
+    Set-Utf8NoBomContent -Path $windowStateFile -Value '{ "format": "zed-terminal-window-state", "version": 1, "saved_at_unix_seconds": 42, "window": { "state": "maximized", "bounds": { "x": 10, "y": 20, "width": 1200, "height": 800 }, "display_uuid": "package-display" } }'
+    $windowStateReport = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--window-state-report",
+        "--window-state-report-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $windowStateReportJson = $windowStateReport.Stdout | ConvertFrom-Json
+    if (
+        $windowStateReportJson.status -ne "ok" -or
+        $windowStateReportJson.privacy.includes_window_state_contents -ne $false -or
+        $windowStateReportJson.privacy.metadata_only -ne $true -or
+        $windowStateReportJson.window_mode -ne "maximized" -or
+        [int64]$windowStateReportJson.bounds.width -ne 1200 -or
+        ($windowStateReport.Stdout).Contains('"window"')
+    ) {
+        throw "zed-terminal --window-state-report did not report expected metadata-only window state diagnostics"
+    }
+    $windowStateClear = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
+        "--user-data-dir", $DataDir,
+        "--config-dir", $ConfigDir,
+        "--clear-window-state",
+        "--clear-window-state-format", "json"
+    ) -WorkingDirectory $WorkingDirectory
+    $windowStateClearJson = $windowStateClear.Stdout | ConvertFrom-Json
+    if (
+        $windowStateClearJson.status -ne "ok" -or
+        $windowStateClearJson.removed_window_state_file -ne $true -or
+        (Test-Path -LiteralPath $windowStateFile)
+    ) {
+        throw "zed-terminal --clear-window-state did not remove saved window state"
     }
 }
 

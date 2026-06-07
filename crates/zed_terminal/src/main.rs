@@ -96,6 +96,8 @@ actions!(
         OpenSupportBundleManifestFile,
         OpenSessionReport,
         ClearSavedSession,
+        OpenWindowStateReport,
+        ClearSavedWindowState,
         OpenStartupLayoutReport,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
@@ -293,6 +295,7 @@ const TERMINAL_SESSION_FILE: &str = "session.json";
 const TERMINAL_SESSION_BUFFERS_DIR: &str = "session-buffers";
 const TERMINAL_SESSION_REPORT_FILE: &str = "zed-terminal-session.json";
 const TERMINAL_WINDOW_STATE_FILE: &str = "window-state.json";
+const TERMINAL_WINDOW_STATE_REPORT_FILE: &str = "zed-terminal-window-state.json";
 const TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE: &str = "zed-terminal-config-initialization.json";
 const TERMINAL_CONFIG_BUNDLE_BACKUP_DIR: &str = "zed-terminal-config-bundles";
 const TERMINAL_CONFIG_BUNDLE_BACKUPS_REPORT_FILE: &str = "zed-terminal-config-bundle-backups.json";
@@ -407,6 +410,16 @@ Session storage options:
           Remove saved session metadata and buffer snapshot storage without opening a terminal window
       --clear-saved-session-format <text|json>
           Set the output format for --clear-saved-session
+
+Window state options:
+      --window-state-report
+          Print saved window geometry metadata without opening a terminal window
+      --window-state-report-format <text|json>
+          Set the output format for --window-state-report
+      --clear-window-state
+          Remove saved window geometry metadata without opening a terminal window
+      --clear-window-state-format <text|json>
+          Set the output format for --clear-window-state
 
 Startup config backup and restore options:
       --backup-startup-config --backup-startup-config-file <FILE>
@@ -3472,6 +3485,18 @@ enum TerminalSessionCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalWindowStateCommand {
+    Report {
+        path_options: TerminalPathOptions,
+        format: TerminalWindowStateReportOutputFormat,
+    },
+    Clear {
+        path_options: TerminalPathOptions,
+        format: TerminalWindowStateClearOutputFormat,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalConfigBundleBackupCommand {
     path_options: TerminalPathOptions,
     bundle_file: PathBuf,
@@ -3744,6 +3769,16 @@ enum TerminalSavedWindowMode {
     Fullscreen,
 }
 
+impl TerminalSavedWindowMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Windowed => "windowed",
+            Self::Maximized => "maximized",
+            Self::Fullscreen => "fullscreen",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 struct TerminalSavedBounds {
     x: i32,
@@ -3816,6 +3851,28 @@ struct TerminalSessionClear {
     removed_buffer_byte_count: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalWindowStateReport {
+    window_state_file: PathBuf,
+    status: TerminalWindowStateStatus,
+    message: Option<String>,
+    window_state_file_exists: bool,
+    window_state_file_byte_count: Option<u64>,
+    saved_at_unix_seconds: Option<u64>,
+    stored_format: Option<String>,
+    stored_version: Option<u64>,
+    window_mode: Option<TerminalSavedWindowMode>,
+    bounds: Option<TerminalSavedBounds>,
+    display_uuid: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalWindowStateClear {
+    window_state_file: PathBuf,
+    removed_window_state_file: bool,
+    removed_window_state_file_byte_count: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TerminalSessionStatus {
     Missing,
@@ -3823,7 +3880,24 @@ enum TerminalSessionStatus {
     Invalid,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalWindowStateStatus {
+    Missing,
+    Ok,
+    Invalid,
+}
+
 impl TerminalSessionStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ok => "ok",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+impl TerminalWindowStateStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Missing => "missing",
@@ -5796,6 +5870,20 @@ enum TerminalSessionClearOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalWindowStateReportOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalWindowStateClearOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigBackupOutputFormat {
     #[default]
     Text,
@@ -6994,6 +7082,70 @@ impl TerminalSessionCommand {
     }
 }
 
+impl TerminalWindowStateCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalWindowStateCommandParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--window-state-report" => {
+                    if inline_value.is_some() {
+                        bail!("--window-state-report does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--window-state-report")?);
+                }
+                "--window-state-report-format" => {
+                    parser.report_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_window_state_option = true;
+                }
+                "--clear-window-state" => {
+                    if inline_value.is_some() {
+                        bail!("--clear-window-state does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--clear-window-state")?);
+                }
+                "--clear-window-state-format" => {
+                    parser.clear_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_window_state_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Report { path_options, .. } | Self::Clear { path_options, .. } => path_options,
+        }
+    }
+}
+
 #[derive(Default)]
 struct TerminalSupportBundleParser {
     path_options: TerminalPathCliOptions,
@@ -7073,6 +7225,16 @@ struct TerminalSessionCommandParser {
     clear_format: Option<String>,
 }
 
+#[derive(Default)]
+struct TerminalWindowStateCommandParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_window_state_option: bool,
+    pre_window_state_arg: Option<String>,
+    report_format: Option<String>,
+    clear_format: Option<String>,
+}
+
 impl TerminalSessionCommandParser {
     fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
         self.seen_session_option = true;
@@ -7132,6 +7294,72 @@ impl TerminalSessionCommandParser {
                 }
                 if self.clear_format.is_some() {
                     bail!("--clear-saved-session-format requires --clear-saved-session");
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+impl TerminalWindowStateCommandParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_window_state_option = true;
+        if let Some(arg) = &self.pre_window_state_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_window_state_option {
+            let mode = self.mode.unwrap_or("terminal window state command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_window_state_arg.is_none() {
+            self.pre_window_state_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalWindowStateCommand>> {
+        if !self.seen_window_state_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--window-state-report") => {
+                if self.clear_format.is_some() {
+                    bail!("--clear-window-state-format requires --clear-window-state");
+                }
+                Ok(Some(TerminalWindowStateCommand::Report {
+                    path_options,
+                    format: parse_window_state_report_output_format(self.report_format.as_deref())?,
+                }))
+            }
+            Some("--clear-window-state") => {
+                if self.report_format.is_some() {
+                    bail!("--window-state-report-format requires --window-state-report");
+                }
+                Ok(Some(TerminalWindowStateCommand::Clear {
+                    path_options,
+                    format: parse_window_state_clear_output_format(self.clear_format.as_deref())?,
+                }))
+            }
+            Some(mode) => bail!("unsupported terminal window state mode: {mode}"),
+            None => {
+                if self.report_format.is_some() {
+                    bail!("--window-state-report-format requires --window-state-report");
+                }
+                if self.clear_format.is_some() {
+                    bail!("--clear-window-state-format requires --clear-window-state");
                 }
                 Ok(None)
             }
@@ -10417,6 +10645,18 @@ fn main() {
         }
     }
 
+    match TerminalWindowStateCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_window_state_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalStartupConfigFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_startup_config_file_command(command);
@@ -11153,6 +11393,40 @@ fn run_terminal_session_command(command: TerminalSessionCommand) {
     }
 }
 
+fn run_terminal_window_state_command(command: TerminalWindowStateCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    let result = match command {
+        TerminalWindowStateCommand::Report {
+            path_options,
+            format,
+        } => terminal_window_state_report(&path_options.data_dir)
+            .and_then(|report| format_terminal_window_state_report(&report, format)),
+        TerminalWindowStateCommand::Clear {
+            path_options,
+            format,
+        } => clear_terminal_window_state(&path_options.data_dir)
+            .and_then(|clear| format_terminal_window_state_clear(&clear, format)),
+    };
+
+    match result {
+        Ok(output) => {
+            print!("{output}");
+            io::stdout()
+                .flush()
+                .expect("failed to flush terminal window state output");
+        }
+        Err(error) => {
+            eprintln!("failed to manage terminal window state: {error:#}");
+            io::stderr().flush().ok();
+            process::exit(2);
+        }
+    }
+}
+
 fn run_terminal_support_info(path_options: TerminalPathOptions) {
     gpui_platform::application()
         .with_assets(Assets)
@@ -11614,6 +11888,128 @@ fn read_terminal_window_state_file(path: &Path) -> Result<Option<TerminalWindowS
         .with_context(|| format!("failed to parse terminal window state {}", path.display()))?;
     validate_terminal_window_state(&state)?;
     Ok(Some(state))
+}
+
+fn terminal_window_state_report(data_dir: &Path) -> Result<TerminalWindowStateReport> {
+    let window_state_file = terminal_window_state_file(data_dir);
+    let metadata = match std_fs::metadata(&window_state_file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TerminalWindowStateReport {
+                window_state_file,
+                status: TerminalWindowStateStatus::Missing,
+                message: Some("no saved window state exists".into()),
+                window_state_file_exists: false,
+                window_state_file_byte_count: None,
+                saved_at_unix_seconds: None,
+                stored_format: None,
+                stored_version: None,
+                window_mode: None,
+                bounds: None,
+                display_uuid: None,
+            });
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal window state {}",
+                    window_state_file.display()
+                )
+            });
+        }
+    };
+
+    let mut report = TerminalWindowStateReport {
+        window_state_file: window_state_file.clone(),
+        status: TerminalWindowStateStatus::Invalid,
+        message: None,
+        window_state_file_exists: true,
+        window_state_file_byte_count: Some(metadata.len()),
+        saved_at_unix_seconds: None,
+        stored_format: None,
+        stored_version: None,
+        window_mode: None,
+        bounds: None,
+        display_uuid: None,
+    };
+
+    if !metadata.is_file() {
+        report.message = Some("window state path exists but is not a file".into());
+        return Ok(report);
+    }
+
+    let content = std_fs::read_to_string(&window_state_file).with_context(|| {
+        format!(
+            "failed to read terminal window state {}",
+            window_state_file.display()
+        )
+    })?;
+    match serde_json::from_str::<TerminalWindowState>(&content) {
+        Ok(state) => {
+            report.saved_at_unix_seconds = Some(state.saved_at_unix_seconds);
+            report.stored_format = Some(state.format.clone());
+            report.stored_version = Some(state.version);
+            report.window_mode = Some(state.window.state);
+            report.bounds = Some(state.window.bounds);
+            report.display_uuid = state.window.display_uuid.clone();
+            match validate_terminal_window_state(&state) {
+                Ok(()) => {
+                    report.status = TerminalWindowStateStatus::Ok;
+                    report.message = Some("saved window state is readable".into());
+                }
+                Err(error) => {
+                    report.status = TerminalWindowStateStatus::Invalid;
+                    report.message = Some(format!("invalid saved window state: {error}"));
+                }
+            }
+        }
+        Err(error) => {
+            report.status = TerminalWindowStateStatus::Invalid;
+            report.message = Some(format!("failed to parse window state: {error}"));
+        }
+    }
+
+    Ok(report)
+}
+
+fn clear_terminal_window_state(data_dir: &Path) -> Result<TerminalWindowStateClear> {
+    let window_state_file = terminal_window_state_file(data_dir);
+    let mut removed_window_state_file = false;
+    let mut removed_window_state_file_byte_count = None;
+
+    match std_fs::metadata(&window_state_file) {
+        Ok(metadata) if metadata.is_file() => {
+            removed_window_state_file_byte_count = Some(metadata.len());
+            std_fs::remove_file(&window_state_file).with_context(|| {
+                format!(
+                    "failed to remove terminal window state {}",
+                    window_state_file.display()
+                )
+            })?;
+            removed_window_state_file = true;
+        }
+        Ok(_) => {
+            bail!(
+                "terminal window state path {} exists but is not a file",
+                window_state_file.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal window state {}",
+                    window_state_file.display()
+                )
+            });
+        }
+    }
+
+    Ok(TerminalWindowStateClear {
+        window_state_file,
+        removed_window_state_file,
+        removed_window_state_file_byte_count,
+    })
 }
 
 fn write_terminal_window_state_file(
@@ -13837,6 +14233,30 @@ fn parse_session_clear_output_format(
         "json" => Ok(TerminalSessionClearOutputFormat::Json),
         format => {
             bail!("unsupported --clear-saved-session-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_window_state_report_output_format(
+    format: Option<&str>,
+) -> Result<TerminalWindowStateReportOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalWindowStateReportOutputFormat::Text),
+        "json" => Ok(TerminalWindowStateReportOutputFormat::Json),
+        format => {
+            bail!("unsupported --window-state-report-format {format:?}; expected text or json")
+        }
+    }
+}
+
+fn parse_window_state_clear_output_format(
+    format: Option<&str>,
+) -> Result<TerminalWindowStateClearOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalWindowStateClearOutputFormat::Text),
+        "json" => Ok(TerminalWindowStateClearOutputFormat::Json),
+        format => {
+            bail!("unsupported --clear-window-state-format {format:?}; expected text or json")
         }
     }
 }
@@ -23574,6 +23994,21 @@ fn write_session_report_file(path: &Path, report: &TerminalSessionReport) -> Res
         .with_context(|| format!("failed to write session report {}", path.display()))
 }
 
+fn write_window_state_report_file(path: &Path, report: &TerminalWindowStateReport) -> Result<()> {
+    let report = format_terminal_window_state_report_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create window state report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write window state report {}", path.display()))
+}
+
 fn write_config_initialization_report_file(
     path: &Path,
     initialization: &TerminalConfigInitialization,
@@ -24828,6 +25263,164 @@ fn format_terminal_session_clear_json(clear: &TerminalSessionClear) -> Result<St
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal session clear report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_terminal_window_state_report(
+    report: &TerminalWindowStateReport,
+    format: TerminalWindowStateReportOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalWindowStateReportOutputFormat::Text => {
+            Ok(format_terminal_window_state_report_text(report))
+        }
+        TerminalWindowStateReportOutputFormat::Json => {
+            format_terminal_window_state_report_json(report)
+        }
+    }
+}
+
+fn format_terminal_window_state_report_text(report: &TerminalWindowStateReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: {}", report.status.as_str())
+        .expect("writing to string should not fail");
+    if let Some(message) = &report.message {
+        writeln!(&mut output, "message: {message}").expect("writing to string should not fail");
+    }
+    writeln!(
+        &mut output,
+        "window_state_file: {}",
+        report.window_state_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "window_state_file_exists: {}",
+        report.window_state_file_exists
+    )
+    .expect("writing to string should not fail");
+    if let Some(byte_count) = report.window_state_file_byte_count {
+        writeln!(&mut output, "window_state_file_bytes: {byte_count}")
+            .expect("writing to string should not fail");
+    }
+    if let Some(saved_at_unix_seconds) = report.saved_at_unix_seconds {
+        writeln!(
+            &mut output,
+            "saved_at_unix_seconds: {saved_at_unix_seconds}"
+        )
+        .expect("writing to string should not fail");
+    }
+    if let Some(stored_format) = &report.stored_format {
+        writeln!(&mut output, "stored_format: {stored_format}")
+            .expect("writing to string should not fail");
+    }
+    if let Some(stored_version) = report.stored_version {
+        writeln!(&mut output, "stored_version: {stored_version}")
+            .expect("writing to string should not fail");
+    }
+    if let Some(window_mode) = report.window_mode {
+        writeln!(&mut output, "window_mode: {}", window_mode.as_str())
+            .expect("writing to string should not fail");
+    }
+    if let Some(bounds) = report.bounds {
+        writeln!(
+            &mut output,
+            "bounds: {},{},{},{}",
+            bounds.x, bounds.y, bounds.width, bounds.height
+        )
+        .expect("writing to string should not fail");
+    }
+    if let Some(display_uuid) = &report.display_uuid {
+        writeln!(&mut output, "display_uuid: {display_uuid}")
+            .expect("writing to string should not fail");
+    }
+    writeln!(&mut output, "metadata_only: true").expect("writing to string should not fail");
+    output
+}
+
+fn format_terminal_window_state_report_json(report: &TerminalWindowStateReport) -> Result<String> {
+    let bounds = report.bounds.map(|bounds| {
+        serde_json::json!({
+            "x": bounds.x,
+            "y": bounds.y,
+            "width": bounds.width,
+            "height": bounds.height,
+        })
+    });
+    let value = serde_json::json!({
+        "format": TERMINAL_WINDOW_STATE_FORMAT,
+        "version": TERMINAL_WINDOW_STATE_VERSION,
+        "status": report.status.as_str(),
+        "message": report.message,
+        "window_state_file": report.window_state_file.display().to_string(),
+        "window_state_file_exists": report.window_state_file_exists,
+        "window_state_file_byte_count": report.window_state_file_byte_count,
+        "saved_at_unix_seconds": report.saved_at_unix_seconds,
+        "stored_format": report.stored_format,
+        "stored_version": report.stored_version,
+        "window_mode": report.window_mode.map(TerminalSavedWindowMode::as_str),
+        "bounds": bounds,
+        "display_uuid": report.display_uuid,
+        "privacy": {
+            "includes_terminal_buffer_contents": false,
+            "includes_window_state_contents": false,
+            "metadata_only": true,
+        },
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal window state report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_terminal_window_state_clear(
+    clear: &TerminalWindowStateClear,
+    format: TerminalWindowStateClearOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalWindowStateClearOutputFormat::Text => {
+            Ok(format_terminal_window_state_clear_text(clear))
+        }
+        TerminalWindowStateClearOutputFormat::Json => {
+            format_terminal_window_state_clear_json(clear)
+        }
+    }
+}
+
+fn format_terminal_window_state_clear_text(clear: &TerminalWindowStateClear) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "window_state_file: {}",
+        clear.window_state_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_window_state_file: {}",
+        clear.removed_window_state_file
+    )
+    .expect("writing to string should not fail");
+    if let Some(byte_count) = clear.removed_window_state_file_byte_count {
+        writeln!(&mut output, "removed_window_state_file_bytes: {byte_count}")
+            .expect("writing to string should not fail");
+    }
+    output
+}
+
+fn format_terminal_window_state_clear_json(clear: &TerminalWindowStateClear) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "format": TERMINAL_WINDOW_STATE_FORMAT,
+        "version": TERMINAL_WINDOW_STATE_VERSION,
+        "window_state_file": clear.window_state_file.display().to_string(),
+        "removed_window_state_file": clear.removed_window_state_file,
+        "removed_window_state_file_byte_count": clear.removed_window_state_file_byte_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal window state clear report as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -26644,6 +27237,16 @@ fn active_terminal_window_state_file() -> PathBuf {
     terminal_window_state_file(paths::data_dir())
 }
 
+fn terminal_window_state_report_file(data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("logs")
+        .join(TERMINAL_WINDOW_STATE_REPORT_FILE)
+}
+
+fn active_terminal_window_state_report_file() -> PathBuf {
+    terminal_window_state_report_file(paths::data_dir())
+}
+
 fn active_terminal_config_initialization_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
 }
@@ -26935,6 +27538,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_support_bundle_directory);
     cx.on_action(open_support_bundle_manifest_file);
     cx.on_action(open_session_report);
+    cx.on_action(open_window_state_report);
     cx.on_action(open_config_initialization_report);
     cx.on_action(open_config_bundle_backup_file);
     cx.on_action(open_config_bundle_backup_directory);
@@ -27215,6 +27819,8 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<RestoreKeymapBackup>(),
         TerminalActionSurface::new::<OpenSessionReport>(),
         TerminalActionSurface::new::<ClearSavedSession>(),
+        TerminalActionSurface::new::<OpenWindowStateReport>(),
+        TerminalActionSurface::new::<ClearSavedWindowState>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -28235,6 +28841,8 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
         MenuItem::action("Open Session Report", OpenSessionReport),
         MenuItem::action("Clear Saved Session...", ClearSavedSession),
+        MenuItem::action("Open Window State Report", OpenWindowStateReport),
+        MenuItem::action("Clear Saved Window State...", ClearSavedWindowState),
         MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
         MenuItem::action(
             "Open Support Bundle Manifest File",
@@ -28300,6 +28908,7 @@ struct TerminalWindowRoot {
     window_state_file: PathBuf,
     latest_window_state: Option<TerminalWindowState>,
     window_state_save_task_queued: Option<Task<()>>,
+    window_state_save_disabled: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -28337,6 +28946,7 @@ impl TerminalWindowRoot {
             window_state_file,
             latest_window_state: None,
             window_state_save_task_queued: None,
+            window_state_save_disabled: false,
             _subscriptions,
         };
         root.capture_window_state(window, cx);
@@ -28344,10 +28954,16 @@ impl TerminalWindowRoot {
     }
 
     fn capture_window_state(&mut self, window: &Window, cx: &App) {
+        if self.window_state_save_disabled {
+            return;
+        }
         self.latest_window_state = Some(terminal_window_state_from_window(window, cx));
     }
 
     fn queue_window_state_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.window_state_save_disabled {
+            return;
+        }
         self.capture_window_state(window, cx);
         if self.window_state_save_task_queued.is_some() {
             return;
@@ -28366,6 +28982,9 @@ impl TerminalWindowRoot {
     }
 
     fn write_latest_window_state(&self, cx: &mut App) -> Task<Result<()>> {
+        if self.window_state_save_disabled {
+            return Task::ready(Ok(()));
+        }
         let Some(state) = self.latest_window_state.clone() else {
             return Task::ready(Ok(()));
         };
@@ -28375,6 +28994,38 @@ impl TerminalWindowRoot {
             self.fs.clone(),
             cx.background_executor().clone(),
         )
+    }
+
+    fn clear_saved_window_state(&mut self, cx: &mut App) {
+        self.window_state_save_disabled = true;
+        self.latest_window_state = None;
+        self.window_state_save_task_queued.take();
+        match clear_terminal_window_state(paths::data_dir()) {
+            Ok(clear) => {
+                let report = TerminalWindowStateReport {
+                    window_state_file: clear.window_state_file.clone(),
+                    status: TerminalWindowStateStatus::Missing,
+                    message: Some("saved window state was cleared".into()),
+                    window_state_file_exists: false,
+                    window_state_file_byte_count: None,
+                    saved_at_unix_seconds: None,
+                    stored_format: None,
+                    stored_version: None,
+                    window_mode: None,
+                    bounds: None,
+                    display_uuid: None,
+                };
+                let report_file = active_terminal_window_state_report_file();
+                if let Err(error) = write_window_state_report_file(&report_file, &report) {
+                    log::warn!("failed to write window state clear report file: {error:#}");
+                    return;
+                }
+                cx.open_with_system(&report_file);
+            }
+            Err(error) => {
+                log::warn!("failed to clear saved window state: {error:#}");
+            }
+        }
     }
 }
 
@@ -28457,6 +29108,39 @@ impl Render for TerminalWindowRoot {
                         cx,
                     );
                 })
+                .capture_action(cx.listener(
+                    |_root, _: &ClearSavedWindowState, window, cx| {
+                        let prompt = window.prompt(
+                            PromptLevel::Warning,
+                            "Clear saved window state?",
+                            Some("This removes saved window geometry from the active data directory and stops this window from writing a replacement state when it closes. It does not close the current terminal window."),
+                            &["Clear Window State", "Cancel"],
+                            cx,
+                        );
+                        cx.spawn(async move |root, cx| {
+                            match prompt.await {
+                                Ok(0) => {
+                                    if let Err(error) =
+                                        root.update(cx, |root, cx| root.clear_saved_window_state(cx))
+                                    {
+                                        log::warn!(
+                                            "failed to update window root while clearing saved window state: {error:#}"
+                                        );
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    log::warn!(
+                                        "failed to confirm saved window state clearing: {error:?}"
+                                    );
+                                }
+                            }
+                            anyhow::Ok(())
+                        })
+                        .detach_and_log_err(cx);
+                        cx.stop_propagation();
+                    },
+                ))
                 .child(
                     div()
                         .flex()
@@ -30235,6 +30919,22 @@ fn open_session_report(_: &OpenSessionReport, cx: &mut App) {
         }
         Err(error) => {
             log::warn!("failed to generate session report: {error:#}");
+        }
+    }
+}
+
+fn open_window_state_report(_: &OpenWindowStateReport, cx: &mut App) {
+    let window_state_report_file = active_terminal_window_state_report_file();
+    match terminal_window_state_report(paths::data_dir()) {
+        Ok(report) => {
+            if let Err(error) = write_window_state_report_file(&window_state_report_file, &report) {
+                log::warn!("failed to write window state report file: {error:#}");
+                return;
+            }
+            cx.open_with_system(&window_state_report_file);
+        }
+        Err(error) => {
+            log::warn!("failed to generate window state report: {error:#}");
         }
     }
 }
@@ -32418,6 +33118,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &RestoreKeymapBackup);
         assert_command_palette_action_visible(&filter, &OpenSessionReport);
         assert_command_palette_action_visible(&filter, &ClearSavedSession);
+        assert_command_palette_action_visible(&filter, &OpenWindowStateReport);
+        assert_command_palette_action_visible(&filter, &ClearSavedWindowState);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -34139,6 +34841,16 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Window State Report",
+            "zed_terminal::OpenWindowStateReport",
+        );
+        assert_menu_action(
+            &items,
+            "Clear Saved Window State...",
+            "zed_terminal::ClearSavedWindowState",
+        );
+        assert_menu_action(
+            &items,
             "Open Support Bundle Directory",
             "zed_terminal::OpenSupportBundleDirectory",
         );
@@ -34214,6 +34926,8 @@ mod tests {
                 "Open Support Info Report",
                 "Open Session Report",
                 "Clear Saved Session...",
+                "Open Window State Report",
+                "Clear Saved Window State...",
                 "Open Support Bundle Directory",
                 "Open Support Bundle Manifest File",
                 "Copy Support Info",
@@ -35581,6 +36295,24 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<ClearSavedSession>()
+                .is_some()
+        );
+
+        let action = <OpenWindowStateReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open window state report action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenWindowStateReport>()
+                .is_some()
+        );
+
+        let action = <ClearSavedWindowState as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("clear saved window state action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<ClearSavedWindowState>()
                 .is_some()
         );
     }
@@ -40071,6 +40803,150 @@ mod tests {
             },
         };
         assert!(validate_terminal_window_state(&too_small).is_err());
+    }
+
+    #[test]
+    fn reports_missing_window_state_metadata() {
+        let root_dir = temp_test_dir();
+        let report = terminal_window_state_report(&root_dir)
+            .expect("window state report should build for missing file");
+
+        assert_eq!(report.status, TerminalWindowStateStatus::Missing);
+        assert!(!report.window_state_file_exists);
+        assert_eq!(
+            report.window_state_file,
+            terminal_window_state_file(&root_dir)
+        );
+
+        let output = format_terminal_window_state_report(
+            &report,
+            TerminalWindowStateReportOutputFormat::Json,
+        )
+        .expect("window state report should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("window state report json should parse");
+        assert_eq!(json["status"], "missing");
+        assert_eq!(json["privacy"]["includes_terminal_buffer_contents"], false);
+        assert_eq!(json["privacy"]["includes_window_state_contents"], false);
+        assert_eq!(json["privacy"]["metadata_only"], true);
+        assert!(output.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn reports_saved_window_state_metadata_without_raw_contents() {
+        let root_dir = temp_test_dir();
+        let state_file = terminal_window_state_file(&root_dir);
+        let state = TerminalWindowState {
+            format: TERMINAL_WINDOW_STATE_FORMAT.into(),
+            version: TERMINAL_WINDOW_STATE_VERSION,
+            saved_at_unix_seconds: 42,
+            window: TerminalSavedWindow {
+                state: TerminalSavedWindowMode::Maximized,
+                bounds: TerminalSavedBounds {
+                    x: 10,
+                    y: 20,
+                    width: 1200,
+                    height: 800,
+                },
+                display_uuid: Some("display-1".into()),
+            },
+        };
+        std_fs::write(
+            &state_file,
+            format_terminal_window_state_json(&state).expect("window state should format"),
+        )
+        .expect("failed to write window state");
+
+        let report = terminal_window_state_report(&root_dir).expect("window state should report");
+        assert_eq!(report.status, TerminalWindowStateStatus::Ok);
+        assert!(report.window_state_file_exists);
+        assert_eq!(report.saved_at_unix_seconds, Some(42));
+        assert_eq!(
+            report.stored_format.as_deref(),
+            Some(TERMINAL_WINDOW_STATE_FORMAT)
+        );
+        assert_eq!(report.stored_version, Some(TERMINAL_WINDOW_STATE_VERSION));
+        assert_eq!(report.window_mode, Some(TerminalSavedWindowMode::Maximized));
+        assert_eq!(report.bounds, Some(state.window.bounds));
+        assert_eq!(report.display_uuid.as_deref(), Some("display-1"));
+
+        let output = format_terminal_window_state_report(
+            &report,
+            TerminalWindowStateReportOutputFormat::Json,
+        )
+        .expect("window state report should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("window state report json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["window_mode"], "maximized");
+        assert_eq!(json["bounds"]["width"], 1200);
+        assert_eq!(json["display_uuid"], "display-1");
+        assert_eq!(json["privacy"]["includes_window_state_contents"], false);
+        assert!(!output.contains("\"window\":"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn clears_saved_window_state() {
+        let root_dir = temp_test_dir();
+        let state_file = terminal_window_state_file(&root_dir);
+        std_fs::write(
+            &state_file,
+            r#"{"format":"zed-terminal-window-state","version":1}"#,
+        )
+        .expect("failed to write window state");
+
+        let clear = clear_terminal_window_state(&root_dir).expect("window state clear should work");
+        assert!(clear.removed_window_state_file);
+        assert!(clear.removed_window_state_file_byte_count.is_some());
+        assert!(!state_file.exists());
+
+        let output =
+            format_terminal_window_state_clear(&clear, TerminalWindowStateClearOutputFormat::Json)
+                .expect("window state clear should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("window state clear json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["removed_window_state_file"], true);
+        assert!(output.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_window_state_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_WINDOW_STATE_REPORT_FILE);
+        let report = TerminalWindowStateReport {
+            window_state_file: PathBuf::from("window-state.json"),
+            status: TerminalWindowStateStatus::Missing,
+            message: Some("empty".into()),
+            window_state_file_exists: false,
+            window_state_file_byte_count: None,
+            saved_at_unix_seconds: None,
+            stored_format: None,
+            stored_version: None,
+            window_mode: None,
+            bounds: None,
+            display_uuid: None,
+        };
+
+        write_window_state_report_file(&report_file, &report)
+            .expect("window state report should write");
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read window state report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("window state report should parse");
+        assert_eq!(json["status"], "missing");
+        assert_eq!(json["message"], "empty");
+        assert_eq!(json["privacy"]["includes_window_state_contents"], false);
+
+        std_fs::remove_dir_all(root_dir).ok();
     }
 
     #[test]
@@ -53617,6 +54493,11 @@ mod tests {
         assert!(help.contains("--session-report-format <text|json>"));
         assert!(help.contains("--clear-saved-session"));
         assert!(help.contains("--clear-saved-session-format <text|json>"));
+        assert!(help.contains("Window state options:"));
+        assert!(help.contains("--window-state-report"));
+        assert!(help.contains("--window-state-report-format <text|json>"));
+        assert!(help.contains("--clear-window-state"));
+        assert!(help.contains("--clear-window-state-format <text|json>"));
         assert!(help.contains("Startup config backup and restore options:"));
         assert!(help.contains("--backup-startup-config --backup-startup-config-file <FILE>"));
         assert!(help.contains("--backup-startup-config-format <text|json>"));
@@ -54423,6 +55304,89 @@ mod tests {
             panic!("expected clear saved session mode");
         };
         assert_eq!(format, TerminalSessionClearOutputFormat::Json);
+    }
+
+    #[test]
+    fn window_state_report_format_json_is_carried_through_cli_resolution() {
+        let data_dir = PathBuf::from("data");
+        let config_dir = PathBuf::from("config");
+
+        let command = TerminalWindowStateCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--window-state-report",
+            "--window-state-report-format",
+            "json",
+        ])
+        .expect("window state report json mode should parse")
+        .expect("window state report json mode should resolve");
+
+        let TerminalWindowStateCommand::Report {
+            path_options,
+            format,
+        } = command
+        else {
+            panic!("expected window state report mode");
+        };
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalWindowStateReportOutputFormat::Json);
+    }
+
+    #[test]
+    fn clear_window_state_format_json_is_carried_through_cli_resolution() {
+        let command = TerminalWindowStateCommand::from_args([
+            "zed-terminal",
+            "--clear-window-state",
+            "--clear-window-state-format",
+            "json",
+        ])
+        .expect("clear window state json mode should parse")
+        .expect("clear window state json mode should resolve");
+
+        let TerminalWindowStateCommand::Clear { format, .. } = command else {
+            panic!("expected clear window state mode");
+        };
+        assert_eq!(format, TerminalWindowStateClearOutputFormat::Json);
+    }
+
+    #[test]
+    fn window_state_commands_reject_startup_only_and_cross_mode_arguments() {
+        let error = TerminalWindowStateCommand::from_args([
+            "zed-terminal",
+            "--window-state-report-format",
+            "json",
+        ])
+        .expect_err("window state report format should require report mode");
+        assert!(
+            format!("{error:#}")
+                .contains("--window-state-report-format requires --window-state-report")
+        );
+
+        let error = TerminalWindowStateCommand::from_args([
+            "zed-terminal",
+            "--window-state-report",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with window state report");
+        assert!(
+            format!("{error:#}").contains("--window-state-report cannot be used with --profile")
+        );
+
+        let error = TerminalWindowStateCommand::from_args([
+            "zed-terminal",
+            "--window-state-report",
+            "--clear-window-state",
+        ])
+        .expect_err("window state report and clear should conflict");
+        assert!(
+            format!("{error:#}")
+                .contains("--window-state-report cannot be used with --clear-window-state")
+        );
     }
 
     #[test]

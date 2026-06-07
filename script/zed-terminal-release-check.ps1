@@ -2185,6 +2185,11 @@ try {
                 "--session-report-format <text\|json>",
                 "--clear-saved-session",
                 "--clear-saved-session-format <text\|json>",
+                "Window state options:",
+                "--window-state-report",
+                "--window-state-report-format <text\|json>",
+                "--clear-window-state",
+                "--clear-window-state-format <text\|json>",
                 "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
@@ -2398,6 +2403,37 @@ try {
                 (Test-Path -LiteralPath $sessionBuffersDir)
             ) {
                 throw "zed-terminal --clear-saved-session did not remove saved session storage"
+            }
+            $windowStateFile = Join-Path $cliDataDir "window-state.json"
+            Set-Utf8NoBomContent -Path $windowStateFile -Value '{ "format": "zed-terminal-window-state", "version": 1, "saved_at_unix_seconds": 42, "window": { "state": "maximized", "bounds": { "x": 10, "y": 20, "width": 1200, "height": 800 }, "display_uuid": "release-display" } }'
+            $windowStateReportJson = Invoke-NativeJsonCommandResult "window-state-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--window-state-report",
+                "--window-state-report-format", "json"
+            )
+            if (
+                $windowStateReportJson.status -ne "ok" -or
+                $windowStateReportJson.privacy.includes_window_state_contents -ne $false -or
+                $windowStateReportJson.privacy.metadata_only -ne $true -or
+                $windowStateReportJson.window_mode -ne "maximized" -or
+                [int64]$windowStateReportJson.bounds.width -ne 1200 -or
+                ($windowStateReportJson | ConvertTo-Json -Depth 8) -match '"window":'
+            ) {
+                throw "zed-terminal --window-state-report did not return expected metadata-only window state diagnostics"
+            }
+            $windowStateClearJson = Invoke-NativeJsonCommandResult "clear-window-state" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--clear-window-state",
+                "--clear-window-state-format", "json"
+            )
+            if (
+                $windowStateClearJson.status -ne "ok" -or
+                $windowStateClearJson.removed_window_state_file -ne $true -or
+                (Test-Path -LiteralPath $windowStateFile)
+            ) {
+                throw "zed-terminal --clear-window-state did not remove saved window state"
             }
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,
