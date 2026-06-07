@@ -98,6 +98,10 @@ impl TerminalTab {
             .map(|bounds| bounds.size)
     }
 
+    pub fn pane_count(&self, _cx: &App) -> usize {
+        self.center.panes().len()
+    }
+
     pub fn split_terminal(
         &mut self,
         terminal: Entity<Terminal>,

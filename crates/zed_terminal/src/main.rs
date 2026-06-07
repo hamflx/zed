@@ -273,6 +273,7 @@ const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
 const TERMINAL_SHORTCUT_SMOKE_DIR_ENV: &str = "ZED_TERMINAL_SHORTCUT_SMOKE_DIR";
+const TERMINAL_SHORTCUT_SMOKE_STATUS_KEY: &str = "status";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_SETTINGS_SCHEMA_FILE: &str = "settings.schema.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
@@ -9550,6 +9551,15 @@ impl TerminalStartupSplitDirection {
             Self::Down => workspace::SplitDirection::Down,
             Self::Left => workspace::SplitDirection::Left,
             Self::Right => workspace::SplitDirection::Right,
+        }
+    }
+
+    fn from_workspace_split_direction(direction: workspace::SplitDirection) -> Self {
+        match direction {
+            workspace::SplitDirection::Up => Self::Up,
+            workspace::SplitDirection::Down => Self::Down,
+            workspace::SplitDirection::Left => Self::Left,
+            workspace::SplitDirection::Right => Self::Right,
         }
     }
 
@@ -26548,7 +26558,11 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn install_terminal_shortcut_smoke_driver(window_handle: AnyWindowHandle, cx: &mut App) {
+fn install_terminal_shortcut_smoke_driver(
+    window_handle: AnyWindowHandle,
+    workspace: WeakEntity<Workspace>,
+    cx: &mut App,
+) {
     let Some(smoke_dir) = env::var_os(TERMINAL_SHORTCUT_SMOKE_DIR_ENV).map(PathBuf::from) else {
         return;
     };
@@ -26617,6 +26631,53 @@ fn install_terminal_shortcut_smoke_driver(window_handle: AnyWindowHandle, cx: &m
                 continue;
             };
 
+            let command = lines.next().map(str::trim).unwrap_or("keystroke");
+            if command == TERMINAL_SHORTCUT_SMOKE_STATUS_KEY {
+                let result = window_handle.update(cx, |_, window, cx| {
+                    terminal_shortcut_smoke_status(&workspace, window, cx)
+                });
+                match result {
+                    Ok(Ok(status)) => {
+                        write_shortcut_smoke_response(
+                            &response_file,
+                            request_id,
+                            "ok",
+                            keystroke_text,
+                            &status,
+                        );
+                    }
+                    Ok(Err(error)) => {
+                        write_shortcut_smoke_response(
+                            &response_file,
+                            request_id,
+                            "error",
+                            keystroke_text,
+                            &format!("status failed: {error:#}"),
+                        );
+                    }
+                    Err(error) => {
+                        write_shortcut_smoke_response(
+                            &response_file,
+                            request_id,
+                            "error",
+                            keystroke_text,
+                            &format!("window update failed: {error:#}"),
+                        );
+                    }
+                }
+                continue;
+            }
+            if command != "keystroke" {
+                write_shortcut_smoke_response(
+                    &response_file,
+                    request_id,
+                    "error",
+                    keystroke_text,
+                    &format!("unsupported shortcut smoke command: {command}"),
+                );
+                continue;
+            }
+
             let keystroke = match Keystroke::parse(keystroke_text) {
                 Ok(keystroke) => keystroke,
                 Err(error) => {
@@ -26666,6 +26727,35 @@ fn install_terminal_shortcut_smoke_driver(window_handle: AnyWindowHandle, cx: &m
         }
     })
     .detach();
+}
+
+fn terminal_shortcut_smoke_status(
+    workspace: &WeakEntity<Workspace>,
+    window: &Window,
+    cx: &mut App,
+) -> Result<String> {
+    let status = workspace
+        .read_with(cx, |workspace, cx| {
+            let outer_pane_count = workspace.panes().len();
+            let active_outer_tab_count = workspace.active_pane().read(cx).items_len();
+            let active_terminal_inner_pane_count = workspace
+                .active_item_as::<TerminalTab>(cx)
+                .map(|terminal_tab| terminal_tab.read(cx).pane_count(cx))
+                .unwrap_or(0);
+            let command_palette_open = workspace
+                .active_modal::<command_palette::CommandPalette>(cx)
+                .is_some();
+            serde_json::json!({
+                "outer_pane_count": outer_pane_count,
+                "active_outer_tab_count": active_outer_tab_count,
+                "active_terminal_inner_pane_count": active_terminal_inner_pane_count,
+                "command_palette_open": command_palette_open,
+                "window_title": window.window_title(),
+            })
+            .to_string()
+        })
+        .context("failed to read zed terminal shortcut smoke status")?;
+    Ok(status)
 }
 
 fn write_shortcut_smoke_response(
@@ -27132,6 +27222,12 @@ impl Render for TerminalWindowRoot {
         let ui_font = theme_settings::setup_ui_font(window, cx);
         let text_color = cx.theme().colors().text;
         let workspace = self.workspace.clone();
+        let split_left_workspace = workspace.clone();
+        let split_right_workspace = workspace.clone();
+        let split_up_workspace = workspace.clone();
+        let split_down_workspace = workspace.clone();
+        let split_horizontal_workspace = workspace.clone();
+        let split_vertical_workspace = workspace.clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
         let root = workspace.update(cx, |workspace, cx| {
             workspace.actions(div().flex().flex_row().items_center(), window, cx)
@@ -27144,6 +27240,62 @@ impl Render for TerminalWindowRoot {
                 .size_full()
                 .font(ui_font)
                 .text_color(text_color)
+                .capture_action(move |action: &workspace::pane::SplitLeft, window, cx| {
+                    capture_legacy_terminal_split_action(
+                        split_left_workspace.clone(),
+                        action.mode,
+                        workspace::SplitDirection::Left,
+                        window,
+                        cx,
+                    );
+                })
+                .capture_action(move |action: &workspace::pane::SplitRight, window, cx| {
+                    capture_legacy_terminal_split_action(
+                        split_right_workspace.clone(),
+                        action.mode,
+                        workspace::SplitDirection::Right,
+                        window,
+                        cx,
+                    );
+                })
+                .capture_action(move |action: &workspace::pane::SplitUp, window, cx| {
+                    capture_legacy_terminal_split_action(
+                        split_up_workspace.clone(),
+                        action.mode,
+                        workspace::SplitDirection::Up,
+                        window,
+                        cx,
+                    );
+                })
+                .capture_action(move |action: &workspace::pane::SplitDown, window, cx| {
+                    capture_legacy_terminal_split_action(
+                        split_down_workspace.clone(),
+                        action.mode,
+                        workspace::SplitDirection::Down,
+                        window,
+                        cx,
+                    );
+                })
+                .capture_action(
+                    move |action: &workspace::pane::SplitHorizontal, window, cx| {
+                        capture_legacy_terminal_split_action(
+                            split_horizontal_workspace.clone(),
+                            action.mode,
+                            workspace::SplitDirection::horizontal(cx),
+                            window,
+                            cx,
+                        );
+                    },
+                )
+                .capture_action(move |action: &workspace::pane::SplitVertical, window, cx| {
+                    capture_legacy_terminal_split_action(
+                        split_vertical_workspace.clone(),
+                        action.mode,
+                        workspace::SplitDirection::vertical(cx),
+                        window,
+                        cx,
+                    );
+                })
                 .child(
                     div()
                         .flex()
@@ -27157,6 +27309,72 @@ impl Render for TerminalWindowRoot {
             cx,
             Tiling::default(),
         )
+    }
+}
+
+fn capture_legacy_terminal_split_action(
+    workspace: Entity<Workspace>,
+    mode: workspace::SplitMode,
+    direction: workspace::SplitDirection,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let handled = workspace.update(cx, |workspace, cx| {
+        if workspace.active_item_as::<TerminalTab>(cx).is_none() {
+            return false;
+        }
+
+        match mode {
+            workspace::SplitMode::ClonePane => {
+                duplicate_terminal_from_workspace_direction(
+                    workspace,
+                    window,
+                    cx,
+                    empty_launch_tab(),
+                    direction,
+                )
+                .detach_and_log_err(cx);
+                true
+            }
+            workspace::SplitMode::EmptyPane | workspace::SplitMode::MovePane => {
+                add_new_terminal_split_from_workspace_direction(
+                    workspace,
+                    window,
+                    cx,
+                    empty_launch_tab(),
+                    direction,
+                )
+                .detach_and_log_err(cx);
+                true
+            }
+        }
+    });
+
+    if handled {
+        cx.stop_propagation();
+    }
+}
+
+fn configure_terminal_workspace_container_panes(
+    workspace: &mut Workspace,
+    cx: &mut Context<Workspace>,
+) {
+    for pane in workspace.panes() {
+        pane.update(cx, |pane, cx| {
+            pane.set_can_split(Some(Arc::new(|_, _, _, _| false)));
+            pane.set_can_navigate(false, cx);
+        });
+    }
+}
+
+fn empty_launch_tab() -> LaunchTab {
+    LaunchTab {
+        working_directory: None,
+        command: None,
+        env: HashMap::default(),
+        title: None,
+        shell: None,
+        split: None,
     }
 }
 
@@ -27523,6 +27741,7 @@ fn open_terminal_window(
             let workspace = cx.new(|cx| {
                 let mut workspace =
                     Workspace::new(None, project.clone(), app_state.clone(), window, cx);
+                configure_terminal_workspace_container_panes(&mut workspace, cx);
                 let new_terminal_window_app_state = app_state.clone();
                 workspace.register_action({
                     let new_terminal_window = new_terminal_window.clone();
@@ -28115,7 +28334,7 @@ fn open_terminal_window(
                 workspace
             });
             let window_handle = window.window_handle();
-            install_terminal_shortcut_smoke_driver(window_handle, cx);
+            install_terminal_shortcut_smoke_driver(window_handle, workspace.downgrade(), cx);
             cx.subscribe(
                 &workspace,
                 move |_, event: &WorkspaceEvent, cx| match event {
@@ -28175,6 +28394,22 @@ fn add_new_terminal_split(
     add_launch_tab(workspace, window, cx, tab)
 }
 
+fn add_new_terminal_split_from_workspace_direction(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    tab: LaunchTab,
+    direction: workspace::SplitDirection,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    add_new_terminal_split(
+        workspace,
+        window,
+        cx,
+        tab,
+        TerminalStartupSplitDirection::from_workspace_split_direction(direction),
+    )
+}
+
 fn duplicate_terminal(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -28226,6 +28461,22 @@ fn duplicate_terminal(
     } else {
         add_terminal_tab_with_custom_title(workspace, window, cx, custom_title, create_terminal)
     }
+}
+
+fn duplicate_terminal_from_workspace_direction(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+    fallback_tab: LaunchTab,
+    direction: workspace::SplitDirection,
+) -> Task<Result<WeakEntity<Terminal>>> {
+    duplicate_terminal(
+        workspace,
+        window,
+        cx,
+        fallback_tab,
+        Some(TerminalStartupSplitDirection::from_workspace_split_direction(direction)),
+    )
 }
 
 fn add_launch_tab(

@@ -857,6 +857,87 @@ function Invoke-GpuiShortcutSmokeKeystroke {
     throw "Timed out waiting for GPUI shortcut smoke response for '$Keystroke'. request=$requestFile response=$responseFile"
 }
 
+function Invoke-GpuiShortcutSmokeStatus {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$Step,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $requestFile = Join-Path $ShortcutSmokeDir "shortcut-smoke-request.txt"
+    $responseFile = Join-Path $ShortcutSmokeDir "shortcut-smoke-response.txt"
+    $requestId = "{0:000}-status-{1}" -f $Step, ([guid]::NewGuid().ToString("N").Substring(0, 8))
+    $requestText = "$requestId`nstatus`nstatus`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($requestFile, $requestText, $utf8NoBom)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if ($Process.HasExited) {
+            throw "zed-terminal exited while waiting for GPUI shortcut smoke status. Exit code: $($Process.ExitCode)"
+        }
+
+        if (Test-Path -LiteralPath $responseFile -PathType Leaf) {
+            $response = Read-KeyValueFile -Path $responseFile
+            if ($response["id"] -eq $requestId) {
+                if ($response["status"] -ne "ok") {
+                    throw "GPUI shortcut smoke status failed: $($response["message"])"
+                }
+                return $response["message"] | ConvertFrom-Json
+            }
+        }
+
+        Start-Sleep -Milliseconds 50
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timed out waiting for GPUI shortcut smoke status. request=$requestFile response=$responseFile"
+}
+
+function Wait-ZedTerminalShortcutState {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen,
+        [Parameter(Mandatory = $true)][int]$Step,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastStatus = $null
+    do {
+        $lastStatus = Invoke-GpuiShortcutSmokeStatus `
+            -Process $Process `
+            -ShortcutSmokeDir $ShortcutSmokeDir `
+            -Step $Step `
+            -TimeoutSeconds $TimeoutSeconds
+
+        if (
+            $lastStatus.outer_pane_count -eq $ExpectedOuterPaneCount -and
+            $lastStatus.active_outer_tab_count -eq $ExpectedOuterTabCount -and
+            $lastStatus.active_terminal_inner_pane_count -eq $ExpectedInnerPaneCount -and
+            [bool]$lastStatus.command_palette_open -eq $ExpectedCommandPaletteOpen
+        ) {
+            return [PSCustomObject]@{
+                Name = $Name
+                OuterPaneCount = [int]$lastStatus.outer_pane_count
+                OuterTabCount = [int]$lastStatus.active_outer_tab_count
+                InnerPaneCount = [int]$lastStatus.active_terminal_inner_pane_count
+                CommandPaletteOpen = [bool]$lastStatus.command_palette_open
+            }
+        }
+
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $lastStatusJson = if ($lastStatus) { $lastStatus | ConvertTo-Json -Compress } else { "<none>" }
+    throw "Timed out waiting for shortcut state '$Name'. Expected outer_pane_count=$ExpectedOuterPaneCount active_outer_tab_count=$ExpectedOuterTabCount active_terminal_inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen. Last status: $lastStatusJson"
+}
+
 function Invoke-ZedTerminalShortcutInput {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -922,56 +1003,58 @@ function Invoke-ZedTerminalShortcutVerification {
 
     $captures = New-Object System.Collections.Generic.List[object]
     $comparisons = New-Object System.Collections.Generic.List[object]
+    $states = New-Object System.Collections.Generic.List[object]
 
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "00-initial" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 100 -TimeoutSeconds $TimeoutSeconds))
     $initial = Save-ShortcutScreenshot -Window $Window -Name "00-initial" -RunDir $RunDir
     $captures.Add($initial)
     $inputMode = $null
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_T -Keystroke "ctrl-shift-t" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 1 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 1600
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-shift-t-new-tab" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 101 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $newTab = Save-ShortcutScreenshot -Window $Window -Name "01-ctrl-shift-t-new-tab" -RunDir $RunDir
     $captures.Add($newTab)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $newTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_PLUS -Keystroke "alt-shift-plus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 2 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 2200
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "02-alt-shift-plus-split-right" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 2 -ExpectedCommandPaletteOpen $false -Step 102 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $splitRight = Save-ShortcutScreenshot -Window $Window -Name "02-alt-shift-plus-split-right" -RunDir $RunDir
     $captures.Add($splitRight)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $splitRight -MinimumDifferentPixelRatio 0.003 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_MINUS -Keystroke "alt-shift-minus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 3 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 2200
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "03-alt-shift-minus-split-down" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 3 -ExpectedCommandPaletteOpen $false -Step 103 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $splitDown = Save-ShortcutScreenshot -Window $Window -Name "03-alt-shift-minus-split-down" -RunDir $RunDir
     $captures.Add($splitDown)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitRight -After $splitDown -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_D -Keystroke "alt-shift-d" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 4 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 2200
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "04-alt-shift-d-duplicate-split" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 4 -ExpectedCommandPaletteOpen $false -Step 104 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $duplicateSplit = Save-ShortcutScreenshot -Window $Window -Name "04-alt-shift-d-duplicate-split" -RunDir $RunDir
     $captures.Add($duplicateSplit)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitDown -After $duplicateSplit -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_P -Keystroke "ctrl-shift-p" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 5 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 1600
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "05-ctrl-shift-p-command-palette" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 4 -ExpectedCommandPaletteOpen $true -Step 105 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $commandPalette = Save-ShortcutScreenshot -Window $Window -Name "05-ctrl-shift-p-command-palette" -RunDir $RunDir
     $captures.Add($commandPalette)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $duplicateSplit -After $commandPalette -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 6 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 800
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "06-escape-close-command-palette" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 4 -ExpectedCommandPaletteOpen $false -Step 106 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $paletteClosed = Save-ShortcutScreenshot -Window $Window -Name "06-escape-close-command-palette" -RunDir $RunDir
     $captures.Add($paletteClosed)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $commandPalette -After $paletteClosed -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 7 -TimeoutSeconds $TimeoutSeconds
-    Start-Sleep -Milliseconds 1600
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "07-ctrl-shift-w-close-pane" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 3 -ExpectedCommandPaletteOpen $false -Step 107 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $closePane = Save-ShortcutScreenshot -Window $Window -Name "07-ctrl-shift-w-close-pane" -RunDir $RunDir
     $captures.Add($closePane)
@@ -980,6 +1063,7 @@ function Invoke-ZedTerminalShortcutVerification {
     return [PSCustomObject]@{
         Captures = $captures
         Comparisons = $comparisons
+        States = $states
         FinalWindow = $Window
         InputMode = $inputMode
     }
@@ -1260,6 +1344,12 @@ try {
         Write-Output "shortcut_input_mode: $($shortcutVerification.InputMode)"
         Write-Output "shortcut_startup_config_file: $shortcutStartupConfigFile"
         Write-Output "visible_top_level_windows: 1"
+        foreach ($state in $shortcutVerification.States) {
+            Write-Output "shortcut_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"
+            Write-Output "shortcut_state_$($state.Name)_outer_tab_count: $($state.OuterTabCount)"
+            Write-Output "shortcut_state_$($state.Name)_inner_pane_count: $($state.InnerPaneCount)"
+            Write-Output "shortcut_state_$($state.Name)_command_palette_open: $($state.CommandPaletteOpen)"
+        }
         foreach ($capture in $shortcutVerification.Captures) {
             Write-Output "shortcut_capture_$($capture.Name): $($capture.Path)"
             Write-Output "shortcut_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
