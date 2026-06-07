@@ -29,11 +29,12 @@ use gpui::prelude::{
     Styled as _,
 };
 use gpui::{
-    Action, AnyWindowHandle, App, AppContext as _, Axis, Bounds, ClipboardItem, Context,
-    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyContext, Keymap,
-    Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel, SharedString,
-    SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity, Window, WindowBounds,
-    WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind, point, px, size,
+    Action, AnyWindowHandle, App, AppContext as _, Axis, BackgroundExecutor, Bounds, ClipboardItem,
+    Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyContext,
+    Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel, SharedString,
+    Subscription, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity, Window,
+    WindowBounds, WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind, point,
+    px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -291,6 +292,7 @@ const TERMINAL_SESSION_DIR: &str = "session";
 const TERMINAL_SESSION_FILE: &str = "session.json";
 const TERMINAL_SESSION_BUFFERS_DIR: &str = "session-buffers";
 const TERMINAL_SESSION_REPORT_FILE: &str = "zed-terminal-session.json";
+const TERMINAL_WINDOW_STATE_FILE: &str = "window-state.json";
 const TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE: &str = "zed-terminal-config-initialization.json";
 const TERMINAL_CONFIG_BUNDLE_BACKUP_DIR: &str = "zed-terminal-config-bundles";
 const TERMINAL_CONFIG_BUNDLE_BACKUPS_REPORT_FILE: &str = "zed-terminal-config-bundle-backups.json";
@@ -340,6 +342,8 @@ const TERMINAL_CONFIG_BUNDLE_FORMAT: &str = "zed-terminal-config-bundle";
 const TERMINAL_CONFIG_BUNDLE_VERSION: u64 = 1;
 const TERMINAL_SUPPORT_BUNDLE_FORMAT: &str = "zed-terminal-support-bundle";
 const TERMINAL_SUPPORT_BUNDLE_VERSION: u64 = 1;
+const TERMINAL_WINDOW_STATE_FORMAT: &str = "zed-terminal-window-state";
+const TERMINAL_WINDOW_STATE_VERSION: u64 = 1;
 const TERMINAL_SESSION_FORMAT: &str = "zed-terminal-session";
 const TERMINAL_SESSION_VERSION: u64 = 1;
 const TERMINAL_SETTINGS_BACKUP_FORMAT: &str = "zed-terminal-settings-backup";
@@ -3714,6 +3718,38 @@ struct TerminalPathReport {
     session_file: PathBuf,
     session_buffers_dir: PathBuf,
     session_report_file: PathBuf,
+    window_state_file: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+struct TerminalWindowState {
+    format: String,
+    version: u64,
+    saved_at_unix_seconds: u64,
+    window: TerminalSavedWindow,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+struct TerminalSavedWindow {
+    state: TerminalSavedWindowMode,
+    bounds: TerminalSavedBounds,
+    display_uuid: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalSavedWindowMode {
+    Windowed,
+    Maximized,
+    Fullscreen,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct TerminalSavedBounds {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11527,6 +11563,191 @@ fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathRepor
         session_file: terminal_session_file(&path_options.data_dir),
         session_buffers_dir: terminal_session_buffers_dir(&path_options.data_dir),
         session_report_file: terminal_session_report_file(&path_options.data_dir),
+        window_state_file: terminal_window_state_file(&path_options.data_dir),
+    }
+}
+
+fn load_terminal_window_bounds(data_dir: &Path, cx: &App) -> Option<WindowBounds> {
+    let path = terminal_window_state_file(data_dir);
+    match read_terminal_window_state_file(&path) {
+        Ok(Some(state)) => match terminal_window_state_bounds(&state, cx) {
+            Some(bounds) => Some(bounds),
+            None => {
+                log::warn!(
+                    "ignoring saved terminal window state {} because it is not visible on the current displays",
+                    path.display()
+                );
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            log::warn!(
+                "failed to load terminal window state {}: {error:#}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+fn read_terminal_window_state_file(path: &Path) -> Result<Option<TerminalWindowState>> {
+    let metadata = match std_fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect terminal window state {}", path.display())
+            });
+        }
+    };
+    if !metadata.is_file() {
+        bail!(
+            "terminal window state path {} exists but is not a file",
+            path.display()
+        );
+    }
+
+    let content = std_fs::read_to_string(path)
+        .with_context(|| format!("failed to read terminal window state {}", path.display()))?;
+    let state = serde_json::from_str::<TerminalWindowState>(&content)
+        .with_context(|| format!("failed to parse terminal window state {}", path.display()))?;
+    validate_terminal_window_state(&state)?;
+    Ok(Some(state))
+}
+
+fn write_terminal_window_state_file(
+    path: PathBuf,
+    state: TerminalWindowState,
+    fs: Arc<dyn fs::Fs>,
+    executor: BackgroundExecutor,
+) -> Task<Result<()>> {
+    let content = match format_terminal_window_state_json(&state) {
+        Ok(content) => content,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    executor.spawn(async move {
+        if let Some(parent) = path.parent() {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create terminal window state directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs.atomic_write(path.clone(), content)
+            .await
+            .with_context(|| format!("failed to write terminal window state {}", path.display()))
+    })
+}
+
+fn format_terminal_window_state_json(state: &TerminalWindowState) -> Result<String> {
+    validate_terminal_window_state(state)?;
+    let mut output = serde_json::to_string_pretty(state)
+        .context("failed to serialize terminal window state as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn validate_terminal_window_state(state: &TerminalWindowState) -> Result<()> {
+    if state.format != TERMINAL_WINDOW_STATE_FORMAT {
+        bail!(
+            "unsupported terminal window state format {:?}; expected {:?}",
+            state.format,
+            TERMINAL_WINDOW_STATE_FORMAT
+        );
+    }
+    if state.version != TERMINAL_WINDOW_STATE_VERSION {
+        bail!(
+            "unsupported terminal window state version {}; expected {}",
+            state.version,
+            TERMINAL_WINDOW_STATE_VERSION
+        );
+    }
+    validate_terminal_saved_bounds(state.window.bounds)?;
+    Ok(())
+}
+
+fn terminal_window_state_from_window(window: &Window, cx: &App) -> TerminalWindowState {
+    let display_uuid = window
+        .display(cx)
+        .and_then(|display| display.uuid().ok())
+        .map(|uuid| uuid.to_string());
+    let window_bounds = window.inner_window_bounds();
+    TerminalWindowState {
+        format: TERMINAL_WINDOW_STATE_FORMAT.into(),
+        version: TERMINAL_WINDOW_STATE_VERSION,
+        saved_at_unix_seconds: terminal_unix_timestamp_seconds(),
+        window: TerminalSavedWindow {
+            state: match window_bounds {
+                WindowBounds::Windowed(_) => TerminalSavedWindowMode::Windowed,
+                WindowBounds::Maximized(_) => TerminalSavedWindowMode::Maximized,
+                WindowBounds::Fullscreen(_) => TerminalSavedWindowMode::Fullscreen,
+            },
+            bounds: TerminalSavedBounds::from(window_bounds.get_bounds()),
+            display_uuid,
+        },
+    }
+}
+
+fn terminal_window_state_bounds(state: &TerminalWindowState, cx: &App) -> Option<WindowBounds> {
+    if validate_terminal_window_state(state).is_err() {
+        return None;
+    }
+    let bounds = Bounds::from(state.window.bounds);
+    if !terminal_window_bounds_are_visible(bounds, cx) {
+        return None;
+    }
+    Some(match state.window.state {
+        TerminalSavedWindowMode::Windowed => WindowBounds::Windowed(bounds),
+        TerminalSavedWindowMode::Maximized => WindowBounds::Maximized(bounds),
+        TerminalSavedWindowMode::Fullscreen => WindowBounds::Fullscreen(bounds),
+    })
+}
+
+fn terminal_window_bounds_are_visible(bounds: Bounds<Pixels>, cx: &App) -> bool {
+    validate_terminal_saved_bounds(bounds.into()).is_ok()
+        && cx
+            .displays()
+            .iter()
+            .any(|display| bounds.intersects(&display.visible_bounds()))
+}
+
+fn validate_terminal_saved_bounds(bounds: TerminalSavedBounds) -> Result<()> {
+    if bounds.width < 360 || bounds.height < 240 {
+        bail!(
+            "terminal window state bounds are too small: {}x{}",
+            bounds.width,
+            bounds.height
+        );
+    }
+    if bounds.width > 20000 || bounds.height > 20000 {
+        bail!(
+            "terminal window state bounds are too large: {}x{}",
+            bounds.width,
+            bounds.height
+        );
+    }
+    Ok(())
+}
+
+impl From<Bounds<Pixels>> for TerminalSavedBounds {
+    fn from(bounds: Bounds<Pixels>) -> Self {
+        Self {
+            x: f32::from(bounds.origin.x).round() as i32,
+            y: f32::from(bounds.origin.y).round() as i32,
+            width: f32::from(bounds.size.width).round() as i32,
+            height: f32::from(bounds.size.height).round() as i32,
+        }
+    }
+}
+
+impl From<TerminalSavedBounds> for Bounds<Pixels> {
+    fn from(bounds: TerminalSavedBounds) -> Self {
+        Bounds::new(
+            point(px(bounds.x as f32), px(bounds.y as f32)),
+            size(px(bounds.width as f32), px(bounds.height as f32)),
+        )
     }
 }
 
@@ -24021,6 +24242,12 @@ fn format_terminal_paths(report: &TerminalPathReport) -> String {
         report.session_report_file.display()
     )
     .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "window_state_file: {}",
+        report.window_state_file.display()
+    )
+    .expect("writing to string should not fail");
     output
 }
 
@@ -24145,6 +24372,7 @@ fn format_support_bundle_manifest_json(
             "includes_environment_values": false,
             "includes_terminal_buffer_contents": false,
             "includes_saved_session_contents": false,
+            "includes_window_state_contents": false,
             "file_metadata_only": true,
         },
         "files": files
@@ -24174,6 +24402,7 @@ fn format_support_bundle_file_metadata_json(paths: &TerminalPathReport) -> Resul
             "includes_environment_values": false,
             "includes_terminal_buffer_contents": false,
             "includes_saved_session_contents": false,
+            "includes_window_state_contents": false,
         },
         "files": support_bundle_metadata_paths(paths)
             .into_iter()
@@ -24212,6 +24441,7 @@ fn support_bundle_metadata_paths(paths: &TerminalPathReport) -> Vec<(&'static st
         ("session_file", paths.session_file.clone()),
         ("session_buffers_dir", paths.session_buffers_dir.clone()),
         ("session_report_file", paths.session_report_file.clone()),
+        ("window_state_file", paths.window_state_file.clone()),
         ("logs_dir", paths.logs_dir.clone()),
         ("config_dir", paths.config_dir.clone()),
         ("data_dir", paths.data_dir.clone()),
@@ -24269,6 +24499,11 @@ fn format_support_bundle_readme() -> String {
     writeln!(
         &mut output,
         "Saved session files and buffer snapshots are reported as metadata paths only; their contents are not copied into this bundle."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "Window state is reported as file metadata only; it contains window geometry and does not include terminal contents."
     )
     .expect("writing to string should not fail");
     writeln!(&mut output).expect("writing to string should not fail");
@@ -24412,6 +24647,7 @@ fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
         "session_file": report.session_file.display().to_string(),
         "session_buffers_dir": report.session_buffers_dir.display().to_string(),
         "session_report_file": report.session_report_file.display().to_string(),
+        "window_state_file": report.window_state_file.display().to_string(),
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal paths as json")?;
@@ -26400,6 +26636,14 @@ fn active_terminal_session_report_file() -> PathBuf {
     terminal_session_report_file(paths::data_dir())
 }
 
+fn terminal_window_state_file(data_dir: &Path) -> PathBuf {
+    data_dir.join(TERMINAL_WINDOW_STATE_FILE)
+}
+
+fn active_terminal_window_state_file() -> PathBuf {
+    terminal_window_state_file(paths::data_dir())
+}
+
 fn active_terminal_config_initialization_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
 }
@@ -26440,6 +26684,10 @@ fn terminal_config_bundle_backup_file_name(timestamp_seconds: u64, suffix: Optio
 }
 
 fn terminal_config_bundle_backup_timestamp_seconds() -> u64 {
+    terminal_unix_timestamp_seconds()
+}
+
+fn terminal_unix_timestamp_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -28021,13 +28269,23 @@ fn build_window_options(_: Option<uuid::Uuid>, cx: &mut App) -> WindowOptions {
 }
 
 fn zed_terminal_window_options(bounds: Option<Bounds<Pixels>>, cx: &mut App) -> WindowOptions {
+    let window_bounds = bounds
+        .map(WindowBounds::Windowed)
+        .or_else(|| load_terminal_window_bounds(paths::data_dir(), cx))
+        .or_else(|| {
+            Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+                cx,
+            )))
+        });
     WindowOptions {
         titlebar: Some(gpui::TitlebarOptions {
             title: Some(SharedString::from(APP_TITLE)),
             appears_transparent: true,
             traffic_light_position: Some(point(px(9.0), px(9.0))),
         }),
-        window_bounds: bounds.map(WindowBounds::Windowed),
+        window_bounds,
         window_background: cx.theme().window_background_appearance(),
         app_id: Some(TERMINAL_APP_NAME_LOWERCASE.to_owned()),
         window_decorations: Some(WindowDecorations::Client),
@@ -28038,11 +28296,85 @@ fn zed_terminal_window_options(bounds: Option<Bounds<Pixels>>, cx: &mut App) -> 
 
 struct TerminalWindowRoot {
     workspace: Entity<Workspace>,
+    fs: Arc<dyn fs::Fs>,
+    window_state_file: PathBuf,
+    latest_window_state: Option<TerminalWindowState>,
+    window_state_save_task_queued: Option<Task<()>>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl TerminalWindowRoot {
-    fn new(workspace: Entity<Workspace>) -> Self {
-        Self { workspace }
+    fn new(
+        workspace: Entity<Workspace>,
+        fs: Arc<dyn fs::Fs>,
+        window_state_file: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let _subscriptions = vec![
+            cx.observe_window_bounds(window, |root, window, cx| {
+                root.queue_window_state_save(window, cx);
+            }),
+            cx.on_release_in(window, |root, window, cx| {
+                root.capture_window_state(window, cx);
+                root.window_state_save_task_queued.take();
+                root.write_latest_window_state(cx).detach_and_log_err(cx);
+            }),
+            cx.on_app_quit(|root, cx| {
+                root.window_state_save_task_queued.take();
+                let task = root.write_latest_window_state(cx);
+                async move {
+                    if let Err(error) = task.await {
+                        log::warn!("failed to save terminal window state on quit: {error:#}");
+                    }
+                }
+            }),
+        ];
+
+        let mut root = Self {
+            workspace,
+            fs,
+            window_state_file,
+            latest_window_state: None,
+            window_state_save_task_queued: None,
+            _subscriptions,
+        };
+        root.capture_window_state(window, cx);
+        root
+    }
+
+    fn capture_window_state(&mut self, window: &Window, cx: &App) {
+        self.latest_window_state = Some(terminal_window_state_from_window(window, cx));
+    }
+
+    fn queue_window_state_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_window_state(window, cx);
+        if self.window_state_save_task_queued.is_some() {
+            return;
+        }
+
+        self.window_state_save_task_queued = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+            this.update(cx, |this, cx| {
+                this.write_latest_window_state(cx).detach_and_log_err(cx);
+                this.window_state_save_task_queued.take();
+            })
+            .ok();
+        }));
+    }
+
+    fn write_latest_window_state(&self, cx: &mut App) -> Task<Result<()>> {
+        let Some(state) = self.latest_window_state.clone() else {
+            return Task::ready(Ok(()));
+        };
+        write_terminal_window_state_file(
+            self.window_state_file.clone(),
+            state,
+            self.fs.clone(),
+            cx.background_executor().clone(),
+        )
     }
 }
 
@@ -28519,8 +28851,6 @@ fn open_terminal_window(
     launch_options: LaunchOptions,
     cx: &mut App,
 ) -> Result<()> {
-    let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
-    let bounds = Bounds::centered(None, window_size, cx);
     let startup_working_directories = launch_options.startup_working_directories();
     let new_terminal_window = launch_options.runtime_new_window_options();
     let new_terminal_tab = launch_options.new_terminal_tab.clone();
@@ -28537,7 +28867,7 @@ fn open_terminal_window(
     let new_terminal_split_up = new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
-    let window_options = zed_terminal_window_options(Some(bounds), cx);
+    let window_options = zed_terminal_window_options(None, cx);
 
     cx.open_window(
         window_options,
@@ -29185,6 +29515,7 @@ fn open_terminal_window(
                 workspace
             });
             let window_handle = window.window_handle();
+            let window_state_file = active_terminal_window_state_file();
             install_terminal_shortcut_smoke_driver(window_handle, workspace.downgrade(), cx);
             cx.subscribe(
                 &workspace,
@@ -29211,7 +29542,15 @@ fn open_terminal_window(
             });
 
             window.defer(cx, set_terminal_window_title);
-            cx.new(|_| TerminalWindowRoot::new(workspace))
+            cx.new(|cx| {
+                TerminalWindowRoot::new(
+                    workspace,
+                    app_state.fs.clone(),
+                    window_state_file,
+                    window,
+                    cx,
+                )
+            })
         },
     )
     .context("failed to open terminal window")?;
@@ -39654,9 +39993,84 @@ mod tests {
             report.startup_config_file.display().to_string()
         );
         assert_eq!(json["log_file"], report.log_file.display().to_string());
+        assert_eq!(
+            json["window_state_file"],
+            report.window_state_file.display().to_string()
+        );
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn formats_and_reads_terminal_window_state() {
+        let root_dir = temp_test_dir();
+        let state_file = terminal_window_state_file(&root_dir);
+        let state = TerminalWindowState {
+            format: TERMINAL_WINDOW_STATE_FORMAT.into(),
+            version: TERMINAL_WINDOW_STATE_VERSION,
+            saved_at_unix_seconds: 42,
+            window: TerminalSavedWindow {
+                state: TerminalSavedWindowMode::Maximized,
+                bounds: TerminalSavedBounds {
+                    x: 10,
+                    y: 20,
+                    width: 1200,
+                    height: 800,
+                },
+                display_uuid: Some("display-1".into()),
+            },
+        };
+        let output =
+            format_terminal_window_state_json(&state).expect("window state should format as json");
+        assert!(output.ends_with('\n'));
+        std_fs::create_dir_all(state_file.parent().unwrap())
+            .expect("failed to create window state dir");
+        std_fs::write(&state_file, output).expect("failed to write window state");
+
+        let read_state = read_terminal_window_state_file(&state_file)
+            .expect("window state should read")
+            .expect("window state should exist");
+
+        assert_eq!(read_state, state);
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rejects_invalid_terminal_window_state() {
+        let invalid_format = TerminalWindowState {
+            format: "zed-terminal-session".into(),
+            version: TERMINAL_WINDOW_STATE_VERSION,
+            saved_at_unix_seconds: 42,
+            window: TerminalSavedWindow {
+                state: TerminalSavedWindowMode::Windowed,
+                bounds: TerminalSavedBounds {
+                    x: 0,
+                    y: 0,
+                    width: 1200,
+                    height: 800,
+                },
+                display_uuid: None,
+            },
+        };
+        assert!(validate_terminal_window_state(&invalid_format).is_err());
+
+        let too_small = TerminalWindowState {
+            format: TERMINAL_WINDOW_STATE_FORMAT.into(),
+            version: TERMINAL_WINDOW_STATE_VERSION,
+            saved_at_unix_seconds: 42,
+            window: TerminalSavedWindow {
+                state: TerminalSavedWindowMode::Windowed,
+                bounds: TerminalSavedBounds {
+                    x: 0,
+                    y: 0,
+                    width: 200,
+                    height: 120,
+                },
+                display_uuid: None,
+            },
+        };
+        assert!(validate_terminal_window_state(&too_small).is_err());
     }
 
     #[test]
@@ -40548,6 +40962,7 @@ mod tests {
                     "session_file: {session_file}\n",
                     "session_buffers_dir: {session_buffers_dir}\n",
                     "session_report_file: zed-terminal-session.json\n",
+                    "window_state_file: window-state.json\n",
                 ),
                 session_file = session_file,
                 session_buffers_dir = session_buffers_dir
@@ -40592,6 +41007,7 @@ mod tests {
                 .to_string()
         );
         assert_eq!(json["session_report_file"], "zed-terminal-session.json");
+        assert_eq!(json["window_state_file"], "window-state.json");
         assert!(output.ends_with('\n'));
     }
 
@@ -40651,6 +41067,10 @@ mod tests {
                 .join("logs")
                 .join(format!("{TERMINAL_APP_NAME}.log"))
         );
+        assert_eq!(
+            report.window_state_file,
+            PathBuf::from("data-root").join(TERMINAL_WINDOW_STATE_FILE)
+        );
     }
 
     #[test]
@@ -40695,6 +41115,7 @@ mod tests {
                     "  session_file: {session_file}\n",
                     "  session_buffers_dir: {session_buffers_dir}\n",
                     "  session_report_file: zed-terminal-session.json\n",
+                    "  window_state_file: window-state.json\n",
                     "\n",
                     "diagnostics:\n",
                     "  status: error\n",
@@ -42575,6 +42996,7 @@ mod tests {
             session_file: PathBuf::from("session").join("session.json"),
             session_buffers_dir: PathBuf::from("session").join("session-buffers"),
             session_report_file: PathBuf::from("zed-terminal-session.json"),
+            window_state_file: PathBuf::from("window-state.json"),
         }
     }
 
