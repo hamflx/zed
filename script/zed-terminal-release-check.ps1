@@ -662,7 +662,11 @@ function Assert-SupportBundlePathReport {
         $Paths.keymap_schema_file -ne (Join-Path $ExpectedConfigDir "keymap.schema.json") -or
         $Paths.default_keymap_reference_file -ne (Join-Path $ExpectedConfigDir "default-keymap.json") -or
         $Paths.themes_dir -ne (Join-Path $ExpectedConfigDir "themes") -or
-        $Paths.log_file -ne (Join-Path $expectedLogsDir "Zed Terminal.log")
+        $Paths.log_file -ne (Join-Path $expectedLogsDir "Zed Terminal.log") -or
+        $Paths.session_dir -ne (Join-Path $ExpectedDataDir "session") -or
+        $Paths.session_file -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session.json") -or
+        $Paths.session_buffers_dir -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session-buffers") -or
+        $Paths.session_report_file -ne (Join-Path $expectedLogsDir "zed-terminal-session.json")
     ) {
         throw "zed-terminal support bundle paths report did not match expected standalone paths"
     }
@@ -745,6 +749,8 @@ function Assert-SupportBundleArtifacts {
         $manifest.redaction.includes_raw_config_contents -ne $false -or
         $manifest.redaction.includes_raw_log_contents -ne $false -or
         $manifest.redaction.includes_environment_values -ne $false -or
+        $manifest.redaction.includes_terminal_buffer_contents -ne $false -or
+        $manifest.redaction.includes_saved_session_contents -ne $false -or
         $manifest.redaction.file_metadata_only -ne $true
     ) {
         throw "zed-terminal support bundle manifest did not report expected release metadata"
@@ -786,7 +792,9 @@ function Assert-SupportBundleArtifacts {
         $metadata.status -ne "ok" -or
         $metadata.redaction.includes_raw_file_contents -ne $false -or
         $metadata.redaction.includes_environment_values -ne $false -or
-        @($metadata.files).Count -ne 14
+        $metadata.redaction.includes_terminal_buffer_contents -ne $false -or
+        $metadata.redaction.includes_saved_session_contents -ne $false -or
+        @($metadata.files).Count -ne 18
     ) {
         throw "zed-terminal support bundle metadata did not report expected redaction policy"
     }
@@ -801,6 +809,10 @@ function Assert-SupportBundleArtifacts {
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "themes_dir" -ExpectedPath $paths.themes_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "log_file" -ExpectedPath $paths.log_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "old_log_file" -ExpectedPath (Join-Path $paths.logs_dir "Zed Terminal.log.old")
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_dir" -ExpectedPath $paths.session_dir
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_file" -ExpectedPath $paths.session_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_buffers_dir" -ExpectedPath $paths.session_buffers_dir
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_report_file" -ExpectedPath $paths.session_report_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "logs_dir" -ExpectedPath $paths.logs_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "config_dir" -ExpectedPath $paths.config_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "data_dir" -ExpectedPath $paths.data_dir
@@ -823,6 +835,7 @@ function Assert-SupportBundleArtifacts {
         "raw log contents",
         "shell environment values",
         "terminal buffer contents",
+        "Saved session files and buffer snapshots",
         "file existence and byte counts only",
         "zed-terminal-support-bundle.json",
         "zed-terminal-diagnostics.json",
@@ -2160,6 +2173,11 @@ try {
                 "Support bundle options:",
                 "--support-bundle --support-bundle-dir <DIR>",
                 "--support-bundle-format <text\|json>",
+                "Session storage options:",
+                "--session-report",
+                "--session-report-format <text\|json>",
+                "--clear-saved-session",
+                "--clear-saved-session-format <text\|json>",
                 "Startup config backup and restore options:",
                 "--backup-startup-config --backup-startup-config-file <FILE>",
                 "--backup-startup-config-format <text\|json>",
@@ -2337,6 +2355,41 @@ try {
                     "do-not-log-release-support-settings-secret",
                     "do-not-log-release-support-log-secret"
                 )
+            $sessionDir = Join-Path $cliDataDir "session"
+            $sessionBuffersDir = Join-Path $sessionDir "session-buffers"
+            New-Item -ItemType Directory -Force -Path $sessionBuffersDir | Out-Null
+            Set-Content -LiteralPath (Join-Path $sessionDir "session.json") -Value '{ "format": "zed-terminal-session", "version": 1, "window_count": 1, "tabs": [ { "panes": [ {}, {} ] } ], "contains_buffer_contents": false }' -Encoding utf8
+            Set-Content -LiteralPath (Join-Path $sessionBuffersDir "pane-1.txt") -Value 'do-not-log-release-session-buffer-secret' -Encoding utf8
+            $sessionReportJson = Invoke-NativeJsonCommandResult "session-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--session-report",
+                "--session-report-format", "json"
+            )
+            if (
+                $sessionReportJson.status -ne "ok" -or
+                $sessionReportJson.privacy.includes_terminal_buffer_contents -ne $false -or
+                $sessionReportJson.privacy.metadata_only -ne $true -or
+                [int64]$sessionReportJson.pane_count -ne 2 -or
+                ($sessionReportJson | ConvertTo-Json -Depth 8) -match "do-not-log-release-session-buffer-secret"
+            ) {
+                throw "zed-terminal --session-report did not return expected metadata-only session diagnostics"
+            }
+            $sessionClearJson = Invoke-NativeJsonCommandResult "clear-saved-session" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--clear-saved-session",
+                "--clear-saved-session-format", "json"
+            )
+            if (
+                $sessionClearJson.status -ne "ok" -or
+                $sessionClearJson.removed_session_file -ne $true -or
+                $sessionClearJson.removed_buffers_dir -ne $true -or
+                (Test-Path -LiteralPath (Join-Path $sessionDir "session.json")) -or
+                (Test-Path -LiteralPath $sessionBuffersDir)
+            ) {
+                throw "zed-terminal --clear-saved-session did not remove saved session storage"
+            }
             Invoke-NativeJsonCommand "validate-keymap" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,

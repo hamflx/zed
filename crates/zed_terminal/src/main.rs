@@ -1,7 +1,4 @@
-#![cfg_attr(
-    all(target_os = "windows", not(debug_assertions)),
-    windows_subsystem = "windows"
-)]
+#![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 
 use std::{
     any::TypeId,
@@ -96,6 +93,8 @@ actions!(
         OpenSupportInfoReport,
         OpenSupportBundleDirectory,
         OpenSupportBundleManifestFile,
+        OpenSessionReport,
+        ClearSavedSession,
         OpenStartupLayoutReport,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
@@ -288,6 +287,10 @@ const TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE: &str = "zed-terminal-support-bundle
 const TERMINAL_SUPPORT_BUNDLE_PATHS_FILE: &str = "zed-terminal-paths.json";
 const TERMINAL_SUPPORT_BUNDLE_FILE_METADATA_FILE: &str = "zed-terminal-file-metadata.json";
 const TERMINAL_SUPPORT_BUNDLE_README_FILE: &str = "README.txt";
+const TERMINAL_SESSION_DIR: &str = "session";
+const TERMINAL_SESSION_FILE: &str = "session.json";
+const TERMINAL_SESSION_BUFFERS_DIR: &str = "session-buffers";
+const TERMINAL_SESSION_REPORT_FILE: &str = "zed-terminal-session.json";
 const TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE: &str = "zed-terminal-config-initialization.json";
 const TERMINAL_CONFIG_BUNDLE_BACKUP_DIR: &str = "zed-terminal-config-bundles";
 const TERMINAL_CONFIG_BUNDLE_BACKUPS_REPORT_FILE: &str = "zed-terminal-config-bundle-backups.json";
@@ -337,6 +340,8 @@ const TERMINAL_CONFIG_BUNDLE_FORMAT: &str = "zed-terminal-config-bundle";
 const TERMINAL_CONFIG_BUNDLE_VERSION: u64 = 1;
 const TERMINAL_SUPPORT_BUNDLE_FORMAT: &str = "zed-terminal-support-bundle";
 const TERMINAL_SUPPORT_BUNDLE_VERSION: u64 = 1;
+const TERMINAL_SESSION_FORMAT: &str = "zed-terminal-session";
+const TERMINAL_SESSION_VERSION: u64 = 1;
 const TERMINAL_SETTINGS_BACKUP_FORMAT: &str = "zed-terminal-settings-backup";
 const TERMINAL_SETTINGS_BACKUP_VERSION: u64 = 1;
 const TERMINAL_CLI_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -388,6 +393,16 @@ Support bundle options:
           Generate a redacted support bundle directory without opening a terminal window
       --support-bundle-format <text|json>
           Set the output format for --support-bundle
+
+Session storage options:
+      --session-report
+          Print saved session metadata without opening a terminal window
+      --session-report-format <text|json>
+          Set the output format for --session-report
+      --clear-saved-session
+          Remove saved session metadata and buffer snapshot storage without opening a terminal window
+      --clear-saved-session-format <text|json>
+          Set the output format for --clear-saved-session
 
 Startup config backup and restore options:
       --backup-startup-config --backup-startup-config-file <FILE>
@@ -3441,6 +3456,18 @@ struct TerminalSupportBundleCommand {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalSessionCommand {
+    Report {
+        path_options: TerminalPathOptions,
+        format: TerminalSessionReportOutputFormat,
+    },
+    Clear {
+        path_options: TerminalPathOptions,
+        format: TerminalSessionClearOutputFormat,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct TerminalConfigBundleBackupCommand {
     path_options: TerminalPathOptions,
     bundle_file: PathBuf,
@@ -3683,6 +3710,10 @@ struct TerminalPathReport {
     default_keymap_reference_file: PathBuf,
     themes_dir: PathBuf,
     log_file: PathBuf,
+    session_dir: PathBuf,
+    session_file: PathBuf,
+    session_buffers_dir: PathBuf,
+    session_report_file: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3712,6 +3743,56 @@ impl TerminalSupportBundleDiagnosticsStatus {
         match self {
             Self::Ok => "ok",
             Self::Error => "error",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSessionReport {
+    session_dir: PathBuf,
+    session_file: PathBuf,
+    session_buffers_dir: PathBuf,
+    status: TerminalSessionStatus,
+    message: Option<String>,
+    session_file_exists: bool,
+    session_file_byte_count: Option<u64>,
+    buffers_dir_exists: bool,
+    buffers_file_count: usize,
+    buffers_byte_count: u64,
+    saved_at_unix_seconds: Option<u64>,
+    stored_format: Option<String>,
+    stored_version: Option<u64>,
+    window_count: Option<u64>,
+    tab_count: Option<u64>,
+    pane_count: Option<u64>,
+    buffer_restore_enabled: bool,
+    contains_buffer_contents: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSessionClear {
+    session_dir: PathBuf,
+    session_file: PathBuf,
+    session_buffers_dir: PathBuf,
+    removed_session_file: bool,
+    removed_buffers_dir: bool,
+    removed_buffer_file_count: usize,
+    removed_buffer_byte_count: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSessionStatus {
+    Missing,
+    Ok,
+    Invalid,
+}
+
+impl TerminalSessionStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Ok => "ok",
+            Self::Invalid => "invalid",
         }
     }
 }
@@ -5665,6 +5746,20 @@ enum TerminalSupportBundleOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSessionReportOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum TerminalSessionClearOutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum TerminalStartupConfigBackupOutputFormat {
     #[default]
     Text,
@@ -6799,6 +6894,70 @@ impl TerminalSupportBundleCommand {
     }
 }
 
+impl TerminalSessionCommand {
+    fn from_env_args() -> Result<Option<Self>> {
+        Self::from_args(env::args_os())
+    }
+
+    fn from_args<I, S>(args: I) -> Result<Option<Self>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let mut args = args.into_iter().map(Into::into);
+        let _program = args.next();
+
+        let mut parser = TerminalSessionCommandParser::default();
+        while let Some(arg) = args.next() {
+            let Some(arg) = arg.to_str() else {
+                parser.reject_arg("<non-UTF-8 argument>")?;
+                continue;
+            };
+
+            let Some((flag, inline_value)) = split_cli_flag_value(arg) else {
+                parser.reject_arg(arg)?;
+                continue;
+            };
+
+            if parse_terminal_path_flag(&mut parser.path_options, &mut args, flag, inline_value)? {
+                continue;
+            }
+
+            match flag {
+                "--session-report" => {
+                    if inline_value.is_some() {
+                        bail!("--session-report does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--session-report")?);
+                }
+                "--session-report-format" => {
+                    parser.report_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_session_option = true;
+                }
+                "--clear-saved-session" => {
+                    if inline_value.is_some() {
+                        bail!("--clear-saved-session does not accept a value");
+                    }
+                    parser.mode = Some(parser.mode_name("--clear-saved-session")?);
+                }
+                "--clear-saved-session-format" => {
+                    parser.clear_format = Some(cli_string_value(&mut args, flag, inline_value)?);
+                    parser.seen_session_option = true;
+                }
+                _ => parser.reject_arg(arg)?,
+            }
+        }
+
+        parser.finish()
+    }
+
+    fn path_options(&self) -> &TerminalPathOptions {
+        match self {
+            Self::Report { path_options, .. } | Self::Clear { path_options, .. } => path_options,
+        }
+    }
+}
+
 #[derive(Default)]
 struct TerminalSupportBundleParser {
     path_options: TerminalPathCliOptions,
@@ -6861,6 +7020,82 @@ impl TerminalSupportBundleParser {
                 }
                 if self.format.is_some() {
                     bail!("--support-bundle-format requires --support-bundle");
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct TerminalSessionCommandParser {
+    path_options: TerminalPathCliOptions,
+    mode: Option<&'static str>,
+    seen_session_option: bool,
+    pre_session_arg: Option<String>,
+    report_format: Option<String>,
+    clear_format: Option<String>,
+}
+
+impl TerminalSessionCommandParser {
+    fn mode_name(&mut self, flag: &'static str) -> Result<&'static str> {
+        self.seen_session_option = true;
+        if let Some(arg) = &self.pre_session_arg {
+            bail!("{flag} cannot be used with {arg}");
+        }
+        if let Some(mode) = self.mode
+            && mode != flag
+        {
+            bail!("{mode} cannot be used with {flag}");
+        }
+        Ok(flag)
+    }
+
+    fn reject_arg(&mut self, arg: &str) -> Result<()> {
+        if self.seen_session_option {
+            let mode = self.mode.unwrap_or("terminal session command");
+            bail!("{mode} cannot be used with {arg}");
+        }
+        if self.pre_session_arg.is_none() {
+            self.pre_session_arg = Some(arg.to_string());
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Result<Option<TerminalSessionCommand>> {
+        if !self.seen_session_option {
+            return Ok(None);
+        }
+
+        let path_options = TerminalPathOptions::from_cli(self.path_options)
+            .context("failed to resolve terminal paths")?;
+
+        match self.mode {
+            Some("--session-report") => {
+                if self.clear_format.is_some() {
+                    bail!("--clear-saved-session-format requires --clear-saved-session");
+                }
+                Ok(Some(TerminalSessionCommand::Report {
+                    path_options,
+                    format: parse_session_report_output_format(self.report_format.as_deref())?,
+                }))
+            }
+            Some("--clear-saved-session") => {
+                if self.report_format.is_some() {
+                    bail!("--session-report-format requires --session-report");
+                }
+                Ok(Some(TerminalSessionCommand::Clear {
+                    path_options,
+                    format: parse_session_clear_output_format(self.clear_format.as_deref())?,
+                }))
+            }
+            Some(mode) => bail!("unsupported terminal session mode: {mode}"),
+            None => {
+                if self.report_format.is_some() {
+                    bail!("--session-report-format requires --session-report");
+                }
+                if self.clear_format.is_some() {
+                    bail!("--clear-saved-session-format requires --clear-saved-session");
                 }
                 Ok(None)
             }
@@ -10134,6 +10369,18 @@ fn main() {
         }
     }
 
+    match TerminalSessionCommand::from_env_args() {
+        Ok(Some(command)) => {
+            run_terminal_session_command(command);
+            return;
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("failed to run zed terminal: {error:#}");
+            process::exit(2);
+        }
+    }
+
     match TerminalStartupConfigFileCommand::from_env_args() {
         Ok(Some(command)) => {
             run_terminal_startup_config_file_command(command);
@@ -10836,6 +11083,40 @@ fn run_terminal_support_bundle_command(command: TerminalSupportBundleCommand) {
         });
 }
 
+fn run_terminal_session_command(command: TerminalSessionCommand) {
+    if let Err(error) = install_terminal_paths(command.path_options()) {
+        eprintln!("failed to run zed terminal: {error:#}");
+        process::exit(2);
+    }
+
+    let result = match command {
+        TerminalSessionCommand::Report {
+            path_options,
+            format,
+        } => terminal_session_report(&path_options.data_dir)
+            .and_then(|report| format_terminal_session_report(&report, format)),
+        TerminalSessionCommand::Clear {
+            path_options,
+            format,
+        } => clear_terminal_session(&path_options.data_dir)
+            .and_then(|clear| format_terminal_session_clear(&clear, format)),
+    };
+
+    match result {
+        Ok(output) => {
+            print!("{output}");
+            io::stdout()
+                .flush()
+                .expect("failed to flush terminal session output");
+        }
+        Err(error) => {
+            eprintln!("failed to manage terminal session storage: {error:#}");
+            io::stderr().flush().ok();
+            process::exit(2);
+        }
+    }
+}
+
 fn run_terminal_support_info(path_options: TerminalPathOptions) {
     gpui_platform::application()
         .with_assets(Assets)
@@ -11242,7 +11523,279 @@ fn terminal_path_report(path_options: &TerminalPathOptions) -> TerminalPathRepor
             .data_dir
             .join("logs")
             .join(format!("{TERMINAL_APP_NAME}.log")),
+        session_dir: terminal_session_dir(&path_options.data_dir),
+        session_file: terminal_session_file(&path_options.data_dir),
+        session_buffers_dir: terminal_session_buffers_dir(&path_options.data_dir),
+        session_report_file: terminal_session_report_file(&path_options.data_dir),
     }
+}
+
+fn terminal_session_report(data_dir: &Path) -> Result<TerminalSessionReport> {
+    let session_dir = terminal_session_dir(data_dir);
+    let session_file = terminal_session_file(data_dir);
+    let session_buffers_dir = terminal_session_buffers_dir(data_dir);
+    let (buffers_file_count, buffers_byte_count) = directory_file_summary(&session_buffers_dir)?;
+    let buffers_dir_exists = match std_fs::metadata(&session_buffers_dir) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal session buffers directory {}",
+                    session_buffers_dir.display()
+                )
+            });
+        }
+    };
+
+    let mut report = TerminalSessionReport {
+        session_dir,
+        session_file: session_file.clone(),
+        session_buffers_dir,
+        status: TerminalSessionStatus::Missing,
+        message: None,
+        session_file_exists: false,
+        session_file_byte_count: None,
+        buffers_dir_exists,
+        buffers_file_count,
+        buffers_byte_count,
+        saved_at_unix_seconds: None,
+        stored_format: None,
+        stored_version: None,
+        window_count: None,
+        tab_count: None,
+        pane_count: None,
+        buffer_restore_enabled: false,
+        contains_buffer_contents: false,
+    };
+
+    let metadata = match std_fs::metadata(&session_file) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            report.message = Some("no saved session metadata exists".into());
+            return Ok(report);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect terminal session file {}",
+                    session_file.display()
+                )
+            });
+        }
+    };
+
+    report.session_file_exists = true;
+    report.session_file_byte_count = Some(metadata.len());
+    if !metadata.is_file() {
+        report.status = TerminalSessionStatus::Invalid;
+        report.message = Some("session metadata path exists but is not a file".into());
+        return Ok(report);
+    }
+
+    let content = std_fs::read_to_string(&session_file).with_context(|| {
+        format!(
+            "failed to read terminal session metadata {}",
+            session_file.display()
+        )
+    })?;
+    match serde_json::from_str::<serde_json::Value>(&content) {
+        Ok(value) => {
+            report.status = TerminalSessionStatus::Ok;
+            report.message = Some("saved session metadata is readable".into());
+            report.saved_at_unix_seconds =
+                json_u64_field(&value, &["saved_at_unix_seconds", "saved_at"]);
+            report.stored_format = json_string_field(&value, &["format"]);
+            report.stored_version = json_u64_field(&value, &["version"]);
+            report.window_count = json_u64_field(&value, &["window_count", "windows_count"])
+                .or_else(|| json_array_len_field(&value, "windows"));
+            report.tab_count = json_u64_field(&value, &["tab_count", "tabs_count"])
+                .or_else(|| json_array_len_field(&value, "tabs"))
+                .or_else(|| nested_array_len_field(&value, "windows", "tabs"));
+            report.pane_count = json_u64_field(&value, &["pane_count", "panes_count"])
+                .or_else(|| json_array_len_field(&value, "panes"))
+                .or_else(|| nested_array_len_field(&value, "tabs", "panes"))
+                .or_else(|| nested_array_len_field(&value, "windows", "panes"));
+            report.buffer_restore_enabled = json_bool_field(
+                &value,
+                &["buffer_restore_enabled", "restore_terminal_buffer"],
+            )
+            .unwrap_or(false);
+            report.contains_buffer_contents =
+                json_bool_field(&value, &["contains_buffer_contents"]).unwrap_or(false);
+        }
+        Err(error) => {
+            report.status = TerminalSessionStatus::Invalid;
+            report.message = Some(format!("failed to parse session metadata: {error}"));
+        }
+    }
+
+    Ok(report)
+}
+
+fn clear_terminal_session(data_dir: &Path) -> Result<TerminalSessionClear> {
+    let session_dir = terminal_session_dir(data_dir);
+    let session_file = terminal_session_file(data_dir);
+    let session_buffers_dir = terminal_session_buffers_dir(data_dir);
+    let (removed_buffer_file_count, removed_buffer_byte_count) =
+        directory_file_summary(&session_buffers_dir)?;
+    let mut removed_session_file = false;
+    let mut removed_buffers_dir = false;
+
+    match std_fs::metadata(&session_file) {
+        Ok(metadata) if metadata.is_file() => {
+            std_fs::remove_file(&session_file).with_context(|| {
+                format!("failed to remove session file {}", session_file.display())
+            })?;
+            removed_session_file = true;
+        }
+        Ok(_) => {
+            bail!(
+                "session path {} exists but is not a file",
+                session_file.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to inspect session file {}", session_file.display())
+            });
+        }
+    }
+
+    match std_fs::metadata(&session_buffers_dir) {
+        Ok(metadata) if metadata.is_dir() => {
+            std_fs::remove_dir_all(&session_buffers_dir).with_context(|| {
+                format!(
+                    "failed to remove session buffers directory {}",
+                    session_buffers_dir.display()
+                )
+            })?;
+            removed_buffers_dir = true;
+        }
+        Ok(_) => {
+            bail!(
+                "session buffers path {} exists but is not a directory",
+                session_buffers_dir.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect session buffers directory {}",
+                    session_buffers_dir.display()
+                )
+            });
+        }
+    }
+
+    match std_fs::read_dir(&session_dir) {
+        Ok(mut entries) => {
+            if entries.next().is_none() {
+                std_fs::remove_dir(&session_dir).ok();
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect session directory {}",
+                    session_dir.display()
+                )
+            });
+        }
+    }
+
+    Ok(TerminalSessionClear {
+        session_dir,
+        session_file,
+        session_buffers_dir,
+        removed_session_file,
+        removed_buffers_dir,
+        removed_buffer_file_count,
+        removed_buffer_byte_count,
+    })
+}
+
+fn directory_file_summary(dir: &Path) -> Result<(usize, u64)> {
+    let metadata = match std_fs::metadata(dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect directory {}", dir.display()));
+        }
+    };
+    if !metadata.is_dir() {
+        return Ok((0, 0));
+    }
+
+    let mut file_count = 0;
+    let mut byte_count = 0;
+    for entry in std_fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory {}", dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("failed to read entry in directory {}", dir.display()))?;
+        let path = entry.path();
+        let metadata = entry.metadata().with_context(|| {
+            format!(
+                "failed to inspect directory entry {}",
+                entry.path().display()
+            )
+        })?;
+        if metadata.is_dir() {
+            let (child_file_count, child_byte_count) = directory_file_summary(&path)?;
+            file_count += child_file_count;
+            byte_count += child_byte_count;
+        } else if metadata.is_file() {
+            file_count += 1;
+            byte_count += metadata.len();
+        }
+    }
+
+    Ok((file_count, byte_count))
+}
+
+fn json_u64_field(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_u64))
+}
+
+fn json_string_field(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn json_bool_field(value: &serde_json::Value, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(serde_json::Value::as_bool))
+}
+
+fn json_array_len_field(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .and_then(|items| u64::try_from(items.len()).ok())
+}
+
+fn nested_array_len_field(
+    value: &serde_json::Value,
+    outer_key: &str,
+    inner_key: &str,
+) -> Option<u64> {
+    let outer = value.get(outer_key)?.as_array()?;
+    let total = outer
+        .iter()
+        .filter_map(|item| item.get(inner_key).and_then(serde_json::Value::as_array))
+        .map(Vec::len)
+        .sum::<usize>();
+    u64::try_from(total).ok()
 }
 
 fn print_startup_profiles(
@@ -13042,6 +13595,28 @@ fn parse_terminal_paths_output_format(format: Option<&str>) -> Result<TerminalPa
         "text" => Ok(TerminalPathsOutputFormat::Text),
         "json" => Ok(TerminalPathsOutputFormat::Json),
         format => bail!("unsupported --paths-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_session_report_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSessionReportOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSessionReportOutputFormat::Text),
+        "json" => Ok(TerminalSessionReportOutputFormat::Json),
+        format => bail!("unsupported --session-report-format {format:?}; expected text or json"),
+    }
+}
+
+fn parse_session_clear_output_format(
+    format: Option<&str>,
+) -> Result<TerminalSessionClearOutputFormat> {
+    match format.unwrap_or("text") {
+        "text" => Ok(TerminalSessionClearOutputFormat::Text),
+        "json" => Ok(TerminalSessionClearOutputFormat::Json),
+        format => {
+            bail!("unsupported --clear-saved-session-format {format:?}; expected text or json")
+        }
     }
 }
 
@@ -22763,6 +23338,21 @@ fn write_support_info_report_file(path: &Path, report: &str) -> Result<()> {
         .with_context(|| format!("failed to write support info report {}", path.display()))
 }
 
+fn write_session_report_file(path: &Path, report: &TerminalSessionReport) -> Result<()> {
+    let report = format_terminal_session_report_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create session report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report)
+        .with_context(|| format!("failed to write session report {}", path.display()))
+}
+
 fn write_config_initialization_report_file(
     path: &Path,
     initialization: &TerminalConfigInitialization,
@@ -23411,6 +24001,26 @@ fn format_terminal_paths(report: &TerminalPathReport) -> String {
         .expect("writing to string should not fail");
     writeln!(&mut output, "log_file: {}", report.log_file.display())
         .expect("writing to string should not fail");
+    writeln!(&mut output, "session_dir: {}", report.session_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_file: {}",
+        report.session_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_buffers_dir: {}",
+        report.session_buffers_dir.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_report_file: {}",
+        report.session_report_file.display()
+    )
+    .expect("writing to string should not fail");
     output
 }
 
@@ -23533,6 +24143,8 @@ fn format_support_bundle_manifest_json(
             "includes_raw_config_contents": false,
             "includes_raw_log_contents": false,
             "includes_environment_values": false,
+            "includes_terminal_buffer_contents": false,
+            "includes_saved_session_contents": false,
             "file_metadata_only": true,
         },
         "files": files
@@ -23560,6 +24172,8 @@ fn format_support_bundle_file_metadata_json(paths: &TerminalPathReport) -> Resul
         "redaction": {
             "includes_raw_file_contents": false,
             "includes_environment_values": false,
+            "includes_terminal_buffer_contents": false,
+            "includes_saved_session_contents": false,
         },
         "files": support_bundle_metadata_paths(paths)
             .into_iter()
@@ -23594,6 +24208,10 @@ fn support_bundle_metadata_paths(paths: &TerminalPathReport) -> Vec<(&'static st
             "old_log_file",
             paths.logs_dir.join(format!("{TERMINAL_APP_NAME}.log.old")),
         ),
+        ("session_dir", paths.session_dir.clone()),
+        ("session_file", paths.session_file.clone()),
+        ("session_buffers_dir", paths.session_buffers_dir.clone()),
+        ("session_report_file", paths.session_report_file.clone()),
         ("logs_dir", paths.logs_dir.clone()),
         ("config_dir", paths.config_dir.clone()),
         ("data_dir", paths.data_dir.clone()),
@@ -23646,6 +24264,11 @@ fn format_support_bundle_readme() -> String {
     writeln!(
         &mut output,
         "It intentionally does not include raw config files, raw log contents, shell environment values, or terminal buffer contents."
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "Saved session files and buffer snapshots are reported as metadata paths only; their contents are not copied into this bundle."
     )
     .expect("writing to string should not fail");
     writeln!(&mut output).expect("writing to string should not fail");
@@ -23785,9 +24408,190 @@ fn format_terminal_paths_json(report: &TerminalPathReport) -> Result<String> {
         "default_keymap_reference_file": report.default_keymap_reference_file.display().to_string(),
         "themes_dir": report.themes_dir.display().to_string(),
         "log_file": report.log_file.display().to_string(),
+        "session_dir": report.session_dir.display().to_string(),
+        "session_file": report.session_file.display().to_string(),
+        "session_buffers_dir": report.session_buffers_dir.display().to_string(),
+        "session_report_file": report.session_report_file.display().to_string(),
     });
     let mut output = serde_json::to_string_pretty(&value)
         .context("failed to serialize terminal paths as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_terminal_session_report(
+    report: &TerminalSessionReport,
+    format: TerminalSessionReportOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalSessionReportOutputFormat::Text => Ok(format_terminal_session_report_text(report)),
+        TerminalSessionReportOutputFormat::Json => format_terminal_session_report_json(report),
+    }
+}
+
+fn format_terminal_session_report_text(report: &TerminalSessionReport) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: {}", report.status.as_str())
+        .expect("writing to string should not fail");
+    if let Some(message) = &report.message {
+        writeln!(&mut output, "message: {message}").expect("writing to string should not fail");
+    }
+    writeln!(&mut output, "session_dir: {}", report.session_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_file: {}",
+        report.session_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_buffers_dir: {}",
+        report.session_buffers_dir.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_file_exists: {}",
+        report.session_file_exists
+    )
+    .expect("writing to string should not fail");
+    if let Some(byte_count) = report.session_file_byte_count {
+        writeln!(&mut output, "session_file_bytes: {byte_count}")
+            .expect("writing to string should not fail");
+    }
+    writeln!(
+        &mut output,
+        "buffers_dir_exists: {}",
+        report.buffers_dir_exists
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "buffers_file_count: {}",
+        report.buffers_file_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(&mut output, "buffers_bytes: {}", report.buffers_byte_count)
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "buffer_restore_enabled: {}",
+        report.buffer_restore_enabled
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "contains_buffer_contents: {}",
+        report.contains_buffer_contents
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_terminal_session_report_json(report: &TerminalSessionReport) -> Result<String> {
+    let value = serde_json::json!({
+        "format": TERMINAL_SESSION_FORMAT,
+        "version": TERMINAL_SESSION_VERSION,
+        "status": report.status.as_str(),
+        "message": report.message,
+        "session_dir": report.session_dir.display().to_string(),
+        "session_file": report.session_file.display().to_string(),
+        "session_buffers_dir": report.session_buffers_dir.display().to_string(),
+        "session_file_exists": report.session_file_exists,
+        "session_file_byte_count": report.session_file_byte_count,
+        "buffers_dir_exists": report.buffers_dir_exists,
+        "buffers_file_count": report.buffers_file_count,
+        "buffers_byte_count": report.buffers_byte_count,
+        "saved_at_unix_seconds": report.saved_at_unix_seconds,
+        "stored_format": report.stored_format,
+        "stored_version": report.stored_version,
+        "window_count": report.window_count,
+        "tab_count": report.tab_count,
+        "pane_count": report.pane_count,
+        "buffer_restore_enabled": report.buffer_restore_enabled,
+        "contains_buffer_contents": report.contains_buffer_contents,
+        "privacy": {
+            "includes_raw_session_contents": false,
+            "includes_terminal_buffer_contents": false,
+            "metadata_only": true,
+        },
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal session report as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn format_terminal_session_clear(
+    clear: &TerminalSessionClear,
+    format: TerminalSessionClearOutputFormat,
+) -> Result<String> {
+    match format {
+        TerminalSessionClearOutputFormat::Text => Ok(format_terminal_session_clear_text(clear)),
+        TerminalSessionClearOutputFormat::Json => format_terminal_session_clear_json(clear),
+    }
+}
+
+fn format_terminal_session_clear_text(clear: &TerminalSessionClear) -> String {
+    let mut output = String::new();
+    writeln!(&mut output, "status: ok").expect("writing to string should not fail");
+    writeln!(&mut output, "session_dir: {}", clear.session_dir.display())
+        .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_file: {}",
+        clear.session_file.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "session_buffers_dir: {}",
+        clear.session_buffers_dir.display()
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_session_file: {}",
+        clear.removed_session_file
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_buffers_dir: {}",
+        clear.removed_buffers_dir
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_buffer_file_count: {}",
+        clear.removed_buffer_file_count
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "removed_buffer_bytes: {}",
+        clear.removed_buffer_byte_count
+    )
+    .expect("writing to string should not fail");
+    output
+}
+
+fn format_terminal_session_clear_json(clear: &TerminalSessionClear) -> Result<String> {
+    let value = serde_json::json!({
+        "status": "ok",
+        "format": TERMINAL_SESSION_FORMAT,
+        "version": TERMINAL_SESSION_VERSION,
+        "session_dir": clear.session_dir.display().to_string(),
+        "session_file": clear.session_file.display().to_string(),
+        "session_buffers_dir": clear.session_buffers_dir.display().to_string(),
+        "removed_session_file": clear.removed_session_file,
+        "removed_buffers_dir": clear.removed_buffers_dir,
+        "removed_buffer_file_count": clear.removed_buffer_file_count,
+        "removed_buffer_byte_count": clear.removed_buffer_byte_count,
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal session clear report as json")?;
     output.push('\n');
     Ok(output)
 }
@@ -25576,6 +26380,26 @@ fn active_terminal_support_bundle_manifest_file() -> PathBuf {
     active_terminal_support_bundle_dir().join(TERMINAL_SUPPORT_BUNDLE_MANIFEST_FILE)
 }
 
+fn terminal_session_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(TERMINAL_SESSION_DIR)
+}
+
+fn terminal_session_file(data_dir: &Path) -> PathBuf {
+    terminal_session_dir(data_dir).join(TERMINAL_SESSION_FILE)
+}
+
+fn terminal_session_buffers_dir(data_dir: &Path) -> PathBuf {
+    terminal_session_dir(data_dir).join(TERMINAL_SESSION_BUFFERS_DIR)
+}
+
+fn terminal_session_report_file(data_dir: &Path) -> PathBuf {
+    data_dir.join("logs").join(TERMINAL_SESSION_REPORT_FILE)
+}
+
+fn active_terminal_session_report_file() -> PathBuf {
+    terminal_session_report_file(paths::data_dir())
+}
+
 fn active_terminal_config_initialization_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_CONFIG_INITIALIZATION_REPORT_FILE)
 }
@@ -25862,6 +26686,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_support_info_report);
     cx.on_action(open_support_bundle_directory);
     cx.on_action(open_support_bundle_manifest_file);
+    cx.on_action(open_session_report);
     cx.on_action(open_config_initialization_report);
     cx.on_action(open_config_bundle_backup_file);
     cx.on_action(open_config_bundle_backup_directory);
@@ -26140,6 +26965,8 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<RestoreSettingsBackup>(),
         TerminalActionSurface::new::<RestoreStartupConfigBackup>(),
         TerminalActionSurface::new::<RestoreKeymapBackup>(),
+        TerminalActionSurface::new::<OpenSessionReport>(),
+        TerminalActionSurface::new::<ClearSavedSession>(),
         TerminalActionSurface::new::<OpenPathsReport>(),
         TerminalActionSurface::new::<OpenDiagnosticsReport>(),
         TerminalActionSurface::new::<OpenVersionInfoReport>(),
@@ -27158,6 +27985,8 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Open Paths Report", OpenPathsReport),
         MenuItem::action("Open Version Info Report", OpenVersionInfoReport),
         MenuItem::action("Open Support Info Report", OpenSupportInfoReport),
+        MenuItem::action("Open Session Report", OpenSessionReport),
+        MenuItem::action("Clear Saved Session...", ClearSavedSession),
         MenuItem::action("Open Support Bundle Directory", OpenSupportBundleDirectory),
         MenuItem::action(
             "Open Support Bundle Manifest File",
@@ -27818,6 +28647,28 @@ fn open_terminal_window(
                         "keymap backup restore picker",
                         restore_keymap_backup_action,
                     );
+                });
+                workspace.register_action(|_, _: &ClearSavedSession, window, cx| {
+                    let prompt = window.prompt(
+                        PromptLevel::Warning,
+                        "Clear saved session data?",
+                        Some("This removes saved session metadata and buffer snapshot storage from the active data directory. It does not close the current terminal window or clear live terminal panes."),
+                        &["Clear Saved Session", "Cancel"],
+                        cx,
+                    );
+                    cx.spawn(async move |_, cx| {
+                        match prompt.await {
+                            Ok(0) => {
+                                cx.update(clear_saved_session_after_confirmation);
+                            }
+                            Ok(_) => {}
+                            Err(error) => {
+                                log::warn!("failed to confirm saved session clearing: {error:?}");
+                            }
+                        }
+                        anyhow::Ok(())
+                    })
+                    .detach_and_log_err(cx);
                 });
                 workspace.register_action(|_, action: &RemoveStartupProfile, window, cx| {
                     let profile = action.profile.clone();
@@ -29031,6 +29882,58 @@ fn open_support_bundle_manifest_file(_: &OpenSupportBundleManifestFile, cx: &mut
     }
 
     cx.open_with_system(&support_bundle_manifest_file);
+}
+
+fn open_session_report(_: &OpenSessionReport, cx: &mut App) {
+    let session_report_file = active_terminal_session_report_file();
+    match terminal_session_report(paths::data_dir()) {
+        Ok(report) => {
+            if let Err(error) = write_session_report_file(&session_report_file, &report) {
+                log::warn!("failed to write session report file: {error:#}");
+                return;
+            }
+            cx.open_with_system(&session_report_file);
+        }
+        Err(error) => {
+            log::warn!("failed to generate session report: {error:#}");
+        }
+    }
+}
+
+fn clear_saved_session_after_confirmation(cx: &mut App) {
+    match clear_terminal_session(paths::data_dir()) {
+        Ok(clear) => {
+            let report = TerminalSessionReport {
+                session_dir: clear.session_dir.clone(),
+                session_file: clear.session_file.clone(),
+                session_buffers_dir: clear.session_buffers_dir.clone(),
+                status: TerminalSessionStatus::Missing,
+                message: Some("saved session storage was cleared".into()),
+                session_file_exists: false,
+                session_file_byte_count: None,
+                buffers_dir_exists: false,
+                buffers_file_count: 0,
+                buffers_byte_count: 0,
+                saved_at_unix_seconds: None,
+                stored_format: None,
+                stored_version: None,
+                window_count: None,
+                tab_count: None,
+                pane_count: None,
+                buffer_restore_enabled: false,
+                contains_buffer_contents: false,
+            };
+            let session_report_file = active_terminal_session_report_file();
+            if let Err(error) = write_session_report_file(&session_report_file, &report) {
+                log::warn!("failed to write session clear report file: {error:#}");
+                return;
+            }
+            cx.open_with_system(&session_report_file);
+        }
+        Err(error) => {
+            log::warn!("failed to clear saved session storage: {error:#}");
+        }
+    }
 }
 
 fn open_config_bundle_backup_file(_: &OpenConfigBundleBackupFile, cx: &mut App) {
@@ -31174,6 +32077,8 @@ mod tests {
         assert_command_palette_action_visible(&filter, &RestoreSettingsBackup);
         assert_command_palette_action_visible(&filter, &RestoreStartupConfigBackup);
         assert_command_palette_action_visible(&filter, &RestoreKeymapBackup);
+        assert_command_palette_action_visible(&filter, &OpenSessionReport);
+        assert_command_palette_action_visible(&filter, &ClearSavedSession);
         assert_command_palette_action_visible(&filter, &OpenConfigDirectory);
         assert_command_palette_action_visible(&filter, &OpenDataDirectory);
         assert_command_palette_action_visible(&filter, &OpenPathsReport);
@@ -32885,6 +33790,16 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Session Report",
+            "zed_terminal::OpenSessionReport",
+        );
+        assert_menu_action(
+            &items,
+            "Clear Saved Session...",
+            "zed_terminal::ClearSavedSession",
+        );
+        assert_menu_action(
+            &items,
             "Open Support Bundle Directory",
             "zed_terminal::OpenSupportBundleDirectory",
         );
@@ -32958,6 +33873,8 @@ mod tests {
                 "Open Paths Report",
                 "Open Version Info Report",
                 "Open Support Info Report",
+                "Open Session Report",
+                "Clear Saved Session...",
                 "Open Support Bundle Directory",
                 "Open Support Bundle Manifest File",
                 "Copy Support Info",
@@ -34304,6 +35221,27 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<RestoreKeymapBackup>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_session_storage_action_inputs() {
+        let action = <OpenSessionReport as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open session report action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenSessionReport>()
+                .is_some()
+        );
+
+        let action = <ClearSavedSession as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("clear saved session action input should parse");
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<ClearSavedSession>()
                 .is_some()
         );
     }
@@ -38722,6 +39660,143 @@ mod tests {
     }
 
     #[test]
+    fn reports_missing_session_metadata_without_reading_buffer_contents() {
+        let root_dir = temp_test_dir();
+        let report = terminal_session_report(&root_dir).expect("session report should build");
+
+        assert_eq!(report.status, TerminalSessionStatus::Missing);
+        assert!(!report.session_file_exists);
+        assert_eq!(report.buffers_file_count, 0);
+        assert_eq!(report.buffers_byte_count, 0);
+
+        let output =
+            format_terminal_session_report(&report, TerminalSessionReportOutputFormat::Json)
+                .expect("session report should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("session report json should parse");
+        assert_eq!(json["status"], "missing");
+        assert_eq!(json["privacy"]["includes_terminal_buffer_contents"], false);
+        assert_eq!(json["privacy"]["metadata_only"], true);
+        assert!(output.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn reports_saved_session_metadata_and_buffer_storage_size() {
+        let root_dir = temp_test_dir();
+        let session_dir = terminal_session_dir(&root_dir);
+        let buffers_dir = terminal_session_buffers_dir(&root_dir);
+        std_fs::create_dir_all(&buffers_dir).expect("failed to create buffers dir");
+        std_fs::write(
+            terminal_session_file(&root_dir),
+            r#"{
+  "format": "zed-terminal-session",
+  "version": 1,
+  "saved_at_unix_seconds": 42,
+  "window_count": 1,
+  "tabs": [{ "panes": [{}, {}] }],
+  "buffer_restore_enabled": true,
+  "contains_buffer_contents": false
+}
+"#,
+        )
+        .expect("failed to write session file");
+        std_fs::write(buffers_dir.join("pane-1.txt"), "secret-output")
+            .expect("failed to write buffer fixture");
+
+        let report = terminal_session_report(&root_dir).expect("session report should build");
+        assert_eq!(report.session_dir, session_dir);
+        assert_eq!(report.status, TerminalSessionStatus::Ok);
+        assert_eq!(
+            report.stored_format.as_deref(),
+            Some("zed-terminal-session")
+        );
+        assert_eq!(report.stored_version, Some(1));
+        assert_eq!(report.saved_at_unix_seconds, Some(42));
+        assert_eq!(report.window_count, Some(1));
+        assert_eq!(report.tab_count, Some(1));
+        assert_eq!(report.pane_count, Some(2));
+        assert!(report.buffer_restore_enabled);
+        assert!(!report.contains_buffer_contents);
+        assert_eq!(report.buffers_file_count, 1);
+        assert_eq!(report.buffers_byte_count, "secret-output".len() as u64);
+
+        let output =
+            format_terminal_session_report(&report, TerminalSessionReportOutputFormat::Json)
+                .expect("session report should format");
+        assert!(!output.contains("secret-output"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn clears_saved_session_storage() {
+        let root_dir = temp_test_dir();
+        let buffers_dir = terminal_session_buffers_dir(&root_dir);
+        std_fs::create_dir_all(&buffers_dir).expect("failed to create buffers dir");
+        std_fs::write(terminal_session_file(&root_dir), "{}").expect("failed to write session");
+        std_fs::write(buffers_dir.join("pane-1.txt"), "buffer")
+            .expect("failed to write buffer fixture");
+
+        let clear = clear_terminal_session(&root_dir).expect("session clear should succeed");
+        assert!(clear.removed_session_file);
+        assert!(clear.removed_buffers_dir);
+        assert_eq!(clear.removed_buffer_file_count, 1);
+        assert_eq!(clear.removed_buffer_byte_count, 6);
+        assert!(!terminal_session_file(&root_dir).exists());
+        assert!(!buffers_dir.exists());
+
+        let output = format_terminal_session_clear(&clear, TerminalSessionClearOutputFormat::Json)
+            .expect("session clear should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&output).expect("session clear json should parse");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["removed_session_file"], true);
+        assert_eq!(json["removed_buffers_dir"], true);
+        assert!(output.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_session_report_file_as_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir.join("logs").join(TERMINAL_SESSION_REPORT_FILE);
+        let report = TerminalSessionReport {
+            session_dir: PathBuf::from("session"),
+            session_file: PathBuf::from("session").join("session.json"),
+            session_buffers_dir: PathBuf::from("session").join("session-buffers"),
+            status: TerminalSessionStatus::Missing,
+            message: Some("empty".into()),
+            session_file_exists: false,
+            session_file_byte_count: None,
+            buffers_dir_exists: false,
+            buffers_file_count: 0,
+            buffers_byte_count: 0,
+            saved_at_unix_seconds: None,
+            stored_format: None,
+            stored_version: None,
+            window_count: None,
+            tab_count: None,
+            pane_count: None,
+            buffer_restore_enabled: false,
+            contains_buffer_contents: false,
+        };
+
+        write_session_report_file(&report_file, &report).expect("session report should write");
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read session report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("session report should parse");
+        assert_eq!(json["status"], "missing");
+        assert_eq!(json["message"], "empty");
+        assert_eq!(json["privacy"]["includes_raw_session_contents"], false);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
     fn writes_version_info_report_file_as_json() {
         let root_dir = temp_test_dir();
         let version_info_file = root_dir
@@ -39442,24 +40517,40 @@ mod tests {
     #[test]
     fn formats_terminal_paths() {
         let output = format_terminal_paths(&sample_path_report());
+        let session_file = PathBuf::from("session")
+            .join("session.json")
+            .display()
+            .to_string();
+        let session_buffers_dir = PathBuf::from("session")
+            .join("session-buffers")
+            .display()
+            .to_string();
 
         assert_eq!(
             output,
-            concat!(
-                "mode: custom\n",
-                "config_dir: config\n",
-                "data_dir: data\n",
-                "logs_dir: logs\n",
-                "settings_file: settings.json\n",
-                "settings_schema_file: settings.schema.json\n",
-                "startup_config_file: terminal.json\n",
-                "startup_config_schema_file: terminal.schema.json\n",
-                "global_settings_file: global-settings.json\n",
-                "keymap_file: keymap.json\n",
-                "keymap_schema_file: keymap.schema.json\n",
-                "default_keymap_reference_file: default-keymap.json\n",
-                "themes_dir: themes\n",
-                "log_file: zed-terminal.log\n",
+            format!(
+                concat!(
+                    "mode: custom\n",
+                    "config_dir: config\n",
+                    "data_dir: data\n",
+                    "logs_dir: logs\n",
+                    "settings_file: settings.json\n",
+                    "settings_schema_file: settings.schema.json\n",
+                    "startup_config_file: terminal.json\n",
+                    "startup_config_schema_file: terminal.schema.json\n",
+                    "global_settings_file: global-settings.json\n",
+                    "keymap_file: keymap.json\n",
+                    "keymap_schema_file: keymap.schema.json\n",
+                    "default_keymap_reference_file: default-keymap.json\n",
+                    "themes_dir: themes\n",
+                    "log_file: zed-terminal.log\n",
+                    "session_dir: session\n",
+                    "session_file: {session_file}\n",
+                    "session_buffers_dir: {session_buffers_dir}\n",
+                    "session_report_file: zed-terminal-session.json\n",
+                ),
+                session_file = session_file,
+                session_buffers_dir = session_buffers_dir
             )
         );
     }
@@ -39485,6 +40576,22 @@ mod tests {
         assert_eq!(json["default_keymap_reference_file"], "default-keymap.json");
         assert_eq!(json["themes_dir"], "themes");
         assert_eq!(json["log_file"], "zed-terminal.log");
+        assert_eq!(json["session_dir"], "session");
+        assert_eq!(
+            json["session_file"],
+            PathBuf::from("session")
+                .join("session.json")
+                .display()
+                .to_string()
+        );
+        assert_eq!(
+            json["session_buffers_dir"],
+            PathBuf::from("session")
+                .join("session-buffers")
+                .display()
+                .to_string()
+        );
+        assert_eq!(json["session_report_file"], "zed-terminal-session.json");
         assert!(output.ends_with('\n'));
     }
 
@@ -39550,61 +40657,77 @@ mod tests {
     fn formats_terminal_support_info_for_clipboard() {
         let output =
             format_terminal_support_info("1.2.3", &sample_path_report(), &sample_doctor_report());
+        let session_file = PathBuf::from("session")
+            .join("session.json")
+            .display()
+            .to_string();
+        let session_buffers_dir = PathBuf::from("session")
+            .join("session-buffers")
+            .display()
+            .to_string();
 
         assert_eq!(
             output,
-            concat!(
-                "Zed Terminal Support Info\n",
-                "\n",
-                "app_name: Zed Terminal\n",
-                "version: 1.2.3\n",
-                "status: error\n",
-                "\n",
-                "paths:\n",
-                "  mode: custom\n",
-                "  config_dir: config\n",
-                "  data_dir: data\n",
-                "  logs_dir: logs\n",
-                "  settings_file: settings.json\n",
-                "  settings_schema_file: settings.schema.json\n",
-                "  startup_config_file: terminal.json\n",
-                "  startup_config_schema_file: terminal.schema.json\n",
-                "  global_settings_file: global-settings.json\n",
-                "  keymap_file: keymap.json\n",
-                "  keymap_schema_file: keymap.schema.json\n",
-                "  default_keymap_reference_file: default-keymap.json\n",
-                "  themes_dir: themes\n",
-                "  log_file: zed-terminal.log\n",
-                "\n",
-                "diagnostics:\n",
-                "  status: error\n",
-                "  directories:\n",
-                "    data_dir: ok data\n",
-                "    logs_dir: missing logs\n",
-                "  config_files:\n",
-                "    settings_file: error settings.json\n",
-                "      message: expected a file\n",
-                "  settings:\n",
-                "    status: ok\n",
-                "    settings_file: ok settings.json\n",
-                "      source: file\n",
-                "      bytes: 2\n",
-                "      parse_status: success\n",
-                "      migration_status: not_needed\n",
-                "    global_settings_file: missing global-settings.json\n",
-                "      source: initial\n",
-                "      parse_status: success\n",
-                "      migration_status: not_needed\n",
-                "  startup_config:\n",
-                "    startup_config_file: ok terminal.json\n",
-                "    source: file\n",
-                "    layouts: 2\n",
-                "    tabs: 4\n",
-                "  keymap:\n",
-                "    keymap_file: missing keymap.json\n",
-                "    source: initial\n",
-                "    default_bindings: 31\n",
-                "    user_bindings: 0\n",
+            format!(
+                concat!(
+                    "Zed Terminal Support Info\n",
+                    "\n",
+                    "app_name: Zed Terminal\n",
+                    "version: 1.2.3\n",
+                    "status: error\n",
+                    "\n",
+                    "paths:\n",
+                    "  mode: custom\n",
+                    "  config_dir: config\n",
+                    "  data_dir: data\n",
+                    "  logs_dir: logs\n",
+                    "  settings_file: settings.json\n",
+                    "  settings_schema_file: settings.schema.json\n",
+                    "  startup_config_file: terminal.json\n",
+                    "  startup_config_schema_file: terminal.schema.json\n",
+                    "  global_settings_file: global-settings.json\n",
+                    "  keymap_file: keymap.json\n",
+                    "  keymap_schema_file: keymap.schema.json\n",
+                    "  default_keymap_reference_file: default-keymap.json\n",
+                    "  themes_dir: themes\n",
+                    "  log_file: zed-terminal.log\n",
+                    "  session_dir: session\n",
+                    "  session_file: {session_file}\n",
+                    "  session_buffers_dir: {session_buffers_dir}\n",
+                    "  session_report_file: zed-terminal-session.json\n",
+                    "\n",
+                    "diagnostics:\n",
+                    "  status: error\n",
+                    "  directories:\n",
+                    "    data_dir: ok data\n",
+                    "    logs_dir: missing logs\n",
+                    "  config_files:\n",
+                    "    settings_file: error settings.json\n",
+                    "      message: expected a file\n",
+                    "  settings:\n",
+                    "    status: ok\n",
+                    "    settings_file: ok settings.json\n",
+                    "      source: file\n",
+                    "      bytes: 2\n",
+                    "      parse_status: success\n",
+                    "      migration_status: not_needed\n",
+                    "    global_settings_file: missing global-settings.json\n",
+                    "      source: initial\n",
+                    "      parse_status: success\n",
+                    "      migration_status: not_needed\n",
+                    "  startup_config:\n",
+                    "    startup_config_file: ok terminal.json\n",
+                    "    source: file\n",
+                    "    layouts: 2\n",
+                    "    tabs: 4\n",
+                    "  keymap:\n",
+                    "    keymap_file: missing keymap.json\n",
+                    "    source: initial\n",
+                    "    default_bindings: 31\n",
+                    "    user_bindings: 0\n",
+                ),
+                session_file = session_file,
+                session_buffers_dir = session_buffers_dir
             )
         );
         assert!(!output.contains("SECRET_VALUE"));
@@ -41448,6 +42571,10 @@ mod tests {
             default_keymap_reference_file: PathBuf::from("default-keymap.json"),
             themes_dir: PathBuf::from("themes"),
             log_file: PathBuf::from("zed-terminal.log"),
+            session_dir: PathBuf::from("session"),
+            session_file: PathBuf::from("session").join("session.json"),
+            session_buffers_dir: PathBuf::from("session").join("session-buffers"),
+            session_report_file: PathBuf::from("zed-terminal-session.json"),
         }
     }
 
@@ -52063,6 +53190,11 @@ mod tests {
         assert!(help.contains("Support bundle options:"));
         assert!(help.contains("--support-bundle --support-bundle-dir <DIR>"));
         assert!(help.contains("--support-bundle-format <text|json>"));
+        assert!(help.contains("Session storage options:"));
+        assert!(help.contains("--session-report"));
+        assert!(help.contains("--session-report-format <text|json>"));
+        assert!(help.contains("--clear-saved-session"));
+        assert!(help.contains("--clear-saved-session-format <text|json>"));
         assert!(help.contains("Startup config backup and restore options:"));
         assert!(help.contains("--backup-startup-config --backup-startup-config-file <FILE>"));
         assert!(help.contains("--backup-startup-config-format <text|json>"));
@@ -52822,6 +53954,81 @@ mod tests {
         assert_eq!(command.format, TerminalSupportBundleOutputFormat::Text);
 
         std_fs::remove_dir_all(data_dir).ok();
+    }
+
+    #[test]
+    fn session_report_format_json_is_carried_through_cli_resolution() {
+        let data_dir = PathBuf::from("data");
+        let config_dir = PathBuf::from("config");
+
+        let command = TerminalSessionCommand::from_args([
+            "zed-terminal",
+            "--user-data-dir",
+            data_dir.to_str().unwrap(),
+            "--config-dir",
+            config_dir.to_str().unwrap(),
+            "--session-report",
+            "--session-report-format",
+            "json",
+        ])
+        .expect("session report json mode should parse")
+        .expect("session report json mode should resolve");
+
+        let TerminalSessionCommand::Report {
+            path_options,
+            format,
+        } = command
+        else {
+            panic!("expected session report mode");
+        };
+        assert_eq!(path_options.data_dir, data_dir);
+        assert_eq!(path_options.config_dir, config_dir);
+        assert_eq!(format, TerminalSessionReportOutputFormat::Json);
+    }
+
+    #[test]
+    fn clear_saved_session_format_json_is_carried_through_cli_resolution() {
+        let command = TerminalSessionCommand::from_args([
+            "zed-terminal",
+            "--clear-saved-session",
+            "--clear-saved-session-format",
+            "json",
+        ])
+        .expect("clear saved session json mode should parse")
+        .expect("clear saved session json mode should resolve");
+
+        let TerminalSessionCommand::Clear { format, .. } = command else {
+            panic!("expected clear saved session mode");
+        };
+        assert_eq!(format, TerminalSessionClearOutputFormat::Json);
+    }
+
+    #[test]
+    fn session_commands_reject_startup_only_and_cross_mode_arguments() {
+        let error =
+            TerminalSessionCommand::from_args(["zed-terminal", "--session-report-format", "json"])
+                .expect_err("session report format should require session report mode");
+        assert!(format!("{error:#}").contains("--session-report-format requires --session-report"));
+
+        let error = TerminalSessionCommand::from_args([
+            "zed-terminal",
+            "--session-report",
+            "--profile",
+            "work",
+        ])
+        .expect_err("profile selection should conflict with session report");
+        assert!(format!("{error:#}").contains("--session-report cannot be used with --profile"));
+
+        let error = TerminalSessionCommand::from_args([
+            "zed-terminal",
+            "--session-report",
+            "--clear-saved-session",
+        ])
+        .expect_err("session report and clear should conflict");
+        assert!(
+            format!("{error:#}")
+                .contains("--session-report cannot be used with --clear-saved-session")
+        );
     }
 
     #[test]
