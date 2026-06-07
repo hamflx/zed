@@ -1,6 +1,7 @@
 [CmdletBinding()]
 Param(
     [Parameter()][string]$Binary,
+    [Parameter()][string]$ShortcutBinary,
     [Parameter()][string]$OutputDir,
     [Parameter()][string]$CargoTargetDir,
     [Parameter()][string]$VisualBaselineImage,
@@ -16,7 +17,8 @@ Param(
     [Parameter()][switch]$SkipPackage,
     [Parameter()][switch]$SkipVisualSmoke,
     [Parameter()][switch]$SkipVisualBaseline,
-    [Parameter()][switch]$SkipSplitVisualSmoke
+    [Parameter()][switch]$SkipSplitVisualSmoke,
+    [Parameter()][switch]$SkipShortcutVisualSmoke
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,9 +30,18 @@ if (-not $CargoTargetDir -and -not [string]::IsNullOrWhiteSpace($env:CARGO_TARGE
 if ($CargoTargetDir) {
     $CargoTargetDir = [System.IO.Path]::GetFullPath($CargoTargetDir)
 }
+$binaryWasProvided = -not [string]::IsNullOrWhiteSpace($Binary)
+$shortcutBinaryWasProvided = -not [string]::IsNullOrWhiteSpace($ShortcutBinary)
+$targetRoot = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
 if (-not $Binary) {
-    $targetRoot = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
     $Binary = Join-Path $targetRoot "debug\zed-terminal.exe"
+}
+if (-not $ShortcutBinary) {
+    $ShortcutBinary = if ($binaryWasProvided) {
+        $Binary
+    } else {
+        Join-Path $targetRoot "release\zed-terminal.exe"
+    }
 }
 if (-not $OutputDir) {
     $OutputDir = Join-Path $repoRoot "target\zed-terminal-release-check"
@@ -49,6 +60,7 @@ if (-not $SplitVisualBaselineImage -and -not $SkipVisualSmoke -and -not $SkipSpl
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
+$ShortcutBinary = [System.IO.Path]::GetFullPath($ShortcutBinary)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 if ($VisualBaselineImage) {
     $VisualBaselineImage = [System.IO.Path]::GetFullPath($VisualBaselineImage)
@@ -93,6 +105,7 @@ $mutationCliConfigDir = Join-Path $runDir "mutation-cli-config"
 $packageSmokeDir = Join-Path $runDir "package-smoke"
 $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
+$shortcutVisualSmokeDir = Join-Path $runDir "visual-smoke-shortcuts"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -104,6 +117,7 @@ $script:StepResults = New-Object System.Collections.Generic.List[object]
 $script:PackageSmoke = $null
 $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
+$script:ShortcutVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -786,7 +800,7 @@ function Convert-KeyValueOutput {
         }
 
         $text = $line.ToString().Trim()
-        if ($text -match '^([a-z0-9_]+):\s*(.*)$') {
+        if ($text -match '^([a-z0-9_-]+):\s*(.*)$') {
             $values[$Matches[1]] = $Matches[2]
         }
     }
@@ -1199,7 +1213,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "split")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "split", "shortcut")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1274,6 +1288,12 @@ function Convert-VisualSmokeOutput {
     $splitDirection = $null
     $splitReadyFile = $null
     $splitPaneVerified = $null
+    $shortcutE2EVerified = $null
+    $binarySubsystem = $null
+    $binarySubsystemValue = $null
+    $visibleTopLevelWindows = $null
+    $shortcutCaptures = @()
+    $shortcutComparisons = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -1295,6 +1315,96 @@ function Convert-VisualSmokeOutput {
         $splitMode = $values["split_mode"]
         $splitDirection = $values["split_direction"]
         $splitPaneVerified = $true
+    } elseif ($Mode -eq "shortcut") {
+        foreach ($key in @("shortcut_e2e_verified", "binary_subsystem", "binary_subsystem_value", "shortcut_startup_config_file", "visible_top_level_windows")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "shortcut visual smoke"
+        }
+        if ($values["shortcut_e2e_verified"] -ne "True") {
+            throw "shortcut visual smoke did not verify the shortcut workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "shortcut visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "shortcut visual smoke binary_subsystem_value"
+        $visibleTopLevelWindows = Convert-OutputInt64 -Value $values["visible_top_level_windows"] -Name "shortcut visual smoke visible_top_level_windows"
+        if ($binarySubsystemValue -ne 2) {
+            throw "shortcut visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        if ($visibleTopLevelWindows -ne 1) {
+            throw "shortcut visual smoke expected exactly one visible top-level process window"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["shortcut_startup_config_file"])
+        if (-not (Test-Path -LiteralPath $startupConfigFile -PathType Leaf)) {
+            throw "shortcut visual smoke startup config file was missing: $startupConfigFile"
+        }
+
+        foreach ($captureName in @(
+                "00-initial",
+                "01-ctrl-shift-t-new-tab",
+                "02-alt-shift-d-duplicate-split",
+                "03-alt-shift-minus-split-down",
+                "04-ctrl-shift-p-command-palette",
+                "05-ctrl-shift-w-close-tab"
+            )) {
+            $pathKey = "shortcut_capture_$captureName"
+            $bytesKey = "shortcut_capture_$($captureName)_bytes"
+            $colorsKey = "shortcut_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "shortcut visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "shortcut visual smoke") -Name "$captureName shortcut screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "shortcut visual smoke") -Name "$captureName shortcut sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "shortcut screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "shortcut screenshot $captureName appears blank or nearly blank"
+            }
+
+            $shortcutCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $shortcutComparisonEntries = @(
+            $values.GetEnumerator() |
+                Where-Object { $_.Key -like "shortcut_comparison_*" } |
+                Sort-Object Key
+        )
+        if ($shortcutComparisonEntries.Count -ne 5) {
+            throw "shortcut visual smoke expected five shortcut comparison diff entries, got $($shortcutComparisonEntries.Count)"
+        }
+        foreach ($entry in $shortcutComparisonEntries) {
+            if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
+                throw "shortcut visual smoke comparison entry was not parseable: $($entry.Key): $($entry.Value)"
+            }
+
+            $comparisonName = $entry.Key.Substring("shortcut_comparison_".Length)
+            $differentPixelRatio = Convert-OutputDouble -Value $Matches[1] -Name "$comparisonName shortcut different_pixel_ratio"
+            $averageChannelDelta = Convert-OutputDouble -Value $Matches[2] -Name "$comparisonName shortcut average_channel_delta"
+            $diffFile = [System.IO.Path]::GetFullPath($Matches[3])
+            if (-not (Test-Path -LiteralPath $diffFile -PathType Leaf)) {
+                throw "shortcut visual smoke comparison diff file was missing: $diffFile"
+            }
+            if ((Get-Item -LiteralPath $diffFile).Length -le 0) {
+                throw "shortcut visual smoke comparison diff file was empty: $diffFile"
+            }
+            if ($differentPixelRatio -le 0 -or $averageChannelDelta -le 0) {
+                throw "shortcut visual smoke comparison did not record a visible image difference for $comparisonName"
+            }
+
+            $shortcutComparisons += [pscustomobject]@{
+                name = $comparisonName
+                different_pixel_ratio = $differentPixelRatio
+                average_channel_delta = $averageChannelDelta
+                diff_file = $diffFile
+            }
+        }
+
+        $shortcutE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -1386,6 +1496,12 @@ function Convert-VisualSmokeOutput {
         comparison_screenshot_bytes = $comparisonScreenshotBytes
         sampled_pixels = $sampledPixels
         sampled_unique_colors = $sampledUniqueColors
+        shortcut_e2e_verified = $shortcutE2EVerified
+        binary_subsystem = $binarySubsystem
+        binary_subsystem_value = $binarySubsystemValue
+        visible_top_level_windows = $visibleTopLevelWindows
+        shortcut_captures = @($shortcutCaptures)
+        shortcut_comparisons = @($shortcutComparisons)
         baseline = $baseline
     }
 }
@@ -1421,6 +1537,7 @@ function Get-SkippedReleaseChecks {
     if ($SkipVisualSmoke) {
         $skipped.Add("default visual smoke")
         $skipped.Add("split visual smoke")
+        $skipped.Add("shortcut visual smoke")
     } else {
         if ($SkipVisualBaseline) {
             $skipped.Add("default visual baseline")
@@ -1434,6 +1551,9 @@ function Get-SkippedReleaseChecks {
             } elseif (-not $SplitVisualBaselineImage) {
                 $skipped.Add("split visual baseline")
             }
+        }
+        if ($SkipShortcutVisualSmoke) {
+            $skipped.Add("shortcut visual smoke")
         }
     }
 
@@ -1486,6 +1606,7 @@ function New-ReleaseReportMarkdown {
     $lines += "| Release mode | $(Format-MarkdownValue $Summary.release_mode) |"
     $lines += "| Run directory | $(Format-MarkdownValue $Summary.run_dir) |"
     $lines += "| Binary | $(Format-MarkdownValue $Summary.binary) |"
+    $lines += "| Shortcut binary | $(Format-MarkdownValue $Summary.shortcut_binary) |"
     $lines += "| Cargo target directory | $(Format-MarkdownValue $Summary.cargo_target_dir) |"
     $lines += "| Log file | $(Format-MarkdownValue $Summary.log_file) |"
     $lines += "| Summary file | $(Format-MarkdownValue $Summary.summary_file) |"
@@ -1559,7 +1680,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.split_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -1577,6 +1698,13 @@ function New-ReleaseReportMarkdown {
             $lines += "| Split verified | $(Format-MarkdownValue $visual.split_pane_verified) |"
             $lines += "| Split direction | $(Format-MarkdownValue $visual.split_direction) |"
         }
+        if ($visual.shortcut_e2e_verified -ne $null) {
+            $lines += "| Shortcut E2E verified | $(Format-MarkdownValue $visual.shortcut_e2e_verified) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Shortcut captures | $(Format-MarkdownValue @($visual.shortcut_captures).Count) |"
+            $lines += "| Shortcut comparisons | $(Format-MarkdownValue @($visual.shortcut_comparisons).Count) |"
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -1585,7 +1713,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.split_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -1622,11 +1750,13 @@ function Write-ReleaseSummary {
             visual_smoke = [bool]$SkipVisualSmoke
             visual_baseline = [bool]$SkipVisualBaseline
             split_visual_smoke = [bool]$SkipSplitVisualSmoke
+            shortcut_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
         run_dir = $runDir
         binary = $Binary
+        shortcut_binary = $ShortcutBinary
         cargo_target_dir = $CargoTargetDir
         log_file = $releaseLog
         summary_file = $summaryFile
@@ -1638,6 +1768,8 @@ function Write-ReleaseSummary {
         visual_baseline_skipped = [bool]$SkipVisualBaseline
         visual_smoke = $script:VisualSmoke
         split_visual_smoke = $script:SplitVisualSmoke
+        shortcut_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        shortcut_visual_smoke = $script:ShortcutVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -1654,6 +1786,7 @@ try {
     Write-Host "repo_root: $repoRoot"
     Write-Host "run_dir: $runDir"
     Write-Host "binary: $Binary"
+    Write-Host "shortcut_binary: $ShortcutBinary"
     if ($script:SourceControl.git_available) {
         Write-Host "git_commit: $($script:SourceControl.git_commit)"
         Write-Host "git_branch: $($script:SourceControl.git_branch)"
@@ -1713,11 +1846,25 @@ try {
         Invoke-Step "cargo build zed_terminal" {
             Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("build", "-p", "zed_terminal", "--bin", "zed-terminal") -UseTargetDir)
         }
+
+        if (-not $SkipVisualSmoke -and -not $SkipShortcutVisualSmoke -and -not $shortcutBinaryWasProvided -and -not $binaryWasProvided) {
+            Invoke-Step "cargo build zed_terminal release for shortcut smoke" {
+                Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("build", "-p", "zed_terminal", "--bin", "zed-terminal", "--release") -UseTargetDir)
+            }
+        }
     }
 
     Invoke-Step "binary exists" {
         if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
             throw "zed-terminal binary not found: $Binary"
+        }
+    }
+
+    if (-not $SkipVisualSmoke -and -not $SkipShortcutVisualSmoke) {
+        Invoke-Step "shortcut binary exists" {
+            if (-not (Test-Path -LiteralPath $ShortcutBinary -PathType Leaf)) {
+                throw "zed-terminal shortcut smoke binary not found: $ShortcutBinary"
+            }
         }
     }
 
@@ -3749,6 +3896,26 @@ try {
                     -Output (($splitVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "split" `
                     -BaselineExpected ([bool]$SplitVisualBaselineImage)
+            }
+        }
+
+        if (-not $SkipShortcutVisualSmoke) {
+            $shortcutVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $shortcutVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifyShortcuts"
+            )
+            Invoke-Step "visual smoke shortcuts" {
+                $shortcutVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $shortcutVisualSmokeArgs
+                $script:ShortcutVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($shortcutVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "shortcut" `
+                    -BaselineExpected $false
             }
         }
     }
