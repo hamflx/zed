@@ -995,7 +995,17 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenPathsReport",
             "zed_terminal::OpenVersionInfoReport",
             "terminal::Paste",
-            "pane::CloseActiveItem",
+            "zed_terminal::ActivateTerminalTab",
+            "zed_terminal::ActivateNextTerminalTab",
+            "zed_terminal::ActivatePreviousTerminalTab",
+            "zed_terminal::ActivateLastTerminalTab",
+            "zed_terminal::CloseTerminalTab",
+            "zed_terminal::CloseOtherTerminalTabs",
+            "zed_terminal::CloseTerminalTabsToTheRight",
+            "zed_terminal::CloseTerminalTabsToTheLeft",
+            "zed_terminal::CloseAllTerminalTabs",
+            "zed_terminal::MoveTerminalTabLeft",
+            "zed_terminal::MoveTerminalTabRight",
             '"profile"',
             '"slot"'
         )
@@ -2049,7 +2059,17 @@ try {
                 "zed_terminal::OpenPathsReport",
                 "zed_terminal::OpenVersionInfoReport",
                 "terminal::Paste",
-                "pane::CloseActiveItem"
+                "zed_terminal::ActivateTerminalTab",
+                "zed_terminal::ActivateNextTerminalTab",
+                "zed_terminal::ActivatePreviousTerminalTab",
+                "zed_terminal::ActivateLastTerminalTab",
+                "zed_terminal::CloseTerminalTab",
+                "zed_terminal::CloseOtherTerminalTabs",
+                "zed_terminal::CloseTerminalTabsToTheRight",
+                "zed_terminal::CloseTerminalTabsToTheLeft",
+                "zed_terminal::CloseAllTerminalTabs",
+                "zed_terminal::MoveTerminalTabLeft",
+                "zed_terminal::MoveTerminalTabRight"
             )) {
                 if ($keymapSchemaText -notmatch [regex]::Escape($actionName)) {
                     throw "Keymap schema is missing expected action '$actionName'."
@@ -2701,7 +2721,7 @@ try {
   {
     "bindings": {
       "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab",
-      "ctrl-shift-w": "pane::CloseActiveItem"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
     },
     "unbind": {
       "ctrl-j": "zed_terminal::NewTerminalTab"

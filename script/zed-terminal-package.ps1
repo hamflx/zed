@@ -725,7 +725,17 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::OpenPathsReport",
             "zed_terminal::OpenVersionInfoReport",
             "terminal::Paste",
-            "pane::CloseActiveItem",
+            "zed_terminal::ActivateTerminalTab",
+            "zed_terminal::ActivateNextTerminalTab",
+            "zed_terminal::ActivatePreviousTerminalTab",
+            "zed_terminal::ActivateLastTerminalTab",
+            "zed_terminal::CloseTerminalTab",
+            "zed_terminal::CloseOtherTerminalTabs",
+            "zed_terminal::CloseTerminalTabsToTheRight",
+            "zed_terminal::CloseTerminalTabsToTheLeft",
+            "zed_terminal::CloseAllTerminalTabs",
+            "zed_terminal::MoveTerminalTabLeft",
+            "zed_terminal::MoveTerminalTabRight",
             '"profile"',
             '"slot"'
         )
@@ -761,9 +771,13 @@ function Assert-PackageDefaultKeymapReferences {
         '"ctrl-shift-1"',
         '"ctrl-shift-9"',
         "zed_terminal::DuplicateTerminalTab",
+        "zed_terminal::CloseTerminalTab",
+        "zed_terminal::ActivateNextTerminalTab",
+        "zed_terminal::ActivatePreviousTerminalTab",
+        "zed_terminal::ActivateTerminalTab",
+        "zed_terminal::ActivateLastTerminalTab",
         "command_palette::Toggle",
-        "terminal::Paste",
-        "pane::CloseActiveItem"
+        "terminal::Paste"
     )) {
         if (
             $rootDefaultKeymapText.IndexOf($snippet, [System.StringComparison]::Ordinal) -lt 0 -or

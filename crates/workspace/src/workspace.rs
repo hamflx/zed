@@ -7719,6 +7719,10 @@ impl Workspace {
         self.modal_layer.read(cx).active_modal()
     }
 
+    pub fn modal_layer(&self) -> Entity<ModalLayer> {
+        self.modal_layer.clone()
+    }
+
     /// Toggles a modal of type `V`. If a modal of the same type is currently active,
     /// it will be hidden. If a different modal is active, it will be replaced with the new one.
     /// If no modal is active, the new modal will be shown.

@@ -10,6 +10,7 @@ Param(
     [Parameter()][double]$MaxBaselineAverageChannelDelta = 2.0,
     [Parameter()][int]$BaselinePixelTolerance = 4,
     [Parameter()][switch]$VerifySplitPane,
+    [Parameter()][switch]$VerifyShortcuts,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -38,6 +39,9 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
+if ($VerifySplitPane -and $VerifyShortcuts) {
+    throw "Use either -VerifySplitPane or -VerifyShortcuts, not both."
+}
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
@@ -64,6 +68,7 @@ $dataDir = Join-Path $runDir "data"
 $configDir = Join-Path $runDir "config"
 $probeReadyFile = Join-Path $runDir "probe-ready.txt"
 $splitReadyFile = Join-Path $runDir "split-ready.txt"
+$shortcutStartupConfigFile = $null
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
 function Quote-ProcessArgument {
@@ -144,6 +149,7 @@ public static class ZedTerminalVisualSmokeNative {
     public sealed class WindowInfo {
         public IntPtr Handle;
         public string Title;
+        public string ClassName;
         public int Left;
         public int Top;
         public int Width;
@@ -180,6 +186,9 @@ public static class ZedTerminalVisualSmokeNative {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowTextLength(IntPtr hWnd);
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -198,6 +207,11 @@ public static class ZedTerminalVisualSmokeNative {
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
     private static string GetTitle(IntPtr hWnd) {
         var length = GetWindowTextLength(hWnd);
         if (length <= 0) {
@@ -207,6 +221,12 @@ public static class ZedTerminalVisualSmokeNative {
         var builder = new StringBuilder(length + 1);
         GetWindowText(hWnd, builder, builder.Capacity);
         return builder.ToString();
+    }
+
+    private static string GetClass(IntPtr hWnd) {
+        var builder = new StringBuilder(256);
+        var length = GetClassName(hWnd, builder, builder.Capacity);
+        return length <= 0 ? "" : builder.ToString();
     }
 
     public static WindowInfo[] GetVisibleTopLevelWindowsForProcess(int processId) {
@@ -232,6 +252,7 @@ public static class ZedTerminalVisualSmokeNative {
             windows.Add(new WindowInfo {
                 Handle = hWnd,
                 Title = GetTitle(hWnd),
+                ClassName = GetClass(hWnd),
                 Left = rect.Left,
                 Top = rect.Top,
                 Width = width,
@@ -282,6 +303,19 @@ public static class ZedTerminalVisualSmokeNative {
         ShowWindow(handle, SW_SHOW);
         BringWindowToTop(handle);
         SetForegroundWindow(handle);
+    }
+
+    public static void SendKeyChord(IntPtr handle, ushort[] modifiers, ushort key) {
+        BringToFront(handle);
+        System.Threading.Thread.Sleep(120);
+        foreach (var modifier in modifiers) {
+            keybd_event((byte)modifier, 0, 0, UIntPtr.Zero);
+        }
+        keybd_event((byte)key, 0, 0, UIntPtr.Zero);
+        keybd_event((byte)key, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        for (var i = modifiers.Length - 1; i >= 0; i--) {
+            keybd_event((byte)modifiers[i], 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        }
     }
 
     public static bool PrintWindowContent(IntPtr handle, IntPtr hdc) {
@@ -526,6 +560,162 @@ function Compare-ImageToBaseline {
     }
 }
 
+function Get-PortableExecutableSubsystem {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x100) {
+        throw "Binary is too small to be a PE file: $Path"
+    }
+
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+    if ($peOffset -lt 0 -or ($peOffset + 0x5a) -ge $bytes.Length) {
+        throw "Invalid PE header offset in binary: $Path"
+    }
+    if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
+        throw "Missing PE signature in binary: $Path"
+    }
+
+    $optionalHeaderOffset = $peOffset + 24
+    $subsystem = [BitConverter]::ToUInt16($bytes, $optionalHeaderOffset + 0x44)
+    $name = switch ($subsystem) {
+        2 { "Windows GUI" }
+        3 { "Windows Console" }
+        default { "Subsystem $subsystem" }
+    }
+
+    return [PSCustomObject]@{
+        Value = $subsystem
+        Name = $name
+    }
+}
+
+function Assert-SingleVisibleProcessWindow {
+    param([Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process)
+
+    $windows = [ZedTerminalVisualSmokeNative]::GetVisibleTopLevelWindowsForProcess($Process.Id)
+    if ($windows.Length -ne 1) {
+        $descriptions = $windows | ForEach-Object {
+            "$($_.Handle):title='$($_.Title)':class='$($_.ClassName)':bounds=$($_.Left),$($_.Top),$($_.Width),$($_.Height)"
+        }
+        throw "Expected exactly one visible zed-terminal top-level window for process $($Process.Id), found $($windows.Length): $($descriptions -join '; ')"
+    }
+
+    return $windows[0]
+}
+
+function Save-ShortcutScreenshot {
+    param(
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    $path = Join-Path $RunDir "zed-terminal-shortcuts-$Name.png"
+    Save-WindowScreenshot -Window $Window -Path $path
+    $stats = Get-ImageSampleStats -Path $path
+    if ($stats.FileBytes -lt 10000) {
+        throw "Shortcut screenshot '$Name' is unexpectedly small: $($stats.FileBytes) bytes."
+    }
+    if ($stats.UniqueColors -lt 8) {
+        throw "Shortcut screenshot '$Name' appears blank or nearly blank: $($stats.UniqueColors) sampled colors."
+    }
+    return [PSCustomObject]@{
+        Name = $Name
+        Path = $path
+        Stats = $stats
+    }
+}
+
+function Assert-ShortcutScreenshotChanged {
+    param(
+        [Parameter(Mandatory = $true)]$Before,
+        [Parameter(Mandatory = $true)]$After,
+        [Parameter(Mandatory = $true)][double]$MinimumDifferentPixelRatio,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    $diffPath = Join-Path $RunDir "zed-terminal-shortcuts-$($After.Name)-diff.png"
+    $comparison = Compare-ImageToBaseline `
+        -ActualPath $After.Path `
+        -BaselinePath $Before.Path `
+        -DiffPath $diffPath `
+        -PixelTolerance 4
+    if ($comparison.DifferentPixelRatio -lt $MinimumDifferentPixelRatio) {
+        throw "Shortcut '$($After.Name)' did not visibly change the terminal enough. different_pixel_ratio=$($comparison.DifferentPixelRatio), minimum=$MinimumDifferentPixelRatio, before=$($Before.Path), after=$($After.Path), diff=$diffPath"
+    }
+
+    return $comparison
+}
+
+function Invoke-ZedTerminalShortcutVerification {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_MENU = [System.UInt16]0x12
+    $VK_ESCAPE = [System.UInt16]0x1b
+    $VK_D = [System.UInt16][byte][char]'D'
+    $VK_P = [System.UInt16][byte][char]'P'
+    $VK_T = [System.UInt16][byte][char]'T'
+    $VK_W = [System.UInt16][byte][char]'W'
+    $VK_OEM_MINUS = [System.UInt16]0xbd
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $comparisons = New-Object System.Collections.Generic.List[object]
+
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $initial = Save-ShortcutScreenshot -Window $Window -Name "00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_T)
+    Start-Sleep -Milliseconds 1600
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $newTab = Save-ShortcutScreenshot -Window $Window -Name "01-ctrl-shift-t-new-tab" -RunDir $RunDir
+    $captures.Add($newTab)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $newTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_MENU, $VK_SHIFT), $VK_D)
+    Start-Sleep -Milliseconds 2200
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $duplicateSplit = Save-ShortcutScreenshot -Window $Window -Name "02-alt-shift-d-duplicate-split" -RunDir $RunDir
+    $captures.Add($duplicateSplit)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $duplicateSplit -MinimumDifferentPixelRatio 0.003 -RunDir $RunDir))
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_MENU, $VK_SHIFT), $VK_OEM_MINUS)
+    Start-Sleep -Milliseconds 2200
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $splitDown = Save-ShortcutScreenshot -Window $Window -Name "03-alt-shift-minus-split-down" -RunDir $RunDir
+    $captures.Add($splitDown)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $duplicateSplit -After $splitDown -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_P)
+    Start-Sleep -Milliseconds 1600
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $commandPalette = Save-ShortcutScreenshot -Window $Window -Name "04-ctrl-shift-p-command-palette" -RunDir $RunDir
+    $captures.Add($commandPalette)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitDown -After $commandPalette -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@(), $VK_ESCAPE)
+    Start-Sleep -Milliseconds 800
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_W)
+    Start-Sleep -Milliseconds 1600
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $closeTab = Save-ShortcutScreenshot -Window $Window -Name "05-ctrl-shift-w-close-tab" -RunDir $RunDir
+    $captures.Add($closeTab)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $commandPalette -After $closeTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        Comparisons = $comparisons
+        FinalWindow = $Window
+    }
+}
+
 function Write-SplitPaneStartupConfig {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigDir,
@@ -571,6 +761,30 @@ while ($true) {
     return $startupConfigFile
 }
 
+function Write-ShortcutStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $shortcutCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $EncodedProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $shortcutCommand = $shortcutCommand -join " "
+    $startupConfig = [ordered]@{
+        title = "Shortcut Smoke"
+        command = $shortcutCommand
+    } | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
 $probeScript = @'
 $Host.UI.RawUI.WindowTitle = "zed-terminal-visual-smoke"
 Set-Content -LiteralPath __PROBE_READY_FILE__ -Value "ready"
@@ -592,30 +806,50 @@ $encodedProbeScript = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.
 $startupConfigFile = $null
 if ($VerifySplitPane) {
     $startupConfigFile = Write-SplitPaneStartupConfig -ConfigDir $configDir -ReadyFile $splitReadyFile
+} elseif ($VerifyShortcuts) {
+    $shortcutStartupConfigFile = Write-ShortcutStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $startupConfigFile = $shortcutStartupConfigFile
 }
 
-$arguments = @(
-    "--user-data-dir", $dataDir,
-    "--config-dir", $configDir,
-    "--title", "Visual Smoke",
-    "--",
-    "powershell.exe",
-    "-NoLogo",
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-EncodedCommand", $encodedProbeScript
-)
-if (-not $VerifySplitPane) {
+$arguments = if ($VerifyShortcuts) {
+    $arguments = @(
+        "--user-data-dir", $dataDir,
+        "--config-dir", $configDir
+    )
+    $arguments
+} else {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir,
-        "--no-startup-config"
-    ) + $arguments[4..($arguments.Length - 1)]
+        "--title", "Visual Smoke",
+        "--",
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $encodedProbeScript
+    )
+    if (-not $VerifySplitPane) {
+        $arguments = @(
+            "--user-data-dir", $dataDir,
+            "--config-dir", $configDir,
+            "--no-startup-config"
+        ) + $arguments[4..($arguments.Length - 1)]
+    }
+    $arguments
 }
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 
 try {
+    $subsystem = $null
+    if ($VerifyShortcuts) {
+        $subsystem = Get-PortableExecutableSubsystem -Path $Binary
+        if ($subsystem.Value -ne 2) {
+            throw "Shortcut E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
+        }
+    }
+
     $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -PassThru
     $window = Get-ProcessWindow -Process $process -TimeoutSeconds $StartupTimeoutSeconds
     Wait-ProbeReadyFile -Process $process -Path $probeReadyFile -TimeoutSeconds $StartupTimeoutSeconds
@@ -680,6 +914,15 @@ try {
         throw "Stable comparison screenshot appears blank or nearly blank: $($comparisonStats.UniqueColors) sampled colors."
     }
 
+    $shortcutVerification = $null
+    if ($VerifyShortcuts) {
+        $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir
+        $window = $shortcutVerification.FinalWindow
+    }
+
     $baselineComparison = $null
     $baselineComparisonOriginalFile = $null
     $baselineComparisonFile = $null
@@ -727,6 +970,21 @@ try {
     Write-Output "probe_ready_file: $probeReadyFile"
     if ($startupConfigFile) {
         Write-Output "startup_config_file: $startupConfigFile"
+    }
+    if ($VerifyShortcuts) {
+        Write-Output "shortcut_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "shortcut_startup_config_file: $shortcutStartupConfigFile"
+        Write-Output "visible_top_level_windows: 1"
+        foreach ($capture in $shortcutVerification.Captures) {
+            Write-Output "shortcut_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "shortcut_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "shortcut_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+        foreach ($comparison in $shortcutVerification.Comparisons) {
+            Write-Output "shortcut_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
+        }
     }
     if ($VerifySplitPane) {
         Write-Output "split_mode: startup"

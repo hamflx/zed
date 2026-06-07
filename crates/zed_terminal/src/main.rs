@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use std::{
     any::TypeId,
     collections::{BTreeMap, BTreeSet},
@@ -22,11 +27,15 @@ use client::{Client, UserStore};
 use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
+use gpui::prelude::{
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+};
 use gpui::{
-    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, KeyBinding, KeyContext,
-    Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel, SharedString,
-    SystemWindowTabController, Task, TaskExt, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, is_no_action, is_unbind, px, size,
+    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, Entity, KeyBinding,
+    KeyContext, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel,
+    SharedString, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity, Window,
+    WindowBounds, WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind, point,
+    px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -25858,7 +25867,6 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     settings::init(cx);
     watch_settings_files(fs.clone(), cx);
     watch_startup_config_file(fs.clone(), cx);
-    bind_keys(fs.clone(), cx)?;
     Assets
         .load_fonts(cx)
         .context("failed to load Zed embedded fonts")?;
@@ -25890,7 +25898,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
         client,
         user_store,
         workspace_store,
-        fs,
+        fs: fs.clone(),
         build_window_options: build_window_options,
         node_runtime,
         session,
@@ -25901,6 +25909,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     editor::init(cx);
     init_terminal_search(cx);
     terminal_view::init(cx);
+    bind_keys(fs.clone(), cx)?;
 
     open_terminal_window(app_state, launch_options, cx)?;
     cx.activate(true);
@@ -26881,8 +26890,67 @@ fn window_menu_items() -> Vec<MenuItem> {
     ]
 }
 
-fn build_window_options(_: Option<uuid::Uuid>, _: &mut App) -> WindowOptions {
-    WindowOptions::default()
+fn build_window_options(_: Option<uuid::Uuid>, cx: &mut App) -> WindowOptions {
+    zed_terminal_window_options(None, cx)
+}
+
+fn zed_terminal_window_options(bounds: Option<Bounds<Pixels>>, cx: &mut App) -> WindowOptions {
+    WindowOptions {
+        titlebar: Some(gpui::TitlebarOptions {
+            title: Some(SharedString::from(APP_TITLE)),
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(9.0), px(9.0))),
+        }),
+        window_bounds: bounds.map(WindowBounds::Windowed),
+        window_background: cx.theme().window_background_appearance(),
+        app_id: Some(TERMINAL_APP_NAME_LOWERCASE.to_owned()),
+        window_decorations: Some(WindowDecorations::Client),
+        window_min_size: Some(size(px(360.0), px(240.0))),
+        ..Default::default()
+    }
+}
+
+struct TerminalWindowRoot {
+    workspace: Entity<Workspace>,
+}
+
+impl TerminalWindowRoot {
+    fn new(workspace: Entity<Workspace>) -> Self {
+        Self { workspace }
+    }
+}
+
+impl Render for TerminalWindowRoot {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui_font = theme_settings::setup_ui_font(window, cx);
+        let text_color = cx.theme().colors().text;
+        let workspace = self.workspace.clone();
+        let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
+        let root = workspace.update(cx, |workspace, cx| {
+            workspace.actions(div().flex().flex_row().items_center(), window, cx)
+        });
+        let modal_layer = workspace.read(cx).modal_layer();
+
+        workspace::client_side_decorations(
+            root.key_context(workspace_key_context)
+                .relative()
+                .size_full()
+                .font(ui_font)
+                .text_color(text_color)
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .size_full()
+                        .overflow_hidden()
+                        .child(workspace),
+                )
+                .child(modal_layer),
+            window,
+            cx,
+            Tiling::default(),
+        )
+    }
 }
 
 fn terminal_pane_resize_width(window: &mut Window, cx: &App) -> Pixels {
@@ -27201,16 +27269,10 @@ fn open_terminal_window(
     let new_terminal_split_up = new_terminal_tab.clone();
     let initial_tab = launch_options.initial_tab;
     let additional_tabs = launch_options.additional_tabs;
+    let window_options = zed_terminal_window_options(Some(bounds), cx);
 
     cx.open_window(
-        WindowOptions {
-            titlebar: Some(gpui::TitlebarOptions {
-                title: Some(SharedString::from(APP_TITLE)),
-                ..Default::default()
-            }),
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            ..Default::default()
-        },
+        window_options,
         move |window, cx| {
             theme_settings::setup_ui_font(window, cx);
             window.set_background_appearance(cx.theme().window_background_appearance());
@@ -27844,7 +27906,7 @@ fn open_terminal_window(
             });
 
             window.defer(cx, set_terminal_window_title);
-            workspace
+            cx.new(|_| TerminalWindowRoot::new(workspace))
         },
     )
     .context("failed to open terminal window")?;
@@ -30025,6 +30087,34 @@ mod tests {
             .expect("terminal keymap asset should parse");
     }
 
+    #[gpui::test]
+    fn terminal_window_options_hide_native_titlebar(cx: &mut App) {
+        settings::init(cx);
+        theme_settings::init(theme::LoadThemes::JustBase, cx);
+        let bounds = Bounds::new(Default::default(), size(px(1000.0), px(700.0)));
+        let options = zed_terminal_window_options(Some(bounds), cx);
+
+        let titlebar = options
+            .titlebar
+            .as_ref()
+            .expect("terminal window should keep a transparent GPUI titlebar");
+        assert_eq!(titlebar.title.as_deref(), Some(APP_TITLE));
+        assert!(
+            titlebar.appears_transparent,
+            "transparent titlebar hides the native Windows titlebar"
+        );
+        assert!(titlebar.traffic_light_position.is_some());
+        assert_eq!(options.window_bounds, Some(WindowBounds::Windowed(bounds)));
+        assert_eq!(options.window_decorations, Some(WindowDecorations::Client));
+        assert_eq!(options.app_id.as_deref(), Some(TERMINAL_APP_NAME_LOWERCASE));
+
+        let min_size = options
+            .window_min_size
+            .expect("terminal window should have a usable minimum size");
+        assert_eq!(min_size.width, px(360.0));
+        assert_eq!(min_size.height, px(240.0));
+    }
+
     #[test]
     fn terminal_keymap_includes_pane_workflow_bindings() {
         let keymap: gpui::private::serde_json::Value = settings::parse_json_with_comments(
@@ -30068,12 +30158,14 @@ mod tests {
             "alt-shift-d",
             "zed_terminal::DuplicateTerminalSplitAuto",
         );
+        assert_key_binding(&keymap, None, "alt-+", "zed_terminal::NewTerminalSplitDown");
         assert_key_binding(
             &keymap,
             None,
             "alt-shift-plus",
             "zed_terminal::NewTerminalSplitDown",
         );
+        assert_key_binding(&keymap, None, "alt-_", "zed_terminal::NewTerminalSplitDown");
         assert_key_binding(
             &keymap,
             None,
