@@ -31,11 +31,11 @@ use gpui::prelude::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
 };
 use gpui::{
-    Action, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, Entity, KeyBinding,
-    KeyContext, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel,
-    SharedString, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity, Window,
-    WindowBounds, WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind, point,
-    px, size,
+    Action, AnyWindowHandle, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, Entity,
+    KeyBinding, KeyContext, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels,
+    PromptLevel, SharedString, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity,
+    Window, WindowBounds, WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind,
+    point, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -256,6 +256,7 @@ const APP_TITLE: &str = TERMINAL_APP_NAME;
 const TERMINAL_APP_NAME: &str = "Zed Terminal";
 const TERMINAL_APP_NAME_LOWERCASE: &str = "zed-terminal";
 const TERMINAL_KEYMAP_PATH: &str = "keymaps/zed-terminal.json";
+const TERMINAL_SHORTCUT_SMOKE_DIR_ENV: &str = "ZED_TERMINAL_SHORTCUT_SMOKE_DIR";
 const TERMINAL_STARTUP_CONFIG_FILE: &str = "terminal.json";
 const TERMINAL_SETTINGS_SCHEMA_FILE: &str = "settings.schema.json";
 const TERMINAL_STARTUP_CONFIG_SCHEMA_FILE: &str = "terminal.schema.json";
@@ -26491,6 +26492,144 @@ fn load_default_keymap(cx: &mut App) -> Result<()> {
     Ok(())
 }
 
+fn install_terminal_shortcut_smoke_driver(window_handle: AnyWindowHandle, cx: &mut App) {
+    let Some(smoke_dir) = env::var_os(TERMINAL_SHORTCUT_SMOKE_DIR_ENV).map(PathBuf::from) else {
+        return;
+    };
+
+    log::info!(
+        "zed_terminal shortcut smoke driver enabled at {}",
+        smoke_dir.display()
+    );
+
+    let ready_file = smoke_dir.join("shortcut-smoke-ready.txt");
+    let request_file = smoke_dir.join("shortcut-smoke-request.txt");
+    let response_file = smoke_dir.join("shortcut-smoke-response.txt");
+
+    if let Err(error) = std_fs::create_dir_all(&smoke_dir) {
+        log::warn!(
+            "failed to create shortcut smoke directory {}: {error:#}",
+            smoke_dir.display()
+        );
+        return;
+    }
+    if let Err(error) = std_fs::write(&ready_file, "ready\n") {
+        log::warn!(
+            "failed to write shortcut smoke ready file {}: {error:#}",
+            ready_file.display()
+        );
+    }
+
+    cx.spawn(async move |cx| {
+        let mut last_request_id = String::new();
+
+        loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(50))
+                .await;
+
+            let request = match std_fs::read_to_string(&request_file) {
+                Ok(request) => request,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    log::warn!(
+                        "failed to read shortcut smoke request file {}: {error:#}",
+                        request_file.display()
+                    );
+                    continue;
+                }
+            };
+
+            let mut lines = request.lines();
+            let Some(request_id) = lines.next().map(str::trim).filter(|id| !id.is_empty()) else {
+                continue;
+            };
+            if request_id == last_request_id {
+                continue;
+            }
+            last_request_id = request_id.to_string();
+
+            let Some(keystroke_text) = lines.next().map(str::trim).filter(|key| !key.is_empty())
+            else {
+                write_shortcut_smoke_response(
+                    &response_file,
+                    request_id,
+                    "error",
+                    "",
+                    "missing keystroke",
+                );
+                continue;
+            };
+
+            let keystroke = match Keystroke::parse(keystroke_text) {
+                Ok(keystroke) => keystroke,
+                Err(error) => {
+                    write_shortcut_smoke_response(
+                        &response_file,
+                        request_id,
+                        "error",
+                        keystroke_text,
+                        &format!("invalid keystroke: {error}"),
+                    );
+                    continue;
+                }
+            };
+
+            let result =
+                window_handle.update(cx, |_, window, cx| window.dispatch_keystroke(keystroke, cx));
+
+            match result {
+                Ok(true) => {
+                    write_shortcut_smoke_response(
+                        &response_file,
+                        request_id,
+                        "ok",
+                        keystroke_text,
+                        "handled",
+                    );
+                }
+                Ok(false) => {
+                    write_shortcut_smoke_response(
+                        &response_file,
+                        request_id,
+                        "error",
+                        keystroke_text,
+                        "not handled",
+                    );
+                }
+                Err(error) => {
+                    write_shortcut_smoke_response(
+                        &response_file,
+                        request_id,
+                        "error",
+                        keystroke_text,
+                        &format!("window update failed: {error:#}"),
+                    );
+                }
+            }
+        }
+    })
+    .detach();
+}
+
+fn write_shortcut_smoke_response(
+    response_file: &Path,
+    request_id: &str,
+    status: &str,
+    keystroke: &str,
+    message: &str,
+) {
+    let response =
+        format!("id: {request_id}\nstatus: {status}\nkeystroke: {keystroke}\nmessage: {message}\n");
+
+    if let Err(error) = std_fs::write(response_file, response) {
+        log::warn!(
+            "failed to write shortcut smoke response file {}: {error:#}",
+            response_file.display()
+        );
+    }
+}
+
 #[cfg(test)]
 fn shell_menu_items(profile_entries: Vec<TerminalStartupProfileMenuEntry>) -> Vec<MenuItem> {
     shell_menu_items_with_visibility(profile_entries.into())
@@ -27881,6 +28020,7 @@ fn open_terminal_window(
                 workspace
             });
             let window_handle = window.window_handle();
+            install_terminal_shortcut_smoke_driver(window_handle, cx);
             cx.subscribe(
                 &workspace,
                 move |_, event: &WorkspaceEvent, cx| match event {
@@ -30342,6 +30482,7 @@ mod tests {
 
         assert_key_binding(&keymap, None, "ctrl-shift-p", "command_palette::Toggle");
         assert_key_binding(&keymap, None, "f1", "command_palette::Toggle");
+        assert_key_binding(&keymap, Some("CommandPalette"), "escape", "menu::Cancel");
     }
 
     #[test]

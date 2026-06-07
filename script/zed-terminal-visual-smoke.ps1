@@ -1,6 +1,7 @@
 [CmdletBinding()]
 Param(
     [Parameter()][string]$Binary,
+    [Parameter()][string]$WorkingDirectory,
     [Parameter()][string]$OutputDir,
     [Parameter()][string]$BaselineImage,
     [Parameter()][string]$UpdateBaselineImage,
@@ -44,6 +45,10 @@ if ($VerifySplitPane -and $VerifyShortcuts) {
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
+if (-not $WorkingDirectory) {
+    $WorkingDirectory = (Get-Location).Path
+}
+$WorkingDirectory = [System.IO.Path]::GetFullPath($WorkingDirectory)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 if ($BaselineImage) {
     $BaselineImage = [System.IO.Path]::GetFullPath($BaselineImage)
@@ -54,6 +59,9 @@ if ($UpdateBaselineImage) {
 
 if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
     throw "zed-terminal binary not found: $Binary. Build it first with: cargo +stable build -p zed_terminal --bin zed-terminal"
+}
+if (-not (Test-Path -LiteralPath $WorkingDirectory -PathType Container)) {
+    throw "Working directory not found: $WorkingDirectory"
 }
 if ($BaselineImage -and -not (Test-Path -LiteralPath $BaselineImage -PathType Leaf)) {
     throw "Baseline image not found: $BaselineImage"
@@ -69,6 +77,7 @@ $configDir = Join-Path $runDir "config"
 $probeReadyFile = Join-Path $runDir "probe-ready.txt"
 $splitReadyFile = Join-Path $runDir "split-ready.txt"
 $shortcutStartupConfigFile = $null
+$shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
 function Quote-ProcessArgument {
@@ -146,6 +155,50 @@ public static class ZedTerminalVisualSmokeNative {
         public int Y;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KeyboardInput {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseInput {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HardwareInput {
+        public uint Message;
+        public ushort ParamL;
+        public ushort ParamH;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion {
+        [FieldOffset(0)]
+        public KeyboardInput Keyboard;
+
+        [FieldOffset(0)]
+        public MouseInput Mouse;
+
+        [FieldOffset(0)]
+        public HardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Input {
+        public uint Type;
+        public InputUnion Union;
+    }
+
     public sealed class WindowInfo {
         public IntPtr Handle;
         public string Title;
@@ -202,15 +255,31 @@ public static class ZedTerminalVisualSmokeNative {
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
-    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+    private static extern bool SetCursorPos(int X, int Y);
 
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKey(uint uCode, uint uMapType);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
+
+    private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint MAPVK_VK_TO_VSC = 0x0000;
+    private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    private const uint MOUSEEVENTF_LEFTUP = 0x0004;
 
     private static string GetTitle(IntPtr hWnd) {
         var length = GetWindowTextLength(hWnd);
@@ -305,17 +374,96 @@ public static class ZedTerminalVisualSmokeNative {
         SetForegroundWindow(handle);
     }
 
-    public static void SendKeyChord(IntPtr handle, ushort[] modifiers, ushort key) {
-        BringToFront(handle);
-        System.Threading.Thread.Sleep(120);
+    public static void FocusClientArea(WindowInfo window) {
+        ShowWindow(window.Handle, SW_SHOW);
+        BringWindowToTop(window.Handle);
+        SetForegroundWindow(window.Handle);
+
+        var clientRegion = GetClientCaptureRegion(window);
+        var x = clientRegion.Left + Math.Min(120, Math.Max(40, clientRegion.Width / 3));
+        var y = clientRegion.Top + Math.Min(140, Math.Max(80, clientRegion.Height / 4));
+        SetCursorPos(x, y);
+        System.Threading.Thread.Sleep(80);
+        mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(40);
+        mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+        System.Threading.Thread.Sleep(160);
+    }
+
+    public static WindowInfo GetForegroundWindowInfo() {
+        var handle = GetForegroundWindow();
+        if (handle == IntPtr.Zero) {
+            return null;
+        }
+
+        Rect rect;
+        if (!GetWindowRect(handle, out rect)) {
+            return new WindowInfo {
+                Handle = handle,
+                Title = GetTitle(handle),
+                ClassName = GetClass(handle),
+                Left = 0,
+                Top = 0,
+                Width = 0,
+                Height = 0
+            };
+        }
+
+        return new WindowInfo {
+            Handle = handle,
+            Title = GetTitle(handle),
+            ClassName = GetClass(handle),
+            Left = rect.Left,
+            Top = rect.Top,
+            Width = rect.Right - rect.Left,
+            Height = rect.Bottom - rect.Top
+        };
+    }
+
+    public static string DescribeWindow(WindowInfo window) {
+        if (window == null) {
+            return "<none>";
+        }
+
+        return window.Handle + ":title='" + window.Title + "':class='" + window.ClassName + "':bounds=" + window.Left + "," + window.Top + "," + window.Width + "," + window.Height;
+    }
+
+    public static void SendKeyChord(WindowInfo window, ushort[] modifiers, ushort key) {
+        FocusClientArea(window);
+        var foreground = GetForegroundWindowInfo();
+        if (foreground == null || foreground.Handle != window.Handle) {
+            throw new InvalidOperationException("zed-terminal window did not become the foreground window before shortcut injection. expected=" + DescribeWindow(window) + " foreground=" + DescribeWindow(foreground));
+        }
+
+        var inputs = new List<Input>();
         foreach (var modifier in modifiers) {
-            keybd_event((byte)modifier, 0, 0, UIntPtr.Zero);
+            inputs.Add(KeyInput(modifier, 0));
         }
-        keybd_event((byte)key, 0, 0, UIntPtr.Zero);
-        keybd_event((byte)key, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+        inputs.Add(KeyInput(key, 0));
+        inputs.Add(KeyInput(key, KEYEVENTF_KEYUP));
         for (var i = modifiers.Length - 1; i >= 0; i--) {
-            keybd_event((byte)modifiers[i], 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
+            inputs.Add(KeyInput(modifiers[i], KEYEVENTF_KEYUP));
         }
+
+        var sent = SendInput((uint)inputs.Count, inputs.ToArray(), Marshal.SizeOf(typeof(Input)));
+        if (sent != inputs.Count) {
+            throw new InvalidOperationException("SendInput sent " + sent + " of " + inputs.Count + " keyboard events. Win32 error: " + Marshal.GetLastWin32Error() + ".");
+        }
+    }
+
+    private static Input KeyInput(ushort virtualKey, uint flags) {
+        return new Input {
+            Type = INPUT_KEYBOARD,
+            Union = new InputUnion {
+                Keyboard = new KeyboardInput {
+                    VirtualKey = virtualKey,
+                    ScanCode = (ushort)MapVirtualKey(virtualKey, MAPVK_VK_TO_VSC),
+                    Flags = flags,
+                    Time = 0,
+                    ExtraInfo = UIntPtr.Zero
+                }
+            }
+        };
     }
 
     public static bool PrintWindowContent(IntPtr handle, IntPtr hdc) {
@@ -648,11 +796,117 @@ function Assert-ShortcutScreenshotChanged {
     return $comparison
 }
 
+function Read-KeyValueFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $values = @{}
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        if ($line -match '^([^:]+):\s*(.*)$') {
+            $values[$Matches[1].Trim()] = $Matches[2].Trim()
+        }
+    }
+    return $values
+}
+
+function Wait-ShortcutSmokeReady {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $readyFile = Join-Path $ShortcutSmokeDir "shortcut-smoke-ready.txt"
+    Wait-ProbeReadyFile -Process $Process -Path $readyFile -TimeoutSeconds $TimeoutSeconds
+}
+
+function Invoke-GpuiShortcutSmokeKeystroke {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][string]$Keystroke,
+        [Parameter(Mandatory = $true)][int]$Step,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $requestFile = Join-Path $ShortcutSmokeDir "shortcut-smoke-request.txt"
+    $responseFile = Join-Path $ShortcutSmokeDir "shortcut-smoke-response.txt"
+    $requestId = "{0:000}-{1}" -f $Step, ([guid]::NewGuid().ToString("N").Substring(0, 8))
+    $requestText = "$requestId`n$Keystroke`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($requestFile, $requestText, $utf8NoBom)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        if ($Process.HasExited) {
+            throw "zed-terminal exited while waiting for GPUI shortcut smoke response. Exit code: $($Process.ExitCode)"
+        }
+
+        if (Test-Path -LiteralPath $responseFile -PathType Leaf) {
+            $response = Read-KeyValueFile -Path $responseFile
+            if ($response["id"] -eq $requestId) {
+                if ($response["status"] -ne "ok") {
+                    throw "GPUI shortcut smoke failed for '$Keystroke': $($response["message"])"
+                }
+                return
+            }
+        }
+
+        Start-Sleep -Milliseconds 50
+    } while ((Get-Date) -lt $deadline)
+
+    throw "Timed out waiting for GPUI shortcut smoke response for '$Keystroke'. request=$requestFile response=$responseFile"
+}
+
+function Invoke-ZedTerminalShortcutInput {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.UInt16[]]$Modifiers,
+        [Parameter(Mandatory = $true)][System.UInt16]$Key,
+        [Parameter(Mandatory = $true)][string]$Keystroke,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][ref]$InputMode,
+        [Parameter(Mandatory = $true)][int]$Step,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    if ($InputMode.Value -eq "gpui-dispatch") {
+        Invoke-GpuiShortcutSmokeKeystroke `
+            -Process $Process `
+            -ShortcutSmokeDir $ShortcutSmokeDir `
+            -Keystroke $Keystroke `
+            -Step $Step `
+            -TimeoutSeconds $TimeoutSeconds
+        return
+    }
+
+    try {
+        [ZedTerminalVisualSmokeNative]::SendKeyChord($Window, $Modifiers, $Key)
+        if (-not $InputMode.Value) {
+            $InputMode.Value = "windows-sendinput"
+        }
+    } catch {
+        if ($InputMode.Value -eq "windows-sendinput") {
+            throw
+        }
+
+        $InputMode.Value = "gpui-dispatch"
+        Invoke-GpuiShortcutSmokeKeystroke `
+            -Process $Process `
+            -ShortcutSmokeDir $ShortcutSmokeDir `
+            -Keystroke $Keystroke `
+            -Step $Step `
+            -TimeoutSeconds $TimeoutSeconds
+    }
+}
+
 function Invoke-ZedTerminalShortcutVerification {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
         [Parameter(Mandatory = $true)]$Window,
-        [Parameter(Mandatory = $true)][string]$RunDir
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
     $VK_CONTROL = [System.UInt16]0x11
@@ -671,38 +925,39 @@ function Invoke-ZedTerminalShortcutVerification {
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $initial = Save-ShortcutScreenshot -Window $Window -Name "00-initial" -RunDir $RunDir
     $captures.Add($initial)
+    $inputMode = $null
 
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_T)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_T -Keystroke "ctrl-shift-t" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 1 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $newTab = Save-ShortcutScreenshot -Window $Window -Name "01-ctrl-shift-t-new-tab" -RunDir $RunDir
     $captures.Add($newTab)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $newTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_MENU, $VK_SHIFT), $VK_D)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_D -Keystroke "alt-shift-d" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 2 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 2200
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $duplicateSplit = Save-ShortcutScreenshot -Window $Window -Name "02-alt-shift-d-duplicate-split" -RunDir $RunDir
     $captures.Add($duplicateSplit)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $duplicateSplit -MinimumDifferentPixelRatio 0.003 -RunDir $RunDir))
 
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_MENU, $VK_SHIFT), $VK_OEM_MINUS)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_MINUS -Keystroke "alt-shift-minus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 3 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 2200
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $splitDown = Save-ShortcutScreenshot -Window $Window -Name "03-alt-shift-minus-split-down" -RunDir $RunDir
     $captures.Add($splitDown)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $duplicateSplit -After $splitDown -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
 
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_P)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_P -Keystroke "ctrl-shift-p" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 4 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $commandPalette = Save-ShortcutScreenshot -Window $Window -Name "04-ctrl-shift-p-command-palette" -RunDir $RunDir
     $captures.Add($commandPalette)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitDown -After $commandPalette -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
 
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@(), $VK_ESCAPE)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 5 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 800
-    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window.Handle, [System.UInt16[]]@($VK_CONTROL, $VK_SHIFT), $VK_W)
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 6 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $closeTab = Save-ShortcutScreenshot -Window $Window -Name "05-ctrl-shift-w-close-tab" -RunDir $RunDir
@@ -713,6 +968,7 @@ function Invoke-ZedTerminalShortcutVerification {
         Captures = $captures
         Comparisons = $comparisons
         FinalWindow = $Window
+        InputMode = $inputMode
     }
 }
 
@@ -840,6 +1096,7 @@ $arguments = if ($VerifyShortcuts) {
 }
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
+$previousShortcutSmokeDir = $null
 
 try {
     $subsystem = $null
@@ -848,11 +1105,20 @@ try {
         if ($subsystem.Value -ne 2) {
             throw "Shortcut E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
         }
+        New-Item -ItemType Directory -Force -Path $shortcutSmokeDir | Out-Null
+        $previousShortcutSmokeDir = [System.Environment]::GetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", "Process")
+        [System.Environment]::SetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", $shortcutSmokeDir, "Process")
     }
 
-    $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -PassThru
+    $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -WorkingDirectory $WorkingDirectory -PassThru
     $window = Get-ProcessWindow -Process $process -TimeoutSeconds $StartupTimeoutSeconds
     Wait-ProbeReadyFile -Process $process -Path $probeReadyFile -TimeoutSeconds $StartupTimeoutSeconds
+    if ($VerifyShortcuts) {
+        Wait-ShortcutSmokeReady `
+            -Process $process `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
+    }
 
     $splitPaneVerified = $false
     if ($VerifySplitPane) {
@@ -919,7 +1185,9 @@ try {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
             -Window $window `
-            -RunDir $runDir
+            -RunDir $runDir `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
         $window = $shortcutVerification.FinalWindow
     }
 
@@ -962,6 +1230,7 @@ try {
 
     Write-Output "status: ok"
     Write-Output "binary: $Binary"
+    Write-Output "working_directory: $WorkingDirectory"
     Write-Output "process_id: $($process.Id)"
     Write-Output "window_handle: $($window.Handle)"
     Write-Output "window_title: $($window.Title)"
@@ -975,6 +1244,7 @@ try {
         Write-Output "shortcut_e2e_verified: True"
         Write-Output "binary_subsystem: $($subsystem.Name)"
         Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "shortcut_input_mode: $($shortcutVerification.InputMode)"
         Write-Output "shortcut_startup_config_file: $shortcutStartupConfigFile"
         Write-Output "visible_top_level_windows: 1"
         foreach ($capture in $shortcutVerification.Captures) {
@@ -1021,6 +1291,9 @@ try {
         Write-Output "baseline_updated_file: $UpdateBaselineImage"
     }
 } finally {
+    if ($VerifyShortcuts) {
+        [System.Environment]::SetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", $previousShortcutSmokeDir, "Process")
+    }
     if ($process -and -not $process.HasExited -and -not $KeepRunning) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         Wait-Process -Id $process.Id -Timeout 5 -ErrorAction SilentlyContinue

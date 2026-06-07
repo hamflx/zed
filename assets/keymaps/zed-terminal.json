@@ -73,6 +73,12 @@
     },
   },
   {
+    "context": "CommandPalette",
+    "bindings": {
+      "escape": "menu::Cancel",
+    },
+  },
+  {
     "context": "os == windows && Terminal",
     "bindings": {
       "alt-left": "workspace::ActivatePaneLeft",
