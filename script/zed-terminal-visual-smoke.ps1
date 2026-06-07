@@ -957,12 +957,17 @@ function Invoke-ZedTerminalShortcutVerification {
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 5 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 800
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $paletteClosed = Save-ShortcutScreenshot -Window $Window -Name "05-escape-close-command-palette" -RunDir $RunDir
+    $captures.Add($paletteClosed)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $commandPalette -After $paletteClosed -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 6 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
-    $closeTab = Save-ShortcutScreenshot -Window $Window -Name "05-ctrl-shift-w-close-tab" -RunDir $RunDir
-    $captures.Add($closeTab)
-    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $commandPalette -After $closeTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+    $closePane = Save-ShortcutScreenshot -Window $Window -Name "06-ctrl-shift-w-close-pane" -RunDir $RunDir
+    $captures.Add($closePane)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $paletteClosed -After $closePane -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
     return [PSCustomObject]@{
         Captures = $captures

@@ -140,6 +140,21 @@ impl TerminalTab {
         cx.notify();
     }
 
+    pub fn close_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active_pane = self.active_pane.clone();
+        active_pane.update(cx, |pane, cx| {
+            pane.close_active_item(
+                &pane::CloseActiveItem {
+                    save_intent: None,
+                    close_pinned: false,
+                },
+                window,
+                cx,
+            )
+            .detach_and_log_err(cx);
+        });
+    }
+
     fn add_terminal_to_pane(
         &mut self,
         pane: Entity<Pane>,

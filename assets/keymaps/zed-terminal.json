@@ -5,7 +5,7 @@
       "ctrl-shift-n": "zed_terminal::NewTerminalWindow",
       "ctrl-shift-t": "zed_terminal::NewTerminalTab",
       "ctrl-shift-d": "zed_terminal::DuplicateTerminalTab",
-      "ctrl-shift-w": "zed_terminal::CloseTerminalTab",
+      "ctrl-shift-w": "zed_terminal::CloseTerminalPane",
       "ctrl-tab": "zed_terminal::ActivateNextTerminalTab",
       "ctrl-shift-tab": "zed_terminal::ActivatePreviousTerminalTab",
       "f1": "command_palette::Toggle",

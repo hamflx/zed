@@ -1078,6 +1078,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::ActivateNextTerminalTab",
             "zed_terminal::ActivatePreviousTerminalTab",
             "zed_terminal::ActivateLastTerminalTab",
+            "zed_terminal::CloseTerminalPane",
             "zed_terminal::CloseTerminalTab",
             "zed_terminal::CloseOtherTerminalTabs",
             "zed_terminal::CloseTerminalTabsToTheRight",
@@ -1426,7 +1427,8 @@ function Convert-VisualSmokeOutput {
                 "02-alt-shift-d-duplicate-split",
                 "03-alt-shift-minus-split-down",
                 "04-ctrl-shift-p-command-palette",
-                "05-ctrl-shift-w-close-tab"
+                "05-escape-close-command-palette",
+                "06-ctrl-shift-w-close-pane"
             )) {
             $pathKey = "shortcut_capture_$captureName"
             $bytesKey = "shortcut_capture_$($captureName)_bytes"
@@ -1453,8 +1455,8 @@ function Convert-VisualSmokeOutput {
                 Where-Object { $_.Key -like "shortcut_comparison_*" } |
                 Sort-Object Key
         )
-        if ($shortcutComparisonEntries.Count -ne 5) {
-            throw "shortcut visual smoke expected five shortcut comparison diff entries, got $($shortcutComparisonEntries.Count)"
+        if ($shortcutComparisonEntries.Count -ne 6) {
+            throw "shortcut visual smoke expected six shortcut comparison diff entries, got $($shortcutComparisonEntries.Count)"
         }
         foreach ($entry in $shortcutComparisonEntries) {
             if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
@@ -2368,6 +2370,7 @@ try {
                 "zed_terminal::ActivateNextTerminalTab",
                 "zed_terminal::ActivatePreviousTerminalTab",
                 "zed_terminal::ActivateLastTerminalTab",
+                "zed_terminal::CloseTerminalPane",
                 "zed_terminal::CloseTerminalTab",
                 "zed_terminal::CloseOtherTerminalTabs",
                 "zed_terminal::CloseTerminalTabsToTheRight",
@@ -3001,6 +3004,7 @@ try {
             ) @(
                 "^// Zed Terminal keymap",
                 '"ctrl-shift-t": "zed_terminal::NewTerminalTab"',
+                '"ctrl-shift-w": "zed_terminal::CloseTerminalPane"',
                 '"ctrl-shift-1": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 1 \}\]',
                 '"ctrl-shift-9": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 9 \}\]',
                 '"ctrl-shift-p": "command_palette::Toggle"',

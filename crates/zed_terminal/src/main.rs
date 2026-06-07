@@ -117,6 +117,7 @@ actions!(
         ActivateNextTerminalTab,
         ActivatePreviousTerminalTab,
         ActivateLastTerminalTab,
+        CloseTerminalPane,
         CloseTerminalTab,
         CloseOtherTerminalTabs,
         CloseTerminalTabsToTheRight,
@@ -26037,6 +26038,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<CloseTerminalWindow>(),
         TerminalActionSurface::new::<CloseAllTerminalTabs>(),
         TerminalActionSurface::new::<CloseOtherTerminalTabs>(),
+        TerminalActionSurface::new::<CloseTerminalPane>(),
         TerminalActionSurface::new::<CloseTerminalTab>(),
         TerminalActionSurface::new::<CloseTerminalTabsToTheLeft>(),
         TerminalActionSurface::new::<CloseTerminalTabsToTheRight>(),
@@ -26877,6 +26879,7 @@ fn pane_menu_items() -> Vec<MenuItem> {
         MenuItem::action("Split Left", NewTerminalSplitLeft),
         MenuItem::action("Split Up", NewTerminalSplitUp),
         MenuItem::separator(),
+        MenuItem::action("Close Pane", CloseTerminalPane),
         MenuItem::action(
             "Close Inactive Tabs and Panes",
             workspace::CloseInactiveTabsAndPanes { save_intent: None },
@@ -27219,6 +27222,20 @@ fn close_terminal_tab(workspace: &mut Workspace, window: &mut Window, cx: &mut C
         )
         .detach_and_log_err(cx);
     });
+}
+
+fn close_terminal_pane(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+        terminal_tab.update(cx, |terminal_tab, cx| {
+            terminal_tab.close_active_pane(window, cx);
+        });
+    } else {
+        close_terminal_tab(workspace, window, cx);
+    }
 }
 
 fn close_other_terminal_tabs(
@@ -27702,6 +27719,9 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &ActivateLastTerminalTab, window, cx| {
                     activate_last_terminal_tab(workspace, window, cx);
+                });
+                workspace.register_action(|workspace, _: &CloseTerminalPane, window, cx| {
+                    close_terminal_pane(workspace, window, cx);
                 });
                 workspace.register_action(|workspace, _: &CloseTerminalTab, window, cx| {
                     close_terminal_tab(workspace, window, cx);
@@ -29872,7 +29892,7 @@ mod tests {
   {
     "bindings": {
       "ctrl-shift-t": "zed_terminal::NewTerminalTab",
-      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalPane"
     },
     "unbind": {
       "ctrl-j": "zed_terminal::NewTerminalTab"
@@ -30278,7 +30298,7 @@ mod tests {
             &keymap,
             None,
             "ctrl-shift-w",
-            "zed_terminal::CloseTerminalTab",
+            "zed_terminal::CloseTerminalPane",
         );
         assert_key_binding(
             &keymap,
@@ -30670,6 +30690,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &ActivateNextTerminalTab);
         assert_command_palette_action_visible(&filter, &ActivatePreviousTerminalTab);
         assert_command_palette_action_visible(&filter, &ActivateTerminalTab(0));
+        assert_command_palette_action_visible(&filter, &CloseTerminalPane);
         assert_command_palette_action_visible(&filter, &CloseTerminalTab);
         assert_command_palette_action_visible(&filter, &CloseOtherTerminalTabs);
         assert_command_palette_action_visible(&filter, &CloseTerminalTabsToTheRight);
@@ -31866,6 +31887,7 @@ mod tests {
         assert_menu_action(&items, "Split Down", "zed_terminal::NewTerminalSplitDown");
         assert_menu_action(&items, "Split Left", "zed_terminal::NewTerminalSplitLeft");
         assert_menu_action(&items, "Split Up", "zed_terminal::NewTerminalSplitUp");
+        assert_menu_action(&items, "Close Pane", "zed_terminal::CloseTerminalPane");
     }
 
     #[test]
@@ -35743,6 +35765,7 @@ mod tests {
             "zed_terminal::OpenSupportToolsPicker",
             "zed_terminal::OpenStartupToolsPicker",
             "terminal::Paste",
+            "zed_terminal::CloseTerminalPane",
             "zed_terminal::CloseTerminalTab",
         ] {
             assert!(
@@ -37339,7 +37362,7 @@ mod tests {
       "ctrl-k ctrl-t": "zed_terminal::NewTerminalTab"
     },
     "unbind": {
-      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalPane"
     }
   },
   {
@@ -37531,7 +37554,7 @@ mod tests {
       "ctrl-shift-t": "zed_terminal::DuplicateTerminalTab"
     },
     "unbind": {
-      "ctrl-shift-w": "zed_terminal::CloseTerminalTab"
+      "ctrl-shift-w": "zed_terminal::CloseTerminalPane"
     }
   },
   {
@@ -37592,7 +37615,7 @@ mod tests {
                 .bindings
                 .iter()
                 .all(|binding| binding.keystrokes != "ctrl-shift-W"),
-            "active list should omit user-unbound close-tab binding"
+            "active list should omit user-unbound close-pane binding"
         );
 
         let output = format_active_keymap_binding_list_report(
