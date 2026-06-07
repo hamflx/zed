@@ -1,6 +1,7 @@
 [CmdletBinding()]
 Param(
     [Parameter()][string]$Binary,
+    [Parameter()][string]$PackageBinary,
     [Parameter()][string]$ShortcutBinary,
     [Parameter()][string]$OutputDir,
     [Parameter()][string]$CargoTargetDir,
@@ -31,10 +32,18 @@ if ($CargoTargetDir) {
     $CargoTargetDir = [System.IO.Path]::GetFullPath($CargoTargetDir)
 }
 $binaryWasProvided = -not [string]::IsNullOrWhiteSpace($Binary)
+$packageBinaryWasProvided = -not [string]::IsNullOrWhiteSpace($PackageBinary)
 $shortcutBinaryWasProvided = -not [string]::IsNullOrWhiteSpace($ShortcutBinary)
 $targetRoot = if ($CargoTargetDir) { $CargoTargetDir } else { Join-Path $repoRoot "target" }
 if (-not $Binary) {
     $Binary = Join-Path $targetRoot "debug\zed-terminal.exe"
+}
+if (-not $PackageBinary) {
+    $PackageBinary = if ($binaryWasProvided) {
+        $Binary
+    } else {
+        Join-Path $targetRoot "release\zed-terminal.exe"
+    }
 }
 if (-not $ShortcutBinary) {
     $ShortcutBinary = if ($binaryWasProvided) {
@@ -60,6 +69,7 @@ if (-not $SplitVisualBaselineImage -and -not $SkipVisualSmoke -and -not $SkipSpl
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
+$PackageBinary = [System.IO.Path]::GetFullPath($PackageBinary)
 $ShortcutBinary = [System.IO.Path]::GetFullPath($ShortcutBinary)
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 if ($VisualBaselineImage) {
@@ -115,6 +125,7 @@ Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
 $script:StepResults = New-Object System.Collections.Generic.List[object]
 $script:PackageSmoke = $null
+$script:PackageBinaryBuildProfile = $null
 $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
 $script:ShortcutVisualSmoke = $null
@@ -278,6 +289,47 @@ function Invoke-NativeCommand {
     )
 
     $null = Invoke-NativeCommandResult -FilePath $FilePath -Arguments $Arguments -WorkingDirectory $WorkingDirectory
+}
+
+function Get-ZedTerminalBinaryBuildProfile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $arguments = @("--version-info", "--version-info-format", "json")
+    Write-ReleaseLog ("RUN {0} {1}" -f $Path, ($arguments -join " "))
+    $result = Invoke-ProcessCapture -FilePath $Path -Arguments $arguments
+    Write-StepOutput (($result.Stderr -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    if ($result.ExitCode -ne 0) {
+        throw "$Context binary failed version-info with exit code $($result.ExitCode)"
+    }
+
+    $jsonText = $result.Stdout.Trim()
+    if (-not $jsonText) {
+        throw "$Context binary did not produce version-info JSON"
+    }
+
+    try {
+        $versionInfo = $jsonText | ConvertFrom-Json
+    } catch {
+        throw "$Context binary produced invalid version-info JSON: $($_.Exception.Message)"
+    }
+
+    if (
+        $versionInfo.app_name -ne "Zed Terminal" -or
+        $versionInfo.binary_name -ne "zed-terminal" -or
+        $versionInfo.package_name -ne "zed_terminal" -or
+        $null -eq $versionInfo.debug_assertions
+    ) {
+        throw "$Context binary version-info did not report expected zed_terminal metadata"
+    }
+
+    if ([bool]$versionInfo.debug_assertions) {
+        return "debug"
+    }
+
+    return "release"
 }
 
 function New-CargoArguments {
@@ -1175,9 +1227,14 @@ function Read-PackageSmokeSummary {
         $manifest.version_info.binary_name -ne $versionInfo.binary_name -or
         $manifest.version_info.package_name -ne $versionInfo.package_name -or
         $manifest.version_info.target_os -ne $versionInfo.target_os -or
-        $manifest.version_info.target_arch -ne $versionInfo.target_arch
+        $manifest.version_info.target_arch -ne $versionInfo.target_arch -or
+        [bool]$manifest.version_info.debug_assertions -ne [bool]$versionInfo.debug_assertions
     ) {
         throw "package smoke version-info metadata did not match the validated manifest"
+    }
+    $expectedDebugAssertions = [string]$summary.build_profile -eq "debug"
+    if ([bool]$versionInfo.debug_assertions -ne $expectedDebugAssertions) {
+        throw "package smoke version-info debug_assertions did not match build profile $($summary.build_profile)"
     }
     if ([int64]$summary.content_count -ne @($manifest.contents).Count) {
         throw "package smoke summary content count did not match the validated manifest"
@@ -1579,6 +1636,9 @@ function Get-ReleaseBlockers {
     ) {
         $blockers.Add("package smoke commit does not match release check commit")
     }
+    if ($script:PackageSmoke -and $script:PackageSmoke.build_profile -ne "release") {
+        $blockers.Add("package smoke did not validate a release build")
+    }
 
     return @($blockers)
 }
@@ -1606,6 +1666,8 @@ function New-ReleaseReportMarkdown {
     $lines += "| Release mode | $(Format-MarkdownValue $Summary.release_mode) |"
     $lines += "| Run directory | $(Format-MarkdownValue $Summary.run_dir) |"
     $lines += "| Binary | $(Format-MarkdownValue $Summary.binary) |"
+    $lines += "| Package binary | $(Format-MarkdownValue $Summary.package_binary) |"
+    $lines += "| Package binary build profile | $(Format-MarkdownValue $Summary.package_binary_build_profile) |"
     $lines += "| Shortcut binary | $(Format-MarkdownValue $Summary.shortcut_binary) |"
     $lines += "| Cargo target directory | $(Format-MarkdownValue $Summary.cargo_target_dir) |"
     $lines += "| Log file | $(Format-MarkdownValue $Summary.log_file) |"
@@ -1756,6 +1818,8 @@ function Write-ReleaseSummary {
         release_blockers = $releaseBlockers
         run_dir = $runDir
         binary = $Binary
+        package_binary = $PackageBinary
+        package_binary_build_profile = $script:PackageBinaryBuildProfile
         shortcut_binary = $ShortcutBinary
         cargo_target_dir = $CargoTargetDir
         log_file = $releaseLog
@@ -1786,6 +1850,7 @@ try {
     Write-Host "repo_root: $repoRoot"
     Write-Host "run_dir: $runDir"
     Write-Host "binary: $Binary"
+    Write-Host "package_binary: $PackageBinary"
     Write-Host "shortcut_binary: $ShortcutBinary"
     if ($script:SourceControl.git_available) {
         Write-Host "git_commit: $($script:SourceControl.git_commit)"
@@ -1847,8 +1912,14 @@ try {
             Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("build", "-p", "zed_terminal", "--bin", "zed-terminal") -UseTargetDir)
         }
 
-        if (-not $SkipVisualSmoke -and -not $SkipShortcutVisualSmoke -and -not $shortcutBinaryWasProvided -and -not $binaryWasProvided) {
-            Invoke-Step "cargo build zed_terminal release for shortcut smoke" {
+        if (
+            (-not $binaryWasProvided) -and
+            (
+                (-not $SkipPackage -and -not $packageBinaryWasProvided) -or
+                (-not $SkipVisualSmoke -and -not $SkipShortcutVisualSmoke -and -not $shortcutBinaryWasProvided)
+            )
+        ) {
+            Invoke-Step "cargo build zed_terminal release" {
                 Invoke-NativeCommand -FilePath "cargo" -Arguments (New-CargoArguments @("build", "-p", "zed_terminal", "--bin", "zed-terminal", "--release") -UseTargetDir)
             }
         }
@@ -1857,6 +1928,18 @@ try {
     Invoke-Step "binary exists" {
         if (-not (Test-Path -LiteralPath $Binary -PathType Leaf)) {
             throw "zed-terminal binary not found: $Binary"
+        }
+    }
+
+    if (-not $SkipPackage) {
+        Invoke-Step "package binary exists" {
+            if (-not (Test-Path -LiteralPath $PackageBinary -PathType Leaf)) {
+                throw "zed-terminal package smoke binary not found: $PackageBinary"
+            }
+        }
+
+        Invoke-Step "package binary build profile" {
+            $script:PackageBinaryBuildProfile = Get-ZedTerminalBinaryBuildProfile -Path $PackageBinary -Context "package"
         }
     }
 
@@ -1875,8 +1958,8 @@ try {
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
                 "-File", (Join-Path $repoRoot "script\zed-terminal-package.ps1"),
-                "-Binary", $Binary,
-                "-BuildProfile", "debug",
+                "-Binary", $PackageBinary,
+                "-BuildProfile", $script:PackageBinaryBuildProfile,
                 "-SkipBuild",
                 "-Zip",
                 "-OutputDir", $packageSmokeDir,

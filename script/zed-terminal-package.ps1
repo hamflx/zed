@@ -831,7 +831,8 @@ function Assert-VersionInfoJson {
         [Parameter(Mandatory = $true)]$VersionInfo,
         [Parameter(Mandatory = $true)][string]$Version,
         [Parameter(Mandatory = $true)][string]$Platform,
-        [Parameter(Mandatory = $true)][string]$Architecture
+        [Parameter(Mandatory = $true)][string]$Architecture,
+        [Parameter()][ValidateSet("debug", "release")][string]$BuildProfile
     )
 
     $expectedTargetOs = switch ($Platform) {
@@ -859,6 +860,13 @@ function Assert-VersionInfoJson {
         $null -eq $VersionInfo.debug_assertions
     ) {
         throw "zed-terminal --version-info did not report expected package metadata"
+    }
+
+    if ($BuildProfile) {
+        $expectedDebugAssertions = $BuildProfile -eq "debug"
+        if ([bool]$VersionInfo.debug_assertions -ne $expectedDebugAssertions) {
+            throw "zed-terminal --version-info debug_assertions did not match build profile $BuildProfile"
+        }
     }
 }
 
@@ -2703,7 +2711,8 @@ function Assert-PackageManifest {
         -VersionInfo $manifest.version_info `
         -Version $Version `
         -Platform $Platform `
-        -Architecture $Architecture
+        -Architecture $Architecture `
+        -BuildProfile $BuildProfile
 
     foreach ($validationName in @(
         "help",
@@ -2881,7 +2890,8 @@ function Assert-PackageZipArchive {
         -VersionInfo $versionInfoJson `
         -Version $Version `
         -Platform $Platform `
-        -Architecture $Architecture
+        -Architecture $Architecture `
+        -BuildProfile $BuildProfile
 
     $paths = Invoke-CheckedProcess -FilePath $extractedBinary -Arguments @(
         "--user-data-dir", $extractedDataDir,
@@ -3121,7 +3131,8 @@ Assert-VersionInfoJson `
     -VersionInfo $versionInfoJson `
     -Version $version `
     -Platform $platform `
-    -Architecture $architecture
+    -Architecture $architecture `
+    -BuildProfile $BuildProfile
 
 $paths = Invoke-CheckedProcess -FilePath $packagedBinary -Arguments @(
     "--user-data-dir", $validationDataDir,
