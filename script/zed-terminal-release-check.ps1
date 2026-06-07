@@ -124,6 +124,16 @@ $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
 New-Item -ItemType Directory -Force -Path $runDir, $cliDataDir, $cliConfigDir, $brokenCliDataDir, $brokenCliConfigDir, $mutationCliDataDir, $mutationCliConfigDir | Out-Null
 Set-Content -LiteralPath $releaseLog -Value "" -Encoding utf8
 
+function Set-Utf8NoBomContent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 $script:StepResults = New-Object System.Collections.Generic.List[object]
 $script:PackageSmoke = $null
 $script:PackageBinaryBuildProfile = $null
@@ -385,20 +395,16 @@ function Invoke-NativeJsonCommandResult {
 
     $stderrFile = Join-Path $runDir "$Name.stderr.log"
     Write-ReleaseLog ("RUN {0} {1}" -f $Binary, ($Arguments -join " "))
-    $stdout = & $Binary @Arguments 2> $stderrFile
-    $exitCode = $LASTEXITCODE
-    $stderr = @()
-    if (Test-Path -LiteralPath $stderrFile -PathType Leaf) {
-        $stderr = Get-Content -LiteralPath $stderrFile
+    $result = Invoke-ProcessCapture -FilePath $Binary -Arguments $Arguments
+    Set-Content -LiteralPath $stderrFile -Value $result.Stderr -Encoding utf8
+
+    Write-StepOutput (($result.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    Write-StepOutput (($result.Stderr -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    if ($result.ExitCode -ne 0) {
+        throw "Command failed with exit code $($result.ExitCode)`: $Binary $($Arguments -join ' ')"
     }
 
-    Write-StepOutput (($stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
-    Write-StepOutput $stderr
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code $exitCode`: $Binary $($Arguments -join ' ')"
-    }
-
-    $jsonText = ($stdout | Out-String).Trim()
+    $jsonText = $result.Stdout.Trim()
     if (-not $jsonText) {
         throw "Command did not produce JSON output: $Binary $($Arguments -join ' ')"
     }
@@ -435,20 +441,16 @@ function Invoke-NativeTextCommandResult {
 
     $stderrFile = Join-Path $runDir "$Name.stderr.log"
     Write-ReleaseLog ("RUN {0} {1}" -f $Binary, ($Arguments -join " "))
-    $stdout = & $Binary @Arguments 2> $stderrFile
-    $exitCode = $LASTEXITCODE
-    $stderr = @()
-    if (Test-Path -LiteralPath $stderrFile -PathType Leaf) {
-        $stderr = Get-Content -LiteralPath $stderrFile
+    $result = Invoke-ProcessCapture -FilePath $Binary -Arguments $Arguments
+    Set-Content -LiteralPath $stderrFile -Value $result.Stderr -Encoding utf8
+
+    Write-StepOutput (($result.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    Write-StepOutput (($result.Stderr -split "`r?`n") | Where-Object { $_.Length -gt 0 })
+    if ($result.ExitCode -ne 0) {
+        throw "Command failed with exit code $($result.ExitCode)`: $Binary $($Arguments -join ' ')"
     }
 
-    Write-StepOutput (($stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 })
-    Write-StepOutput $stderr
-    if ($exitCode -ne 0) {
-        throw "Command failed with exit code $exitCode`: $Binary $($Arguments -join ' ')"
-    }
-
-    $text = ($stdout | Out-String)
+    $text = $result.Stdout
     if (-not $text.Trim()) {
         throw "Command did not produce text output: $Binary $($Arguments -join ' ')"
     }
@@ -666,7 +668,8 @@ function Assert-SupportBundlePathReport {
         $Paths.session_dir -ne (Join-Path $ExpectedDataDir "session") -or
         $Paths.session_file -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session.json") -or
         $Paths.session_buffers_dir -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session-buffers") -or
-        $Paths.session_report_file -ne (Join-Path $expectedLogsDir "zed-terminal-session.json")
+        $Paths.session_report_file -ne (Join-Path $expectedLogsDir "zed-terminal-session.json") -or
+        $Paths.window_state_file -ne (Join-Path $ExpectedDataDir "window-state.json")
     ) {
         throw "zed-terminal support bundle paths report did not match expected standalone paths"
     }
@@ -751,6 +754,7 @@ function Assert-SupportBundleArtifacts {
         $manifest.redaction.includes_environment_values -ne $false -or
         $manifest.redaction.includes_terminal_buffer_contents -ne $false -or
         $manifest.redaction.includes_saved_session_contents -ne $false -or
+        $manifest.redaction.includes_window_state_contents -ne $false -or
         $manifest.redaction.file_metadata_only -ne $true
     ) {
         throw "zed-terminal support bundle manifest did not report expected release metadata"
@@ -794,7 +798,8 @@ function Assert-SupportBundleArtifacts {
         $metadata.redaction.includes_environment_values -ne $false -or
         $metadata.redaction.includes_terminal_buffer_contents -ne $false -or
         $metadata.redaction.includes_saved_session_contents -ne $false -or
-        @($metadata.files).Count -ne 18
+        $metadata.redaction.includes_window_state_contents -ne $false -or
+        @($metadata.files).Count -ne 19
     ) {
         throw "zed-terminal support bundle metadata did not report expected redaction policy"
     }
@@ -813,6 +818,7 @@ function Assert-SupportBundleArtifacts {
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_file" -ExpectedPath $paths.session_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_buffers_dir" -ExpectedPath $paths.session_buffers_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_report_file" -ExpectedPath $paths.session_report_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "window_state_file" -ExpectedPath $paths.window_state_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "logs_dir" -ExpectedPath $paths.logs_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "config_dir" -ExpectedPath $paths.config_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "data_dir" -ExpectedPath $paths.data_dir
@@ -836,6 +842,7 @@ function Assert-SupportBundleArtifacts {
         "shell environment values",
         "terminal buffer contents",
         "Saved session files and buffer snapshots",
+        "Window state is reported as file metadata only",
         "file existence and byte counts only",
         "zed-terminal-support-bundle.json",
         "zed-terminal-diagnostics.json",
@@ -2279,7 +2286,8 @@ try {
                 $pathsJson.settings_file -ne (Join-Path $cliConfigDir "settings.json") -or
                 $pathsJson.settings_schema_file -ne (Join-Path $cliConfigDir "settings.schema.json") -or
                 $pathsJson.startup_config_schema_file -ne (Join-Path $cliConfigDir "terminal.schema.json") -or
-                $pathsJson.keymap_schema_file -ne (Join-Path $cliConfigDir "keymap.schema.json")
+                $pathsJson.keymap_schema_file -ne (Join-Path $cliConfigDir "keymap.schema.json") -or
+                $pathsJson.window_state_file -ne (Join-Path $cliDataDir "window-state.json")
             ) {
                 throw "zed-terminal --paths did not report expected config discovery paths"
             }
@@ -2295,7 +2303,8 @@ try {
                 $portablePaths.data_dir -ne $expectedPortableDataDir -or
                 $portablePaths.config_dir -ne $expectedPortableConfigDir -or
                 $portablePaths.logs_dir -ne (Join-Path $expectedPortableDataDir "logs") -or
-                $portablePaths.settings_schema_file -ne (Join-Path $expectedPortableConfigDir "settings.schema.json")
+                $portablePaths.settings_schema_file -ne (Join-Path $expectedPortableConfigDir "settings.schema.json") -or
+                $portablePaths.window_state_file -ne (Join-Path $expectedPortableDataDir "window-state.json")
             ) {
                 throw "zed-terminal --portable --paths did not report expected binary-local paths"
             }
@@ -2358,7 +2367,7 @@ try {
             $sessionDir = Join-Path $cliDataDir "session"
             $sessionBuffersDir = Join-Path $sessionDir "session-buffers"
             New-Item -ItemType Directory -Force -Path $sessionBuffersDir | Out-Null
-            Set-Content -LiteralPath (Join-Path $sessionDir "session.json") -Value '{ "format": "zed-terminal-session", "version": 1, "window_count": 1, "tabs": [ { "panes": [ {}, {} ] } ], "contains_buffer_contents": false }' -Encoding utf8
+            Set-Utf8NoBomContent -Path (Join-Path $sessionDir "session.json") -Value '{ "format": "zed-terminal-session", "version": 1, "window_count": 1, "tabs": [ { "panes": [ {}, {} ] } ], "contains_buffer_contents": false }'
             Set-Content -LiteralPath (Join-Path $sessionBuffersDir "pane-1.txt") -Value 'do-not-log-release-session-buffer-secret' -Encoding utf8
             $sessionReportJson = Invoke-NativeJsonCommandResult "session-report" @(
                 "--user-data-dir", $cliDataDir,

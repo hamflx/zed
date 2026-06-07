@@ -129,6 +129,16 @@ function Invoke-CheckedProcess {
     return $result
 }
 
+function Set-Utf8NoBomContent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList $false
+    [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
 function Get-GitSourceInfo {
     try {
         $commitResult = Invoke-ProcessCapture -FilePath "git" -Arguments @("rev-parse", "HEAD")
@@ -926,7 +936,8 @@ function Assert-PathsJson {
         $Paths.session_dir -ne (Join-Path $ExpectedDataDir "session") -or
         $Paths.session_file -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session.json") -or
         $Paths.session_buffers_dir -ne (Join-Path (Join-Path $ExpectedDataDir "session") "session-buffers") -or
-        $Paths.session_report_file -ne (Join-Path $expectedLogsDir "zed-terminal-session.json")
+        $Paths.session_report_file -ne (Join-Path $expectedLogsDir "zed-terminal-session.json") -or
+        $Paths.window_state_file -ne (Join-Path $ExpectedDataDir "window-state.json")
     ) {
         throw "zed-terminal --paths did not report expected $ExpectedMode standalone paths"
     }
@@ -1933,6 +1944,7 @@ function Assert-SupportBundleArtifacts {
         $manifest.redaction.includes_environment_values -ne $false -or
         $manifest.redaction.includes_terminal_buffer_contents -ne $false -or
         $manifest.redaction.includes_saved_session_contents -ne $false -or
+        $manifest.redaction.includes_window_state_contents -ne $false -or
         $manifest.redaction.file_metadata_only -ne $true
     ) {
         throw "zed-terminal support bundle manifest did not report expected release metadata"
@@ -1976,11 +1988,12 @@ function Assert-SupportBundleArtifacts {
         $metadata.redaction.includes_raw_file_contents -ne $false -or
         $metadata.redaction.includes_environment_values -ne $false -or
         $metadata.redaction.includes_terminal_buffer_contents -ne $false -or
-        $metadata.redaction.includes_saved_session_contents -ne $false
+        $metadata.redaction.includes_saved_session_contents -ne $false -or
+        $metadata.redaction.includes_window_state_contents -ne $false
     ) {
         throw "zed-terminal support bundle metadata did not report expected redaction policy"
     }
-    $expectedMetadataCount = 18
+    $expectedMetadataCount = 19
     if (@($metadata.files).Count -ne $expectedMetadataCount) {
         throw "zed-terminal support bundle metadata reported $(@($metadata.files).Count) files; expected $expectedMetadataCount"
     }
@@ -1999,6 +2012,7 @@ function Assert-SupportBundleArtifacts {
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_file" -ExpectedPath $paths.session_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_buffers_dir" -ExpectedPath $paths.session_buffers_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "session_report_file" -ExpectedPath $paths.session_report_file
+    Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "window_state_file" -ExpectedPath $paths.window_state_file
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "logs_dir" -ExpectedPath $paths.logs_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "config_dir" -ExpectedPath $paths.config_dir
     Assert-SupportBundleMetadataEntry -Metadata $metadata -Label "data_dir" -ExpectedPath $paths.data_dir
@@ -2022,6 +2036,7 @@ function Assert-SupportBundleArtifacts {
         "shell environment values",
         "terminal buffer contents",
         "Saved session files and buffer snapshots",
+        "Window state is reported as file metadata only",
         "file existence and byte counts only",
         "zed-terminal-support-bundle.json",
         "zed-terminal-diagnostics.json",
@@ -2090,7 +2105,7 @@ function Invoke-SupportBundleSmoke {
     $sessionDir = Join-Path $DataDir "session"
     $sessionBuffersDir = Join-Path $sessionDir "session-buffers"
     New-Item -ItemType Directory -Force -Path $sessionBuffersDir | Out-Null
-    Set-Content -LiteralPath (Join-Path $sessionDir "session.json") -Value '{ "format": "zed-terminal-session", "version": 1, "window_count": 1, "tabs": [ { "panes": [ {}, {} ] } ], "contains_buffer_contents": false }' -Encoding utf8
+    Set-Utf8NoBomContent -Path (Join-Path $sessionDir "session.json") -Value '{ "format": "zed-terminal-session", "version": 1, "window_count": 1, "tabs": [ { "panes": [ {}, {} ] } ], "contains_buffer_contents": false }'
     Set-Content -LiteralPath (Join-Path $sessionBuffersDir "pane-1.txt") -Value "do-not-log-package-session-buffer-secret" -Encoding utf8
     $sessionReport = Invoke-CheckedProcess -FilePath $Binary -Arguments @(
         "--user-data-dir", $DataDir,
