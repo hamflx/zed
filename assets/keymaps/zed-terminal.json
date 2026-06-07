@@ -79,6 +79,13 @@
     },
   },
   {
+    "context": "ZedTerminalProfileRename",
+    "bindings": {
+      "enter": "menu::Confirm",
+      "escape": "menu::Cancel",
+    },
+  },
+  {
     "context": "os == windows && Terminal",
     "bindings": {
       "alt-left": "workspace::ActivatePaneLeft",

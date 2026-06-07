@@ -28,14 +28,15 @@ use collections::HashMap;
 use fs::RealFs;
 use futures::StreamExt;
 use gpui::prelude::{
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+    FluentBuilder as _, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Styled as _,
 };
 use gpui::{
-    Action, AnyWindowHandle, App, AppContext as _, Axis, Bounds, ClipboardItem, Context, Entity,
-    KeyBinding, KeyContext, Keymap, Keystroke, Menu, MenuItem, PathPromptOptions, Pixels,
-    PromptLevel, SharedString, SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity,
-    Window, WindowBounds, WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind,
-    point, px, size,
+    Action, AnyWindowHandle, App, AppContext as _, Axis, Bounds, ClipboardItem, Context,
+    DismissEvent, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding, KeyContext, Keymap,
+    Keystroke, Menu, MenuItem, PathPromptOptions, Pixels, PromptLevel, SharedString,
+    SystemWindowTabController, Task, TaskExt, Tiling, WeakEntity, Window, WindowBounds,
+    WindowDecorations, WindowOptions, actions, div, is_no_action, is_unbind, point, px, size,
 };
 use language::LanguageRegistry;
 use node_runtime::NodeRuntime;
@@ -53,8 +54,13 @@ use terminal_tab::TerminalTab;
 use terminal_view::default_working_directory;
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::{ThemeSettings, load_user_theme};
+use ui::prelude::{
+    Button, ButtonCommon as _, ButtonSize, ButtonStyle, Clickable as _, Color, Disableable as _,
+    Headline, HeadlineSize, Icon, IconName, Label, LabelCommon as _, LabelSize, h_flex, rems,
+    v_flex,
+};
 use workspace::WorkspaceSettings;
-use workspace::{AppState, Event as WorkspaceEvent, Workspace, WorkspaceStore};
+use workspace::{AppState, Event as WorkspaceEvent, ModalView, Workspace, WorkspaceStore};
 
 actions!(
     zed_terminal,
@@ -240,6 +246,15 @@ struct CopyStartupProfile {
 #[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
 #[action(namespace = zed_terminal)]
 #[serde(deny_unknown_fields)]
+struct RenameStartupProfile {
+    profile: String,
+    #[serde(default)]
+    new_profile: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq, Action)]
+#[action(namespace = zed_terminal)]
+#[serde(deny_unknown_fields)]
 struct RemoveStartupProfile {
     profile: String,
 }
@@ -289,6 +304,7 @@ const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
     "zed-terminal-profile-references.json";
 const TERMINAL_PROFILE_CREATION_REPORT_FILE: &str = "zed-terminal-profile-creation.json";
 const TERMINAL_PROFILE_COPY_REPORT_FILE: &str = "zed-terminal-profile-copy.json";
+const TERMINAL_PROFILE_RENAME_REPORT_FILE: &str = "zed-terminal-profile-rename.json";
 const TERMINAL_PROFILE_REMOVAL_REPORT_FILE: &str = "zed-terminal-profile-removal.json";
 const TERMINAL_PROFILE_IMPORT_REPORT_FILE: &str = "zed-terminal-profile-import.json";
 const TERMINAL_PROFILE_MUTATION_BACKUP_DIR: &str = "zed-terminal-profile-mutation-backups";
@@ -23205,6 +23221,30 @@ fn write_startup_profile_copy_report_file(
     })
 }
 
+fn write_startup_profile_rename_report_file(
+    path: &Path,
+    rename: &TerminalStartupProfileRename,
+    backup: Option<&TerminalStartupProfileMutationBackup>,
+) -> Result<()> {
+    let report =
+        attach_profile_mutation_backup(&format_startup_profile_rename_json(rename)?, backup)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile rename report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile rename report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_removal_report_file(
     path: &Path,
     removal: &TerminalStartupProfileRemoval,
@@ -25668,6 +25708,10 @@ fn active_terminal_profile_copy_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_COPY_REPORT_FILE)
 }
 
+fn active_terminal_profile_rename_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_PROFILE_RENAME_REPORT_FILE)
+}
+
 fn active_terminal_profile_removal_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_PROFILE_REMOVAL_REPORT_FILE)
 }
@@ -26128,6 +26172,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<ResizePaneLeft>(),
         TerminalActionSurface::new::<ResizePaneRight>(),
         TerminalActionSurface::new::<ResizePaneUp>(),
+        TerminalActionSurface::new::<RenameStartupProfile>(),
         TerminalActionSurface::new::<SetDefaultStartupProfile>(),
         TerminalActionSurface::new::<ShowStartupProfile>(),
         TerminalActionSurface::new::<ToggleFullScreen>(),
@@ -26295,6 +26340,15 @@ fn terminal_profile_command_palette_items(
             format!("Copy Profile: {label}"),
             CopyStartupProfile {
                 profile: profile_name.clone(),
+            }
+            .boxed_clone(),
+        ));
+        items.push(terminal_profile_command_palette_item(
+            query,
+            format!("Rename Profile: {label}"),
+            RenameStartupProfile {
+                profile: profile_name.clone(),
+                new_profile: None,
             }
             .boxed_clone(),
         ));
@@ -26725,6 +26779,17 @@ fn shell_menu_items_with_visibility(
                     entry.label,
                     CopyStartupProfile {
                         profile: entry.profile,
+                    },
+                )
+            }),
+        )));
+        shell_items.push(MenuItem::submenu(Menu::new("Rename Profile").items(
+            visible_profile_entries.iter().cloned().map(|entry| {
+                MenuItem::action(
+                    entry.label,
+                    RenameStartupProfile {
+                        profile: entry.profile,
+                        new_profile: None,
                     },
                 )
             }),
@@ -27559,6 +27624,16 @@ fn open_terminal_window(
                         anyhow::Ok(())
                     })
                     .detach_and_log_err(cx);
+                });
+                workspace.register_action(|workspace, action: &RenameStartupProfile, window, cx| {
+                    let profile = action.profile.clone();
+                    if let Some(new_profile) = action.new_profile.clone() {
+                        rename_startup_profile_action(profile, new_profile, cx);
+                    } else {
+                        workspace.toggle_modal(window, cx, move |window, cx| {
+                            RenameStartupProfileModal::new(profile, window, cx)
+                        });
+                    }
                 });
                 workspace.register_action(
                     |_, _: &RestoreLatestStartupProfileMutationBackup, window, cx| {
@@ -29540,6 +29615,218 @@ fn copy_startup_profile_action(action: &CopyStartupProfile, cx: &mut App) {
     .detach();
 }
 
+fn rename_startup_profile_action(profile: String, new_profile: String, cx: &mut App) {
+    cx.spawn(async move |cx| {
+        let result = cx
+            .background_spawn({
+                let profile = profile.clone();
+                let new_profile = new_profile.clone();
+                async move { rename_startup_profile_and_report(&profile, &new_profile) }
+            })
+            .await;
+        cx.update(|cx| match result {
+            Ok(rename) => {
+                log::info!(
+                    "renamed startup profile {:?} to {:?} (changed={}, updated {} references)",
+                    rename.previous_profile,
+                    rename.profile,
+                    rename.changed,
+                    rename.updated_reference_count
+                );
+                set_app_menus(cx);
+                cx.open_with_system(&active_terminal_profile_rename_report_file());
+            }
+            Err(error) => {
+                log::warn!(
+                    "failed to rename startup profile {profile:?} to {new_profile:?}: {error:#}"
+                );
+            }
+        });
+    })
+    .detach();
+}
+
+fn rename_startup_profile_and_report(
+    profile: &str,
+    new_profile: &str,
+) -> Result<TerminalStartupProfileRename> {
+    let startup_config_file = active_terminal_startup_config_file();
+    let backup = backup_startup_config_before_profile_mutation(
+        &startup_config_file,
+        "rename-profile",
+        Some(profile),
+    )?;
+    let rename = rename_startup_profile(&startup_config_file, profile, new_profile)?;
+    write_startup_profile_rename_report_file(
+        &active_terminal_profile_rename_report_file(),
+        &rename,
+        backup.as_ref(),
+    )?;
+    Ok(rename)
+}
+
+struct RenameStartupProfileModal {
+    profile: String,
+    input: Entity<editor::Editor>,
+    focus_handle: FocusHandle,
+    error: Option<String>,
+    pending: bool,
+}
+
+impl RenameStartupProfileModal {
+    fn new(profile: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| {
+            let mut editor = editor::Editor::single_line(window, cx);
+            editor.set_text(profile.clone(), window, cx);
+            editor
+        });
+        let focus_handle = input.focus_handle(cx);
+        window.focus(&focus_handle, cx);
+
+        Self {
+            profile,
+            input,
+            focus_handle,
+            error: None,
+            pending: false,
+        }
+    }
+
+    fn confirm(&mut self, _: &menu::Confirm, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pending {
+            return;
+        }
+
+        let new_profile = self.input.read(cx).text(cx).trim().to_string();
+        if new_profile.is_empty() {
+            self.error = Some("Profile name cannot be blank.".into());
+            cx.notify();
+            return;
+        }
+
+        self.pending = true;
+        self.error = None;
+        let profile = self.profile.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn({
+                    let profile = profile.clone();
+                    let new_profile = new_profile.clone();
+                    async move { rename_startup_profile_and_report(&profile, &new_profile) }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.pending = false;
+                match result {
+                    Ok(rename) => {
+                        log::info!(
+                            "renamed startup profile {:?} to {:?} (changed={}, updated {} references)",
+                            rename.previous_profile,
+                            rename.profile,
+                            rename.changed,
+                            rename.updated_reference_count
+                        );
+                        set_app_menus(cx);
+                        cx.open_with_system(&active_terminal_profile_rename_report_file());
+                        cx.emit(DismissEvent);
+                    }
+                    Err(error) => {
+                        this.error = Some(format!("{error:#}"));
+                        cx.notify();
+                    }
+                }
+            })
+        })
+        .detach_and_log_err(cx);
+        cx.notify();
+    }
+
+    fn cancel(&mut self, _: &menu::Cancel, _: &mut Window, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
+    }
+}
+
+impl Focusable for RenameStartupProfileModal {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl EventEmitter<DismissEvent> for RenameStartupProfileModal {}
+
+impl ModalView for RenameStartupProfileModal {}
+
+impl Render for RenameStartupProfileModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let input = self.input.clone();
+        let is_pending = self.pending;
+        let can_rename = !is_pending;
+
+        v_flex()
+            .key_context("ZedTerminalProfileRename")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::confirm))
+            .on_action(cx.listener(Self::cancel))
+            .gap_3()
+            .w(rems(28.))
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(Headline::new("Rename Profile").size(HeadlineSize::Small))
+                    .child(
+                        Label::new(format!("Current profile: {}", self.profile))
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_1()
+                    .child(Label::new("New profile name").size(LabelSize::Small))
+                    .child(
+                        div()
+                            .border_1()
+                            .border_color(cx.theme().colors().border)
+                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .child(input),
+                    ),
+            )
+            .when_some(self.error.clone(), |element, error| {
+                element.child(
+                    h_flex()
+                        .gap_2()
+                        .child(Icon::new(IconName::XCircle).color(Color::Error))
+                        .child(Label::new(error).size(LabelSize::Small)),
+                )
+            })
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("cancel", "Cancel")
+                            .style(ButtonStyle::Subtle)
+                            .size(ButtonSize::Compact)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.cancel(&menu::Cancel, window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("rename", "Rename")
+                            .style(ButtonStyle::Filled)
+                            .size(ButtonSize::Compact)
+                            .disabled(!can_rename)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.confirm(&menu::Confirm, window, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
 fn remove_startup_profile_after_confirmation(profile: String, cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = cx
@@ -30014,6 +30301,8 @@ mod tests {
         } else if let Some(action) = action.as_any().downcast_ref::<HideStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<CopyStartupProfile>() {
+            &action.profile
+        } else if let Some(action) = action.as_any().downcast_ref::<RenameStartupProfile>() {
             &action.profile
         } else if let Some(action) = action.as_any().downcast_ref::<RemoveStartupProfile>() {
             &action.profile
@@ -30513,6 +30802,18 @@ mod tests {
         assert_key_binding(&keymap, None, "ctrl-shift-p", "command_palette::Toggle");
         assert_key_binding(&keymap, None, "f1", "command_palette::Toggle");
         assert_key_binding(&keymap, Some("CommandPalette"), "escape", "menu::Cancel");
+        assert_key_binding(
+            &keymap,
+            Some("ZedTerminalProfileRename"),
+            "enter",
+            "menu::Confirm",
+        );
+        assert_key_binding(
+            &keymap,
+            Some("ZedTerminalProfileRename"),
+            "escape",
+            "menu::Cancel",
+        );
     }
 
     #[test]
@@ -30587,6 +30888,13 @@ mod tests {
             &filter,
             &CopyStartupProfile {
                 profile: "work".into(),
+            },
+        );
+        assert_command_palette_action_visible(
+            &filter,
+            &RenameStartupProfile {
+                profile: "work".into(),
+                new_profile: None,
             },
         );
         assert_command_palette_action_visible(
@@ -30790,6 +31098,7 @@ mod tests {
                 "Open Config For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Open Description Report For Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Copy Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
+                "Rename Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Export Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Remove Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
                 "Hide Profile: Work Shell (work) - Default - Project shell - icon terminal - color #0f766e",
@@ -30822,9 +31131,10 @@ mod tests {
         assert_open_profile_config_action(&result.results[7], "work");
         assert_open_profile_description_report_action(&result.results[8], "work");
         assert_copy_profile_action(&result.results[9], "work");
-        assert_export_profile_action(&result.results[10], "work");
-        assert_remove_profile_action(&result.results[11], "work");
-        assert_hide_profile_action(&result.results[12], "work");
+        assert_rename_profile_action(&result.results[10], "work", None);
+        assert_export_profile_action(&result.results[11], "work");
+        assert_remove_profile_action(&result.results[12], "work");
+        assert_hide_profile_action(&result.results[13], "work");
         assert!(result.results.iter().all(|item| !item.positions.is_empty()));
     }
 
@@ -30875,6 +31185,7 @@ mod tests {
                 "Open Config For Profile: Work Shell (work)",
                 "Open Description Report For Profile: Work Shell (work)",
                 "Copy Profile: Work Shell (work)",
+                "Rename Profile: Work Shell (work)",
                 "Export Profile: Work Shell (work)",
                 "Remove Profile: Work Shell (work)",
                 "Hide Profile: Work Shell (work)",
@@ -30885,9 +31196,10 @@ mod tests {
         assert_remove_profile_action(&result.results[1], "hidden");
         assert_profile_tab_action(&result.results[2], "work");
         assert_copy_profile_action(&result.results[11], "work");
-        assert_export_profile_action(&result.results[12], "work");
-        assert_remove_profile_action(&result.results[13], "work");
-        assert_hide_profile_action(&result.results[14], "work");
+        assert_rename_profile_action(&result.results[12], "work", None);
+        assert_export_profile_action(&result.results[13], "work");
+        assert_remove_profile_action(&result.results[14], "work");
+        assert_hide_profile_action(&result.results[15], "work");
     }
 
     #[test]
@@ -31028,7 +31340,7 @@ mod tests {
 
         let result = terminal_profile_command_palette_result_from_summaries("log", profiles);
 
-        assert_eq!(result.results.len(), 13);
+        assert_eq!(result.results.len(), 14);
         assert!(
             result
                 .results
@@ -31055,7 +31367,7 @@ mod tests {
 
         let description_result =
             terminal_profile_command_palette_result_from_summaries("deploy", profiles.clone());
-        assert_eq!(description_result.results.len(), 13);
+        assert_eq!(description_result.results.len(), 14);
         assert!(
             description_result
                 .results
@@ -31065,7 +31377,7 @@ mod tests {
 
         let icon_result =
             terminal_profile_command_palette_result_from_summaries("rocket", profiles.clone());
-        assert_eq!(icon_result.results.len(), 13);
+        assert_eq!(icon_result.results.len(), 14);
         assert!(
             icon_result
                 .results
@@ -31075,7 +31387,7 @@ mod tests {
 
         let color_result =
             terminal_profile_command_palette_result_from_summaries("dc2626", profiles);
-        assert_eq!(color_result.results.len(), 13);
+        assert_eq!(color_result.results.len(), 14);
         assert!(
             color_result
                 .results
@@ -31204,6 +31516,36 @@ mod tests {
             vec!["Copy Profile: Work Shell (work) - Project shell - icon terminal"]
         );
         assert_copy_profile_action(&result.results[0], "work");
+    }
+
+    #[test]
+    fn terminal_profile_command_palette_searches_profile_rename_shortcut() {
+        let result = terminal_profile_command_palette_result_from_summaries(
+            "rename",
+            vec![TerminalStartupProfileSummary {
+                name: "work".into(),
+                display_name: "Work Shell".into(),
+                description: Some("Project shell".into()),
+                icon: Some("terminal".into()),
+                color: None,
+                visible_slot: Some(1),
+                visible_slot_shortcut: Some("ctrl-shift-1".into()),
+                hidden: false,
+                is_default: false,
+                tab_count: 1,
+                reference_count: 0,
+            }],
+        );
+
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Rename Profile: Work Shell (work) - Project shell - icon terminal"]
+        );
+        assert_rename_profile_action(&result.results[0], "work", None);
     }
 
     #[test]
@@ -31411,6 +31753,20 @@ mod tests {
             .downcast_ref::<CopyStartupProfile>()
             .expect("expected copy startup profile action");
         assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_rename_profile_action(
+        item: &command_palette_hooks::CommandInterceptItem,
+        expected_profile: &str,
+        expected_new_profile: Option<&str>,
+    ) {
+        let action = item
+            .action
+            .as_any()
+            .downcast_ref::<RenameStartupProfile>()
+            .expect("expected rename profile action");
+        assert_eq!(action.profile, expected_profile);
+        assert_eq!(action.new_profile.as_deref(), expected_new_profile);
     }
 
     fn assert_remove_profile_action(
@@ -32018,6 +32374,13 @@ mod tests {
             "Work Shell (work)",
             "work",
         );
+        let rename_action = assert_profile_submenu_action::<RenameStartupProfile>(
+            &items,
+            "Rename Profile",
+            "Work Shell (work)",
+            "work",
+        );
+        assert_eq!(rename_action.new_profile, None);
         assert_profile_submenu_action::<ExportStartupProfile>(
             &items,
             "Export Profile",
@@ -32953,6 +33316,53 @@ mod tests {
             gpui::private::serde_json::json!({ "profile": "work", "extra": true }),
         )
         .expect_err("unknown startup profile copy action fields should be rejected");
+
+        assert!(format!("{error:#}").contains("unknown field"));
+    }
+
+    #[test]
+    fn parses_rename_startup_profile_action_input() {
+        let action = <RenameStartupProfile as Action>::build(
+            gpui::private::serde_json::json!({ "profile": "work" }),
+        )
+        .expect("rename startup profile modal action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<RenameStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &RenameStartupProfile {
+                profile: "work".into(),
+                new_profile: None,
+            }
+        );
+
+        let action = <RenameStartupProfile as Action>::build(gpui::private::serde_json::json!({
+            "profile": "work",
+            "new_profile": "prod"
+        }))
+        .expect("rename startup profile direct action input should parse");
+        let action = action
+            .as_any()
+            .downcast_ref::<RenameStartupProfile>()
+            .expect("action type should match");
+
+        assert_eq!(
+            action,
+            &RenameStartupProfile {
+                profile: "work".into(),
+                new_profile: Some("prod".into()),
+            }
+        );
+
+        let error = <RenameStartupProfile as Action>::build(gpui::private::serde_json::json!({
+            "profile": "work",
+            "new_profile": "prod",
+            "extra": true
+        }))
+        .expect_err("unknown startup profile rename action fields should be rejected");
 
         assert!(format!("{error:#}").contains("unknown field"));
     }
@@ -35750,6 +36160,7 @@ mod tests {
             "zed_terminal::NewTerminalSplitWithProfileSlot",
             "zed_terminal::CreateStartupProfile",
             "zed_terminal::CopyStartupProfile",
+            "zed_terminal::RenameStartupProfile",
             "zed_terminal::RemoveStartupProfile",
             "zed_terminal::ExportStartupProfile",
             "zed_terminal::ImportStartupProfile",
@@ -36806,6 +37217,13 @@ mod tests {
             .find(|action| action.name == "zed_terminal::CopyStartupProfile")
             .expect("profile copy action should be listed");
         assert_eq!(profile_copy.input, TerminalKeymapActionInput::Object);
+
+        let profile_rename = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::RenameStartupProfile")
+            .expect("profile rename action should be listed");
+        assert_eq!(profile_rename.input, TerminalKeymapActionInput::Object);
 
         let profile_remove = report
             .actions
@@ -46356,6 +46774,52 @@ mod tests {
                 .expect("backup file should be a string")
                 .contains(TERMINAL_PROFILE_MUTATION_BACKUP_DIR)
         );
+        assert!(!report.contains("do-not-log"));
+        assert!(!report.contains("TOKEN"));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn write_startup_profile_rename_report_file_redacts_config_values() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join("zed-terminal-profile-rename.json");
+        let rename = TerminalStartupProfileRename {
+            path: root_dir.join("terminal.json"),
+            previous_profile: "work".into(),
+            profile: "prod".into(),
+            changed: true,
+            updated_reference_count: 3,
+        };
+        let backup = TerminalStartupProfileMutationBackup {
+            action: "rename-profile",
+            path: root_dir.join("terminal.json"),
+            backup_file: root_dir
+                .join("logs")
+                .join("terminal-before-profile-rename-profile-work.json"),
+            profile: Some("work".into()),
+            byte_count: 456,
+        };
+
+        write_startup_profile_rename_report_file(&report_file, &rename, Some(&backup))
+            .expect("profile rename report should write");
+
+        let report =
+            std_fs::read_to_string(&report_file).expect("failed to read profile rename report");
+        let report_json: serde_json::Value =
+            serde_json::from_str(&report).expect("profile rename report should parse");
+        assert_eq!(report_json["status"], "ok");
+        assert_eq!(report_json["previous_profile"], "work");
+        assert_eq!(report_json["profile"], "prod");
+        assert_eq!(report_json["updated_reference_count"], 3);
+        assert_eq!(
+            report_json["pre_mutation_backup"]["action"],
+            "rename-profile"
+        );
+        assert_eq!(report_json["pre_mutation_backup"]["profile"], "work");
+        assert_eq!(report_json["pre_mutation_backup"]["byte_count"], 456);
         assert!(!report.contains("do-not-log"));
         assert!(!report.contains("TOKEN"));
 
