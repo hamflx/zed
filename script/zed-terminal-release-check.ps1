@@ -918,6 +918,19 @@ function Convert-OutputDouble {
     return $parsed
 }
 
+function Convert-OutputBool {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $parsed = $false
+    if (-not [bool]::TryParse($Value, [ref]$parsed)) {
+        throw "$Name was not a valid boolean: $Value"
+    }
+    return $parsed
+}
+
 function Assert-VisualSmokeFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -932,6 +945,48 @@ function Assert-VisualSmokeFile {
     $actualBytes = (Get-Item -LiteralPath $Path).Length
     if ($actualBytes -ne $ExpectedBytes) {
         throw "visual smoke $Name byte count did not match the file length"
+    }
+}
+
+function Read-ShortcutState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen
+    )
+
+    $prefix = "shortcut_state_$Name"
+    $outerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_pane_count" -Context "shortcut visual smoke state $Name") `
+        -Name "$Name shortcut outer pane count"
+    $outerTabCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_tab_count" -Context "shortcut visual smoke state $Name") `
+        -Name "$Name shortcut outer tab count"
+    $innerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_inner_pane_count" -Context "shortcut visual smoke state $Name") `
+        -Name "$Name shortcut inner pane count"
+    $commandPaletteOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_command_palette_open" -Context "shortcut visual smoke state $Name") `
+        -Name "$Name shortcut command palette state"
+
+    if (
+        $outerPaneCount -ne $ExpectedOuterPaneCount -or
+        $outerTabCount -ne $ExpectedOuterTabCount -or
+        $innerPaneCount -ne $ExpectedInnerPaneCount -or
+        $commandPaletteOpen -ne $ExpectedCommandPaletteOpen
+    ) {
+        throw "shortcut visual smoke state $Name did not match expected product hierarchy. Expected outer_pane_count=$ExpectedOuterPaneCount outer_tab_count=$ExpectedOuterTabCount inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen; actual outer_pane_count=$outerPaneCount outer_tab_count=$outerTabCount inner_pane_count=$innerPaneCount command_palette_open=$commandPaletteOpen"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        outer_pane_count = $outerPaneCount
+        outer_tab_count = $outerTabCount
+        inner_pane_count = $innerPaneCount
+        command_palette_open = $commandPaletteOpen
     }
 }
 
@@ -1371,6 +1426,7 @@ function Convert-VisualSmokeOutput {
     $visibleTopLevelWindows = $null
     $shortcutCaptures = @()
     $shortcutComparisons = @()
+    $shortcutStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -1419,6 +1475,26 @@ function Convert-VisualSmokeOutput {
         $startupConfigFile = [System.IO.Path]::GetFullPath($values["shortcut_startup_config_file"])
         if (-not (Test-Path -LiteralPath $startupConfigFile -PathType Leaf)) {
             throw "shortcut visual smoke startup config file was missing: $startupConfigFile"
+        }
+
+        $expectedShortcutStates = @(
+            [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "01-ctrl-shift-t-new-tab"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "02-alt-shift-plus-split-right"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 2; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "03-alt-shift-minus-split-down"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "04-alt-shift-d-duplicate-split"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 4; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "05-ctrl-shift-p-command-palette"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 4; PaletteOpen = $true },
+            [pscustomobject]@{ Name = "06-escape-close-command-palette"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 4; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "07-ctrl-shift-w-close-pane"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false }
+        )
+        foreach ($expectedState in $expectedShortcutStates) {
+            $shortcutStates += Read-ShortcutState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedOuterPaneCount $expectedState.OuterPanes `
+                -ExpectedOuterTabCount $expectedState.OuterTabs `
+                -ExpectedInnerPaneCount $expectedState.InnerPanes `
+                -ExpectedCommandPaletteOpen $expectedState.PaletteOpen
         }
 
         foreach ($captureName in @(
@@ -1585,6 +1661,7 @@ function Convert-VisualSmokeOutput {
         binary_subsystem_value = $binarySubsystemValue
         shortcut_input_mode = $shortcutInputMode
         visible_top_level_windows = $visibleTopLevelWindows
+        shortcut_states = @($shortcutStates)
         shortcut_captures = @($shortcutCaptures)
         shortcut_comparisons = @($shortcutComparisons)
         baseline = $baseline
@@ -1805,8 +1882,15 @@ function New-ReleaseReportMarkdown {
             $lines += "| Shortcut input mode | $(Format-MarkdownValue $visual.shortcut_input_mode) |"
             $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
             $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Shortcut states | $(Format-MarkdownValue @($visual.shortcut_states).Count) |"
             $lines += "| Shortcut captures | $(Format-MarkdownValue @($visual.shortcut_captures).Count) |"
             $lines += "| Shortcut comparisons | $(Format-MarkdownValue @($visual.shortcut_comparisons).Count) |"
+            if ($visual.shortcut_states) {
+                $stateSummary = @($visual.shortcut_states) | ForEach-Object {
+                    "$($_.name): outer=$($_.outer_pane_count)/tabs=$($_.outer_tab_count)/inner=$($_.inner_pane_count)/palette=$($_.command_palette_open)"
+                }
+                $lines += "| Shortcut state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
         }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
