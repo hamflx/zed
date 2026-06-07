@@ -773,6 +773,8 @@ function Assert-PackageDefaultKeymapReferences {
         '"ctrl-shift-9"',
         "zed_terminal::DuplicateTerminalTab",
         "zed_terminal::CloseTerminalPane",
+        "zed_terminal::DuplicateTerminalSplitRight",
+        "zed_terminal::DuplicateTerminalSplitDown",
         "zed_terminal::ActivateNextTerminalTab",
         "zed_terminal::ActivatePreviousTerminalTab",
         "zed_terminal::ActivateTerminalTab",

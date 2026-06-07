@@ -30318,19 +30318,29 @@ mod tests {
             "alt-shift-d",
             "zed_terminal::DuplicateTerminalSplitAuto",
         );
-        assert_key_binding(&keymap, None, "alt-+", "zed_terminal::NewTerminalSplitDown");
+        assert_key_binding(
+            &keymap,
+            None,
+            "alt-+",
+            "zed_terminal::DuplicateTerminalSplitRight",
+        );
         assert_key_binding(
             &keymap,
             None,
             "alt-shift-plus",
-            "zed_terminal::NewTerminalSplitDown",
+            "zed_terminal::DuplicateTerminalSplitRight",
         );
-        assert_key_binding(&keymap, None, "alt-_", "zed_terminal::NewTerminalSplitDown");
+        assert_key_binding(
+            &keymap,
+            None,
+            "alt-_",
+            "zed_terminal::DuplicateTerminalSplitDown",
+        );
         assert_key_binding(
             &keymap,
             None,
             "alt-shift-minus",
-            "zed_terminal::NewTerminalSplitDown",
+            "zed_terminal::DuplicateTerminalSplitDown",
         );
         assert_key_binding(&keymap, None, "f11", "zed_terminal::ToggleFullScreen");
         assert_key_binding(&keymap, None, "shift-escape", "workspace::ToggleZoom");

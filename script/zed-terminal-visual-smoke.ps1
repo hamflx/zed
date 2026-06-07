@@ -917,6 +917,7 @@ function Invoke-ZedTerminalShortcutVerification {
     $VK_P = [System.UInt16][byte][char]'P'
     $VK_T = [System.UInt16][byte][char]'T'
     $VK_W = [System.UInt16][byte][char]'W'
+    $VK_OEM_PLUS = [System.UInt16]0xbb
     $VK_OEM_MINUS = [System.UInt16]0xbd
 
     $captures = New-Object System.Collections.Generic.List[object]
@@ -934,38 +935,45 @@ function Invoke-ZedTerminalShortcutVerification {
     $captures.Add($newTab)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $newTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
-    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_D -Keystroke "alt-shift-d" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 2 -TimeoutSeconds $TimeoutSeconds
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_PLUS -Keystroke "alt-shift-plus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 2 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 2200
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
-    $duplicateSplit = Save-ShortcutScreenshot -Window $Window -Name "02-alt-shift-d-duplicate-split" -RunDir $RunDir
-    $captures.Add($duplicateSplit)
-    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $duplicateSplit -MinimumDifferentPixelRatio 0.003 -RunDir $RunDir))
+    $splitRight = Save-ShortcutScreenshot -Window $Window -Name "02-alt-shift-plus-split-right" -RunDir $RunDir
+    $captures.Add($splitRight)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $splitRight -MinimumDifferentPixelRatio 0.003 -RunDir $RunDir))
 
     Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_MINUS -Keystroke "alt-shift-minus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 3 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 2200
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $splitDown = Save-ShortcutScreenshot -Window $Window -Name "03-alt-shift-minus-split-down" -RunDir $RunDir
     $captures.Add($splitDown)
-    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $duplicateSplit -After $splitDown -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitRight -After $splitDown -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
 
-    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_P -Keystroke "ctrl-shift-p" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 4 -TimeoutSeconds $TimeoutSeconds
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_D -Keystroke "alt-shift-d" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 4 -TimeoutSeconds $TimeoutSeconds
+    Start-Sleep -Milliseconds 2200
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $duplicateSplit = Save-ShortcutScreenshot -Window $Window -Name "04-alt-shift-d-duplicate-split" -RunDir $RunDir
+    $captures.Add($duplicateSplit)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitDown -After $duplicateSplit -MinimumDifferentPixelRatio 0.002 -RunDir $RunDir))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_P -Keystroke "ctrl-shift-p" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 5 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
-    $commandPalette = Save-ShortcutScreenshot -Window $Window -Name "04-ctrl-shift-p-command-palette" -RunDir $RunDir
+    $commandPalette = Save-ShortcutScreenshot -Window $Window -Name "05-ctrl-shift-p-command-palette" -RunDir $RunDir
     $captures.Add($commandPalette)
-    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $splitDown -After $commandPalette -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $duplicateSplit -After $commandPalette -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
 
-    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 5 -TimeoutSeconds $TimeoutSeconds
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 6 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 800
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
-    $paletteClosed = Save-ShortcutScreenshot -Window $Window -Name "05-escape-close-command-palette" -RunDir $RunDir
+    $paletteClosed = Save-ShortcutScreenshot -Window $Window -Name "06-escape-close-command-palette" -RunDir $RunDir
     $captures.Add($paletteClosed)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $commandPalette -After $paletteClosed -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
-    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 6 -TimeoutSeconds $TimeoutSeconds
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 7 -TimeoutSeconds $TimeoutSeconds
     Start-Sleep -Milliseconds 1600
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
-    $closePane = Save-ShortcutScreenshot -Window $Window -Name "06-ctrl-shift-w-close-pane" -RunDir $RunDir
+    $closePane = Save-ShortcutScreenshot -Window $Window -Name "07-ctrl-shift-w-close-pane" -RunDir $RunDir
     $captures.Add($closePane)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $paletteClosed -After $closePane -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 

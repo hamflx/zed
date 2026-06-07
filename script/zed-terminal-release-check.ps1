@@ -1424,11 +1424,12 @@ function Convert-VisualSmokeOutput {
         foreach ($captureName in @(
                 "00-initial",
                 "01-ctrl-shift-t-new-tab",
-                "02-alt-shift-d-duplicate-split",
+                "02-alt-shift-plus-split-right",
                 "03-alt-shift-minus-split-down",
-                "04-ctrl-shift-p-command-palette",
-                "05-escape-close-command-palette",
-                "06-ctrl-shift-w-close-pane"
+                "04-alt-shift-d-duplicate-split",
+                "05-ctrl-shift-p-command-palette",
+                "06-escape-close-command-palette",
+                "07-ctrl-shift-w-close-pane"
             )) {
             $pathKey = "shortcut_capture_$captureName"
             $bytesKey = "shortcut_capture_$($captureName)_bytes"
@@ -1455,8 +1456,8 @@ function Convert-VisualSmokeOutput {
                 Where-Object { $_.Key -like "shortcut_comparison_*" } |
                 Sort-Object Key
         )
-        if ($shortcutComparisonEntries.Count -ne 6) {
-            throw "shortcut visual smoke expected six shortcut comparison diff entries, got $($shortcutComparisonEntries.Count)"
+        if ($shortcutComparisonEntries.Count -ne 7) {
+            throw "shortcut visual smoke expected seven shortcut comparison diff entries, got $($shortcutComparisonEntries.Count)"
         }
         foreach ($entry in $shortcutComparisonEntries) {
             if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
@@ -3009,6 +3010,8 @@ try {
                 '"ctrl-shift-9": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 9 \}\]',
                 '"ctrl-shift-p": "command_palette::Toggle"',
                 '"alt-shift-d": "zed_terminal::DuplicateTerminalSplitAuto"',
+                '"alt-shift-plus": "zed_terminal::DuplicateTerminalSplitRight"',
+                '"alt-shift-minus": "zed_terminal::DuplicateTerminalSplitDown"',
                 '"alt-f4": "zed_terminal::CloseTerminalWindow"'
             )
             if ($defaultKeymap -match "do-not-log") {
