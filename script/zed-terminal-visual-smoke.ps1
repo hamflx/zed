@@ -13,6 +13,7 @@ Param(
     [Parameter()][switch]$VerifySplitPane,
     [Parameter()][switch]$VerifyShortcuts,
     [Parameter()][switch]$VerifyProfileEditModal,
+    [Parameter()][switch]$VerifyWindowLifecycle,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -41,8 +42,8 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
-if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal) | Where-Object { $_ }).Count -gt 1) {
-    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, or -VerifyProfileEditModal."
+if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle) | Where-Object { $_ }).Count -gt 1) {
+    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, or -VerifyWindowLifecycle."
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -80,6 +81,7 @@ $splitReadyFile = Join-Path $runDir "split-ready.txt"
 $shortcutStartupConfigFile = $null
 $profileEditStartupConfigFile = $null
 $profileEditKeymapFile = $null
+$windowLifecycleStartupConfigFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -755,6 +757,34 @@ function Assert-SingleVisibleProcessWindow {
     return $windows[0]
 }
 
+function Wait-VisibleProcessWindows {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][int]$ExpectedCount,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastWindows = @()
+    do {
+        if ($Process.HasExited) {
+            throw "zed-terminal exited while waiting for $ExpectedCount visible top-level window(s). Exit code: $($Process.ExitCode)"
+        }
+
+        $lastWindows = @([ZedTerminalVisualSmokeNative]::GetVisibleTopLevelWindowsForProcess($Process.Id))
+        if ($lastWindows.Count -eq $ExpectedCount) {
+            return $lastWindows
+        }
+
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+
+    $descriptions = $lastWindows | ForEach-Object {
+        "$($_.Handle):title='$($_.Title)':class='$($_.ClassName)':bounds=$($_.Left),$($_.Top),$($_.Width),$($_.Height)"
+    }
+    throw "Timed out waiting for $ExpectedCount visible zed-terminal top-level window(s) for process $($Process.Id). Last count=$($lastWindows.Count): $($descriptions -join '; ')"
+}
+
 function Save-ShortcutScreenshot {
     param(
         [Parameter(Mandatory = $true)]$Window,
@@ -776,6 +806,35 @@ function Save-ShortcutScreenshot {
         Path = $path
         Stats = $stats
     }
+}
+
+function Save-WindowLifecycleScreenshot {
+    param(
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$RunDir
+    )
+
+    $path = Join-Path $RunDir "zed-terminal-window-lifecycle-$Name.png"
+    Save-WindowScreenshot -Window $Window -Path $path
+    $stats = Get-ImageSampleStats -Path $path
+    if ($stats.FileBytes -lt 10000) {
+        throw "Window lifecycle screenshot '$Name' is unexpectedly small: $($stats.FileBytes) bytes."
+    }
+    if ($stats.UniqueColors -lt 8) {
+        throw "Window lifecycle screenshot '$Name' appears blank or nearly blank: $($stats.UniqueColors) sampled colors."
+    }
+    return [PSCustomObject]@{
+        Name = $Name
+        Path = $path
+        Stats = $stats
+    }
+}
+
+function Format-WindowLifecycleWindow {
+    param([Parameter(Mandatory = $true)]$Window)
+
+    return "$($Window.Handle):title='$($Window.Title)':class='$($Window.ClassName)':bounds=$($Window.Left),$($Window.Top),$($Window.Width),$($Window.Height)"
 }
 
 function Assert-ShortcutScreenshotChanged {
@@ -1145,6 +1204,30 @@ function Write-ShortcutStartupConfig {
     return $startupConfigFile
 }
 
+function Write-WindowLifecycleStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $shortcutCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $EncodedProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $shortcutCommand = $shortcutCommand -join " "
+    $startupConfig = [ordered]@{
+        title = "Window Lifecycle Smoke"
+        command = $shortcutCommand
+    } | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
 function Write-ProfileEditStartupConfig {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigDir,
@@ -1242,6 +1325,67 @@ function Invoke-ZedTerminalProfileEditVerification {
     }
 }
 
+function Invoke-ZedTerminalWindowLifecycleVerification {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_MENU = [System.UInt16]0x12
+    $VK_N = [System.UInt16][byte][char]'N'
+    $VK_F4 = [System.UInt16]0x73
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $counts = New-Object System.Collections.Generic.List[object]
+
+    $initialWindows = @(Wait-VisibleProcessWindows -Process $Process -ExpectedCount 1 -TimeoutSeconds $TimeoutSeconds)
+    $Window = $initialWindows[0]
+    Assert-ZedTerminalWindowTitle -Window $Window -ExpectedTitle "Zed Terminal"
+    $counts.Add([PSCustomObject]@{ Name = "00-initial"; VisibleWindows = 1 })
+    $initial = Save-WindowLifecycleScreenshot -Window $Window -Name "00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+    $initialHandle = [IntPtr]($Window.Handle)
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window, ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)), $VK_N)
+    $afterNewWindow = @(Wait-VisibleProcessWindows -Process $Process -ExpectedCount 2 -TimeoutSeconds $TimeoutSeconds)
+    foreach ($candidate in $afterNewWindow) {
+        Assert-ZedTerminalWindowTitle -Window $candidate -ExpectedTitle "Zed Terminal"
+    }
+    $secondWindow = @($afterNewWindow | Where-Object { [IntPtr]($_.Handle) -ne $initialHandle })[0]
+    if (-not $secondWindow) {
+        $descriptions = $afterNewWindow | ForEach-Object { Format-WindowLifecycleWindow $_ }
+        throw "Window lifecycle smoke could not identify the second window after ctrl-shift-n: $($descriptions -join '; ')"
+    }
+    $counts.Add([PSCustomObject]@{ Name = "01-after-new-window"; VisibleWindows = 2 })
+    $secondCapture = Save-WindowLifecycleScreenshot -Window $secondWindow -Name "01-second-window" -RunDir $RunDir
+    $captures.Add($secondCapture)
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($secondWindow, ([System.UInt16[]]@($VK_MENU)), $VK_F4)
+    $afterCloseWindow = @(Wait-VisibleProcessWindows -Process $Process -ExpectedCount 1 -TimeoutSeconds $TimeoutSeconds)
+    $remainingWindow = $afterCloseWindow[0]
+    Assert-ZedTerminalWindowTitle -Window $remainingWindow -ExpectedTitle "Zed Terminal"
+    if ([IntPtr]($remainingWindow.Handle) -ne $initialHandle) {
+        throw "Window lifecycle smoke closed the wrong window. expected remaining handle=$initialHandle actual=$($remainingWindow.Handle)"
+    }
+    $counts.Add([PSCustomObject]@{ Name = "02-after-close-window"; VisibleWindows = 1 })
+    $remainingCapture = Save-WindowLifecycleScreenshot -Window $remainingWindow -Name "02-after-close" -RunDir $RunDir
+    $captures.Add($remainingCapture)
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        Counts = $counts
+        InitialWindow = $Window
+        SecondWindow = $secondWindow
+        RemainingWindow = $remainingWindow
+        FinalWindow = $remainingWindow
+        InputMode = "windows-sendinput"
+    }
+}
+
 $probeScript = @'
 $Host.UI.RawUI.WindowTitle = "zed-terminal-visual-smoke"
 Set-Content -LiteralPath __PROBE_READY_FILE__ -Value "ready"
@@ -1270,9 +1414,12 @@ if ($VerifySplitPane) {
     $profileEditStartupConfigFile = Write-ProfileEditStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
     $profileEditKeymapFile = Write-ProfileEditKeymapConfig -ConfigDir $configDir
     $startupConfigFile = $profileEditStartupConfigFile
+} elseif ($VerifyWindowLifecycle) {
+    $windowLifecycleStartupConfigFile = Write-WindowLifecycleStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $startupConfigFile = $windowLifecycleStartupConfigFile
 }
 
-$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal) {
+$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle) {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir
@@ -1302,14 +1449,18 @@ $arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal) {
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 $previousShortcutSmokeDir = $null
+$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle
+$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal
 
 try {
     $subsystem = $null
-    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
+    if ($requiresGuiSubsystem) {
         $subsystem = Get-PortableExecutableSubsystem -Path $Binary
         if ($subsystem.Value -ne 2) {
-            throw "Shortcut-driven E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
+            throw "Shortcut/window E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
         }
+    }
+    if ($usesShortcutSmoke) {
         New-Item -ItemType Directory -Force -Path $shortcutSmokeDir | Out-Null
         $previousShortcutSmokeDir = [System.Environment]::GetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", "Process")
         [System.Environment]::SetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", $shortcutSmokeDir, "Process")
@@ -1318,7 +1469,7 @@ try {
     $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -WorkingDirectory $WorkingDirectory -PassThru
     $window = Get-ProcessWindow -Process $process -TimeoutSeconds $StartupTimeoutSeconds
     Wait-ProbeReadyFile -Process $process -Path $probeReadyFile -TimeoutSeconds $StartupTimeoutSeconds
-    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
+    if ($usesShortcutSmoke) {
         Wait-ShortcutSmokeReady `
             -Process $process `
             -ShortcutSmokeDir $shortcutSmokeDir `
@@ -1387,6 +1538,7 @@ try {
 
     $shortcutVerification = $null
     $profileEditVerification = $null
+    $windowLifecycleVerification = $null
     if ($VerifyShortcuts) {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
@@ -1403,6 +1555,13 @@ try {
             -ShortcutSmokeDir $shortcutSmokeDir `
             -TimeoutSeconds $StartupTimeoutSeconds
         $window = $profileEditVerification.FinalWindow
+    } elseif ($VerifyWindowLifecycle) {
+        $windowLifecycleVerification = Invoke-ZedTerminalWindowLifecycleVerification `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
+        $window = $windowLifecycleVerification.FinalWindow
     }
 
     $baselineComparison = $null
@@ -1500,6 +1659,24 @@ try {
             Write-Output "profile_edit_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
         }
     }
+    if ($VerifyWindowLifecycle) {
+        Write-Output "window_lifecycle_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "window_lifecycle_input_mode: $($windowLifecycleVerification.InputMode)"
+        Write-Output "window_lifecycle_startup_config_file: $windowLifecycleStartupConfigFile"
+        Write-Output "window_lifecycle_initial_window: $(Format-WindowLifecycleWindow -Window ($windowLifecycleVerification.InitialWindow))"
+        Write-Output "window_lifecycle_second_window: $(Format-WindowLifecycleWindow -Window ($windowLifecycleVerification.SecondWindow))"
+        Write-Output "window_lifecycle_remaining_window: $(Format-WindowLifecycleWindow -Window ($windowLifecycleVerification.RemainingWindow))"
+        foreach ($count in $windowLifecycleVerification.Counts) {
+            Write-Output "window_lifecycle_state_$($count.Name)_visible_windows: $($count.VisibleWindows)"
+        }
+        foreach ($capture in $windowLifecycleVerification.Captures) {
+            Write-Output "window_lifecycle_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "window_lifecycle_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "window_lifecycle_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+    }
     if ($VerifySplitPane) {
         Write-Output "split_mode: startup"
         Write-Output "split_direction: right"
@@ -1535,7 +1712,7 @@ try {
         Write-Output "baseline_updated_file: $UpdateBaselineImage"
     }
 } finally {
-    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
+    if ($usesShortcutSmoke) {
         [System.Environment]::SetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", $previousShortcutSmokeDir, "Process")
     }
     if ($process -and -not $process.HasExited -and -not $KeepRunning) {

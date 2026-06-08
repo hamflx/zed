@@ -118,6 +118,7 @@ $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $shortcutVisualSmokeDir = Join-Path $runDir "visual-smoke-shortcuts"
 $profileEditVisualSmokeDir = Join-Path $runDir "visual-smoke-profile-edit"
+$windowLifecycleVisualSmokeDir = Join-Path $runDir "visual-smoke-window-lifecycle"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -143,6 +144,7 @@ $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
 $script:ShortcutVisualSmoke = $null
 $script:ProfileEditVisualSmoke = $null
+$script:WindowLifecycleVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -1060,6 +1062,27 @@ function Read-ProfileEditState {
     }
 }
 
+function Read-WindowLifecycleState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedVisibleWindows
+    )
+
+    $visibleWindows = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "window_lifecycle_state_$($Name)_visible_windows" -Context "window lifecycle visual smoke state $Name") `
+        -Name "$Name window lifecycle visible window count"
+
+    if ($visibleWindows -ne $ExpectedVisibleWindows) {
+        throw "window lifecycle visual smoke state $Name did not match expected window count. Expected visible_windows=$ExpectedVisibleWindows; actual visible_windows=$visibleWindows"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        visible_windows = $visibleWindows
+    }
+}
+
 function Read-ReleaseJsonFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1410,7 +1433,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1504,6 +1527,13 @@ function Convert-VisualSmokeOutput {
     $profileEditCaptures = @()
     $profileEditComparisons = @()
     $profileEditStates = @()
+    $windowLifecycleE2EVerified = $null
+    $windowLifecycleInputMode = $null
+    $windowLifecycleInitialWindow = $null
+    $windowLifecycleSecondWindow = $null
+    $windowLifecycleRemainingWindow = $null
+    $windowLifecycleCaptures = @()
+    $windowLifecycleStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -1751,6 +1781,80 @@ function Convert-VisualSmokeOutput {
 
         $profileEditE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
+    } elseif ($Mode -eq "window-lifecycle") {
+        foreach ($key in @("window_lifecycle_e2e_verified", "binary_subsystem", "binary_subsystem_value", "window_lifecycle_input_mode", "window_lifecycle_startup_config_file", "window_lifecycle_initial_window", "window_lifecycle_second_window", "window_lifecycle_remaining_window")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "window lifecycle visual smoke"
+        }
+        if ($values["window_lifecycle_e2e_verified"] -ne "True") {
+            throw "window lifecycle visual smoke did not verify the new/close window workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "window lifecycle visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "window lifecycle visual smoke binary_subsystem_value"
+        if ($binarySubsystemValue -ne 2) {
+            throw "window lifecycle visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        $windowLifecycleInputMode = $values["window_lifecycle_input_mode"]
+        if ($windowLifecycleInputMode -ne "windows-sendinput") {
+            throw "window lifecycle visual smoke must use real Windows SendInput; actual input mode: $windowLifecycleInputMode"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["window_lifecycle_startup_config_file"])
+        if (-not (Test-Path -LiteralPath $startupConfigFile -PathType Leaf)) {
+            throw "window lifecycle visual smoke startup config file was missing: $startupConfigFile"
+        }
+
+        $windowLifecycleInitialWindow = $values["window_lifecycle_initial_window"]
+        $windowLifecycleSecondWindow = $values["window_lifecycle_second_window"]
+        $windowLifecycleRemainingWindow = $values["window_lifecycle_remaining_window"]
+        if ($windowLifecycleInitialWindow -eq $windowLifecycleSecondWindow) {
+            throw "window lifecycle visual smoke did not report a distinct second window"
+        }
+        if ($windowLifecycleInitialWindow -ne $windowLifecycleRemainingWindow) {
+            throw "window lifecycle visual smoke did not leave the original window after closing the second window"
+        }
+
+        $expectedWindowLifecycleStates = @(
+            [pscustomobject]@{ Name = "00-initial"; VisibleWindows = 1 },
+            [pscustomobject]@{ Name = "01-after-new-window"; VisibleWindows = 2 },
+            [pscustomobject]@{ Name = "02-after-close-window"; VisibleWindows = 1 }
+        )
+        foreach ($expectedState in $expectedWindowLifecycleStates) {
+            $windowLifecycleStates += Read-WindowLifecycleState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedVisibleWindows $expectedState.VisibleWindows
+        }
+
+        foreach ($captureName in @(
+                "00-initial",
+                "01-second-window",
+                "02-after-close"
+            )) {
+            $pathKey = "window_lifecycle_capture_$captureName"
+            $bytesKey = "window_lifecycle_capture_$($captureName)_bytes"
+            $colorsKey = "window_lifecycle_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "window lifecycle visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "window lifecycle visual smoke") -Name "$captureName window lifecycle screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "window lifecycle visual smoke") -Name "$captureName window lifecycle sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "window lifecycle screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "window lifecycle screenshot $captureName appears blank or nearly blank"
+            }
+
+            $windowLifecycleCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $windowLifecycleE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -1857,6 +1961,13 @@ function Convert-VisualSmokeOutput {
         profile_edit_states = @($profileEditStates)
         profile_edit_captures = @($profileEditCaptures)
         profile_edit_comparisons = @($profileEditComparisons)
+        window_lifecycle_e2e_verified = $windowLifecycleE2EVerified
+        window_lifecycle_input_mode = $windowLifecycleInputMode
+        window_lifecycle_initial_window = $windowLifecycleInitialWindow
+        window_lifecycle_second_window = $windowLifecycleSecondWindow
+        window_lifecycle_remaining_window = $windowLifecycleRemainingWindow
+        window_lifecycle_states = @($windowLifecycleStates)
+        window_lifecycle_captures = @($windowLifecycleCaptures)
         baseline = $baseline
     }
 }
@@ -1897,6 +2008,8 @@ function Get-SkippedReleaseChecks {
         }
         $skipped.Add("split visual smoke")
         $skipped.Add("shortcut visual smoke")
+        $skipped.Add("profile edit visual smoke")
+        $skipped.Add("window lifecycle visual smoke")
     } else {
         if ($SkipVisualBaseline) {
             $skipped.Add("default visual baseline")
@@ -1919,6 +2032,8 @@ function Get-SkippedReleaseChecks {
         }
         if ($SkipShortcutVisualSmoke) {
             $skipped.Add("shortcut visual smoke")
+            $skipped.Add("profile edit visual smoke")
+            $skipped.Add("window lifecycle visual smoke")
         }
     }
 
@@ -2050,7 +2165,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -2101,6 +2216,22 @@ function New-ReleaseReportMarkdown {
                 $lines += "| Profile edit state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
             }
         }
+        if ($visual.window_lifecycle_e2e_verified -ne $null) {
+            $lines += "| Window lifecycle E2E verified | $(Format-MarkdownValue $visual.window_lifecycle_e2e_verified) |"
+            $lines += "| Window lifecycle input mode | $(Format-MarkdownValue $visual.window_lifecycle_input_mode) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Initial window | $(Format-MarkdownValue $visual.window_lifecycle_initial_window) |"
+            $lines += "| Second window | $(Format-MarkdownValue $visual.window_lifecycle_second_window) |"
+            $lines += "| Remaining window | $(Format-MarkdownValue $visual.window_lifecycle_remaining_window) |"
+            $lines += "| Window lifecycle states | $(Format-MarkdownValue @($visual.window_lifecycle_states).Count) |"
+            $lines += "| Window lifecycle captures | $(Format-MarkdownValue @($visual.window_lifecycle_captures).Count) |"
+            if ($visual.window_lifecycle_states) {
+                $stateSummary = @($visual.window_lifecycle_states) | ForEach-Object {
+                    "$($_.name): windows=$($_.visible_windows)"
+                }
+                $lines += "| Window lifecycle state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -2109,7 +2240,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -2148,6 +2279,7 @@ function Write-ReleaseSummary {
             split_visual_smoke = [bool]$SkipSplitVisualSmoke
             shortcut_visual_smoke = [bool]$SkipShortcutVisualSmoke
             profile_edit_visual_smoke = [bool]$SkipShortcutVisualSmoke
+            window_lifecycle_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
@@ -2173,6 +2305,8 @@ function Write-ReleaseSummary {
         shortcut_visual_smoke = $script:ShortcutVisualSmoke
         profile_edit_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
         profile_edit_visual_smoke = $script:ProfileEditVisualSmoke
+        window_lifecycle_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        window_lifecycle_visual_smoke = $script:WindowLifecycleVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -4486,6 +4620,24 @@ try {
                 $script:ProfileEditVisualSmoke = Convert-VisualSmokeOutput `
                     -Output (($profileEditVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "profile-edit" `
+                    -BaselineExpected $false
+            }
+
+            $windowLifecycleVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $windowLifecycleVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifyWindowLifecycle"
+            )
+            Invoke-Step "visual smoke window lifecycle" {
+                $windowLifecycleVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $windowLifecycleVisualSmokeArgs
+                $script:WindowLifecycleVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($windowLifecycleVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "window-lifecycle" `
                     -BaselineExpected $false
             }
         }
