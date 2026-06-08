@@ -57,6 +57,7 @@ use ui::prelude::{
     Headline, HeadlineSize, Icon, IconName, Label, LabelCommon as _, LabelSize, h_flex, rems,
     v_flex,
 };
+use ui::{Modal, ModalFooter, ModalHeader, Section, StyledExt as _};
 use workspace::WorkspaceSettings;
 use workspace::{AppState, Event as WorkspaceEvent, ModalView, Workspace, WorkspaceStore};
 
@@ -28634,11 +28635,15 @@ fn terminal_shortcut_smoke_status(
             let command_palette_open = workspace
                 .active_modal::<command_palette::CommandPalette>(cx)
                 .is_some();
+            let profile_edit_modal_open = workspace
+                .active_modal::<EditStartupProfileModal>(cx)
+                .is_some();
             serde_json::json!({
                 "outer_pane_count": outer_pane_count,
                 "active_outer_tab_count": active_outer_tab_count,
                 "active_terminal_inner_pane_count": active_terminal_inner_pane_count,
                 "command_palette_open": command_palette_open,
+                "profile_edit_modal_open": profile_edit_modal_open,
                 "window_title": window.window_title(),
             })
             .to_string()
@@ -32197,10 +32202,10 @@ fn update_startup_profile_metadata_and_report(
 struct EditStartupProfileModal {
     profile: String,
     original_form: StartupProfileMetadataForm,
-    display_name: Entity<editor::Editor>,
-    description: Entity<editor::Editor>,
-    icon: Entity<editor::Editor>,
-    color: Entity<editor::Editor>,
+    display_name: Entity<ui_input::InputField>,
+    description: Entity<ui_input::InputField>,
+    icon: Entity<ui_input::InputField>,
+    color: Entity<ui_input::InputField>,
     focus_handle: FocusHandle,
     error: Option<String>,
     pending: bool,
@@ -32296,11 +32301,11 @@ fn profile_metadata_editor(
     text: String,
     window: &mut Window,
     cx: &mut Context<EditStartupProfileModal>,
-) -> Entity<editor::Editor> {
+) -> Entity<ui_input::InputField> {
     cx.new(|cx| {
-        let mut editor = editor::Editor::single_line(window, cx);
-        editor.set_text(text, window, cx);
-        editor
+        let input = ui_input::InputField::new(window, cx, "");
+        input.set_text(&text, window, cx);
+        input
     })
 }
 
@@ -32320,62 +32325,73 @@ impl Render for EditStartupProfileModal {
         let can_save = !is_pending && self.form(cx) != self.original_form;
 
         v_flex()
+            .id("zed-terminal-profile-edit-modal")
             .key_context("ZedTerminalProfileEdit")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel))
-            .gap_3()
-            .w(rems(34.))
+            .w(rems(24.))
+            .elevation_3(cx)
+            .max_w_full()
+            .min_w_0()
             .child(
-                v_flex()
-                    .gap_1()
-                    .child(Headline::new("Edit Profile").size(HeadlineSize::Small))
-                    .child(
-                        Label::new(format!("Profile: {}", self.profile))
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    ),
-            )
-            .child(profile_metadata_field(
-                "Display name",
-                self.display_name.clone(),
-                cx,
-            ))
-            .child(profile_metadata_field(
-                "Description",
-                self.description.clone(),
-                cx,
-            ))
-            .child(profile_metadata_field("Icon", self.icon.clone(), cx))
-            .child(profile_metadata_field("Color", self.color.clone(), cx))
-            .when_some(self.error.clone(), |element, error| {
-                element.child(
-                    h_flex()
-                        .gap_2()
-                        .child(Icon::new(IconName::XCircle).color(Color::Error))
-                        .child(Label::new(error).size(LabelSize::Small)),
-                )
-            })
-            .child(
-                h_flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        Button::new("cancel", "Cancel")
-                            .style(ButtonStyle::Subtle)
-                            .size(ButtonSize::Compact)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.cancel(&menu::Cancel, window, cx);
-                            })),
+                Modal::new("zed-terminal-profile-edit", None)
+                    .header(
+                        ModalHeader::new()
+                            .headline("Edit Profile")
+                            .description(format!("Profile: {}", self.profile)),
                     )
-                    .child(
-                        Button::new("save", "Save")
-                            .style(ButtonStyle::Filled)
-                            .size(ButtonSize::Compact)
-                            .disabled(!can_save)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.confirm(&menu::Confirm, window, cx);
-                            })),
+                    .section(
+                        Section::new().child(
+                            v_flex()
+                                .w_full()
+                                .min_w_0()
+                                .gap_3()
+                                .child(profile_metadata_field(
+                                    "Display name",
+                                    self.display_name.clone(),
+                                    cx,
+                                ))
+                                .child(profile_metadata_field(
+                                    "Description",
+                                    self.description.clone(),
+                                    cx,
+                                ))
+                                .child(profile_metadata_field("Icon", self.icon.clone(), cx))
+                                .child(profile_metadata_field("Color", self.color.clone(), cx))
+                                .when_some(self.error.clone(), |element, error| {
+                                    element.child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(Icon::new(IconName::XCircle).color(Color::Error))
+                                            .child(Label::new(error).size(LabelSize::Small)),
+                                    )
+                                }),
+                        ),
+                    )
+                    .footer(
+                        ModalFooter::new().end_slot(
+                            h_flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    Button::new("cancel", "Cancel")
+                                        .style(ButtonStyle::Subtle)
+                                        .size(ButtonSize::Compact)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.cancel(&menu::Cancel, window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("save", "Save")
+                                        .style(ButtonStyle::Filled)
+                                        .size(ButtonSize::Compact)
+                                        .disabled(!can_save)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm(&menu::Confirm, window, cx);
+                                        })),
+                                ),
+                        ),
                     ),
             )
             .into_any_element()
@@ -32384,21 +32400,15 @@ impl Render for EditStartupProfileModal {
 
 fn profile_metadata_field(
     label: &'static str,
-    input: Entity<editor::Editor>,
-    cx: &mut Context<EditStartupProfileModal>,
+    input: Entity<ui_input::InputField>,
+    _cx: &mut Context<EditStartupProfileModal>,
 ) -> impl IntoElement {
     v_flex()
+        .w_full()
+        .min_w_0()
         .gap_1()
         .child(Label::new(label).size(LabelSize::Small))
-        .child(
-            div()
-                .border_1()
-                .border_color(cx.theme().colors().border)
-                .rounded_md()
-                .px_2()
-                .py_1()
-                .child(input),
-        )
+        .child(input)
 }
 
 struct RenameStartupProfileModal {

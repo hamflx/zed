@@ -23207,6 +23207,7 @@ dependencies = [
  "theme",
  "theme_settings",
  "ui",
+ "ui_input",
  "uuid",
  "workspace",
  "zed_actions",

@@ -117,6 +117,7 @@ $packageVisualSmokeDir = Join-Path $runDir "visual-smoke-package"
 $visualSmokeDir = Join-Path $runDir "visual-smoke"
 $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $shortcutVisualSmokeDir = Join-Path $runDir "visual-smoke-shortcuts"
+$profileEditVisualSmokeDir = Join-Path $runDir "visual-smoke-profile-edit"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -141,6 +142,7 @@ $script:PackageVisualSmoke = $null
 $script:VisualSmoke = $null
 $script:SplitVisualSmoke = $null
 $script:ShortcutVisualSmoke = $null
+$script:ProfileEditVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -1010,6 +1012,54 @@ function Read-ShortcutState {
     }
 }
 
+function Read-ProfileEditState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen,
+        [Parameter(Mandatory = $true)][bool]$ExpectedProfileEditModalOpen
+    )
+
+    $prefix = "profile_edit_state_$Name"
+    $outerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_pane_count" -Context "profile edit visual smoke state $Name") `
+        -Name "$Name profile edit outer pane count"
+    $outerTabCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_tab_count" -Context "profile edit visual smoke state $Name") `
+        -Name "$Name profile edit outer tab count"
+    $innerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_inner_pane_count" -Context "profile edit visual smoke state $Name") `
+        -Name "$Name profile edit inner pane count"
+    $commandPaletteOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_command_palette_open" -Context "profile edit visual smoke state $Name") `
+        -Name "$Name profile edit command palette state"
+    $profileEditModalOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_profile_edit_modal_open" -Context "profile edit visual smoke state $Name") `
+        -Name "$Name profile edit modal state"
+
+    if (
+        $outerPaneCount -ne $ExpectedOuterPaneCount -or
+        $outerTabCount -ne $ExpectedOuterTabCount -or
+        $innerPaneCount -ne $ExpectedInnerPaneCount -or
+        $commandPaletteOpen -ne $ExpectedCommandPaletteOpen -or
+        $profileEditModalOpen -ne $ExpectedProfileEditModalOpen
+    ) {
+        throw "profile edit visual smoke state $Name did not match expected product hierarchy/modal state. Expected outer_pane_count=$ExpectedOuterPaneCount outer_tab_count=$ExpectedOuterTabCount inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen profile_edit_modal_open=$ExpectedProfileEditModalOpen; actual outer_pane_count=$outerPaneCount outer_tab_count=$outerTabCount inner_pane_count=$innerPaneCount command_palette_open=$commandPaletteOpen profile_edit_modal_open=$profileEditModalOpen"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        outer_pane_count = $outerPaneCount
+        outer_tab_count = $outerTabCount
+        inner_pane_count = $innerPaneCount
+        command_palette_open = $commandPaletteOpen
+        profile_edit_modal_open = $profileEditModalOpen
+    }
+}
+
 function Read-ReleaseJsonFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1360,7 +1410,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1448,6 +1498,12 @@ function Convert-VisualSmokeOutput {
     $shortcutCaptures = @()
     $shortcutComparisons = @()
     $shortcutStates = @()
+    $profileEditE2EVerified = $null
+    $profileEditInputMode = $null
+    $profileEditKeymapFile = $null
+    $profileEditCaptures = @()
+    $profileEditComparisons = @()
+    $profileEditStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -1585,6 +1641,116 @@ function Convert-VisualSmokeOutput {
 
         $shortcutE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
+    } elseif ($Mode -eq "profile-edit") {
+        foreach ($key in @("profile_edit_modal_e2e_verified", "binary_subsystem", "binary_subsystem_value", "profile_edit_input_mode", "profile_edit_startup_config_file", "profile_edit_keymap_file", "visible_top_level_windows")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "profile edit visual smoke"
+        }
+        if ($values["profile_edit_modal_e2e_verified"] -ne "True") {
+            throw "profile edit visual smoke did not verify the profile edit modal workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "profile edit visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "profile edit visual smoke binary_subsystem_value"
+        $visibleTopLevelWindows = Convert-OutputInt64 -Value $values["visible_top_level_windows"] -Name "profile edit visual smoke visible_top_level_windows"
+        if ($binarySubsystemValue -ne 2) {
+            throw "profile edit visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        if ($visibleTopLevelWindows -ne 1) {
+            throw "profile edit visual smoke expected exactly one visible top-level process window"
+        }
+        $profileEditInputMode = $values["profile_edit_input_mode"]
+        if ($profileEditInputMode -notin @("windows-sendinput", "gpui-dispatch")) {
+            throw "profile edit visual smoke reported an unexpected input mode: $profileEditInputMode"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["profile_edit_startup_config_file"])
+        $profileEditKeymapFile = [System.IO.Path]::GetFullPath($values["profile_edit_keymap_file"])
+        foreach ($file in @($startupConfigFile, $profileEditKeymapFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "profile edit visual smoke referenced a missing file: $file"
+            }
+        }
+
+        $expectedProfileEditStates = @(
+            [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; ModalOpen = $false },
+            [pscustomobject]@{ Name = "01-ctrl-shift-e-profile-edit-modal"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; ModalOpen = $true },
+            [pscustomobject]@{ Name = "02-escape-close-profile-edit-modal"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; ModalOpen = $false }
+        )
+        foreach ($expectedState in $expectedProfileEditStates) {
+            $profileEditStates += Read-ProfileEditState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedOuterPaneCount $expectedState.OuterPanes `
+                -ExpectedOuterTabCount $expectedState.OuterTabs `
+                -ExpectedInnerPaneCount $expectedState.InnerPanes `
+                -ExpectedCommandPaletteOpen $expectedState.PaletteOpen `
+                -ExpectedProfileEditModalOpen $expectedState.ModalOpen
+        }
+
+        foreach ($captureName in @(
+                "profile-edit-00-initial",
+                "profile-edit-01-modal-open",
+                "profile-edit-02-modal-closed"
+            )) {
+            $pathKey = "profile_edit_capture_$captureName"
+            $bytesKey = "profile_edit_capture_$($captureName)_bytes"
+            $colorsKey = "profile_edit_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "profile edit visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "profile edit visual smoke") -Name "$captureName profile edit screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "profile edit visual smoke") -Name "$captureName profile edit sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "profile edit screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "profile edit screenshot $captureName appears blank or nearly blank"
+            }
+
+            $profileEditCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $profileEditComparisonEntries = @(
+            $values.GetEnumerator() |
+                Where-Object { $_.Key -like "profile_edit_comparison_*" } |
+                Sort-Object Key
+        )
+        if ($profileEditComparisonEntries.Count -ne 2) {
+            throw "profile edit visual smoke expected two profile edit comparison diff entries, got $($profileEditComparisonEntries.Count)"
+        }
+        foreach ($entry in $profileEditComparisonEntries) {
+            if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
+                throw "profile edit visual smoke comparison entry was not parseable: $($entry.Key): $($entry.Value)"
+            }
+
+            $comparisonName = $entry.Key.Substring("profile_edit_comparison_".Length)
+            $differentPixelRatio = Convert-OutputDouble -Value $Matches[1] -Name "$comparisonName profile edit different_pixel_ratio"
+            $averageChannelDelta = Convert-OutputDouble -Value $Matches[2] -Name "$comparisonName profile edit average_channel_delta"
+            $diffFile = [System.IO.Path]::GetFullPath($Matches[3])
+            if (-not (Test-Path -LiteralPath $diffFile -PathType Leaf)) {
+                throw "profile edit visual smoke comparison diff file was missing: $diffFile"
+            }
+            if ((Get-Item -LiteralPath $diffFile).Length -le 0) {
+                throw "profile edit visual smoke comparison diff file was empty: $diffFile"
+            }
+            if ($differentPixelRatio -le 0 -or $averageChannelDelta -le 0) {
+                throw "profile edit visual smoke comparison did not record a visible image difference for $comparisonName"
+            }
+
+            $profileEditComparisons += [pscustomobject]@{
+                name = $comparisonName
+                different_pixel_ratio = $differentPixelRatio
+                average_channel_delta = $averageChannelDelta
+                diff_file = $diffFile
+            }
+        }
+
+        $profileEditE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -1685,6 +1851,12 @@ function Convert-VisualSmokeOutput {
         shortcut_states = @($shortcutStates)
         shortcut_captures = @($shortcutCaptures)
         shortcut_comparisons = @($shortcutComparisons)
+        profile_edit_modal_e2e_verified = $profileEditE2EVerified
+        profile_edit_input_mode = $profileEditInputMode
+        profile_edit_keymap_file = $profileEditKeymapFile
+        profile_edit_states = @($profileEditStates)
+        profile_edit_captures = @($profileEditCaptures)
+        profile_edit_comparisons = @($profileEditComparisons)
         baseline = $baseline
     }
 }
@@ -1878,7 +2050,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -1913,6 +2085,22 @@ function New-ReleaseReportMarkdown {
                 $lines += "| Shortcut state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
             }
         }
+        if ($visual.profile_edit_modal_e2e_verified -ne $null) {
+            $lines += "| Profile edit modal E2E verified | $(Format-MarkdownValue $visual.profile_edit_modal_e2e_verified) |"
+            $lines += "| Profile edit input mode | $(Format-MarkdownValue $visual.profile_edit_input_mode) |"
+            $lines += "| Profile edit keymap | $(Format-MarkdownValue $visual.profile_edit_keymap_file) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Profile edit states | $(Format-MarkdownValue @($visual.profile_edit_states).Count) |"
+            $lines += "| Profile edit captures | $(Format-MarkdownValue @($visual.profile_edit_captures).Count) |"
+            $lines += "| Profile edit comparisons | $(Format-MarkdownValue @($visual.profile_edit_comparisons).Count) |"
+            if ($visual.profile_edit_states) {
+                $stateSummary = @($visual.profile_edit_states) | ForEach-Object {
+                    "$($_.name): outer=$($_.outer_pane_count)/tabs=$($_.outer_tab_count)/inner=$($_.inner_pane_count)/palette=$($_.command_palette_open)/edit_modal=$($_.profile_edit_modal_open)"
+                }
+                $lines += "| Profile edit state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -1921,7 +2109,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -1959,6 +2147,7 @@ function Write-ReleaseSummary {
             visual_baseline = [bool]$SkipVisualBaseline
             split_visual_smoke = [bool]$SkipSplitVisualSmoke
             shortcut_visual_smoke = [bool]$SkipShortcutVisualSmoke
+            profile_edit_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
@@ -1982,6 +2171,8 @@ function Write-ReleaseSummary {
         split_visual_smoke = $script:SplitVisualSmoke
         shortcut_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
         shortcut_visual_smoke = $script:ShortcutVisualSmoke
+        profile_edit_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        profile_edit_visual_smoke = $script:ProfileEditVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -4277,6 +4468,24 @@ try {
                 $script:ShortcutVisualSmoke = Convert-VisualSmokeOutput `
                     -Output (($shortcutVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "shortcut" `
+                    -BaselineExpected $false
+            }
+
+            $profileEditVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $profileEditVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifyProfileEditModal"
+            )
+            Invoke-Step "visual smoke profile edit modal" {
+                $profileEditVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $profileEditVisualSmokeArgs
+                $script:ProfileEditVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($profileEditVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "profile-edit" `
                     -BaselineExpected $false
             }
         }

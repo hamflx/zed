@@ -12,6 +12,7 @@ Param(
     [Parameter()][int]$BaselinePixelTolerance = 4,
     [Parameter()][switch]$VerifySplitPane,
     [Parameter()][switch]$VerifyShortcuts,
+    [Parameter()][switch]$VerifyProfileEditModal,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -40,8 +41,8 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
-if ($VerifySplitPane -and $VerifyShortcuts) {
-    throw "Use either -VerifySplitPane or -VerifyShortcuts, not both."
+if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal) | Where-Object { $_ }).Count -gt 1) {
+    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, or -VerifyProfileEditModal."
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -77,6 +78,8 @@ $configDir = Join-Path $runDir "config"
 $probeReadyFile = Join-Path $runDir "probe-ready.txt"
 $splitReadyFile = Join-Path $runDir "split-ready.txt"
 $shortcutStartupConfigFile = $null
+$profileEditStartupConfigFile = $null
+$profileEditKeymapFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -903,6 +906,7 @@ function Wait-ZedTerminalShortcutState {
         [Parameter(Mandatory = $true)][int]$ExpectedOuterTabCount,
         [Parameter(Mandatory = $true)][int]$ExpectedInnerPaneCount,
         [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen,
+        [Parameter()]$ExpectedProfileEditModalOpen = $null,
         [Parameter(Mandatory = $true)][int]$Step,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
@@ -920,7 +924,8 @@ function Wait-ZedTerminalShortcutState {
             $lastStatus.outer_pane_count -eq $ExpectedOuterPaneCount -and
             $lastStatus.active_outer_tab_count -eq $ExpectedOuterTabCount -and
             $lastStatus.active_terminal_inner_pane_count -eq $ExpectedInnerPaneCount -and
-            [bool]$lastStatus.command_palette_open -eq $ExpectedCommandPaletteOpen
+            [bool]$lastStatus.command_palette_open -eq $ExpectedCommandPaletteOpen -and
+            ($null -eq $ExpectedProfileEditModalOpen -or [bool]$lastStatus.profile_edit_modal_open -eq [bool]$ExpectedProfileEditModalOpen)
         ) {
             return [PSCustomObject]@{
                 Name = $Name
@@ -928,6 +933,7 @@ function Wait-ZedTerminalShortcutState {
                 OuterTabCount = [int]$lastStatus.active_outer_tab_count
                 InnerPaneCount = [int]$lastStatus.active_terminal_inner_pane_count
                 CommandPaletteOpen = [bool]$lastStatus.command_palette_open
+                ProfileEditModalOpen = [bool]$lastStatus.profile_edit_modal_open
             }
         }
 
@@ -935,7 +941,8 @@ function Wait-ZedTerminalShortcutState {
     } while ((Get-Date) -lt $deadline)
 
     $lastStatusJson = if ($lastStatus) { $lastStatus | ConvertTo-Json -Compress } else { "<none>" }
-    throw "Timed out waiting for shortcut state '$Name'. Expected outer_pane_count=$ExpectedOuterPaneCount active_outer_tab_count=$ExpectedOuterTabCount active_terminal_inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen. Last status: $lastStatusJson"
+    $profileEditExpectation = if ($null -ne $ExpectedProfileEditModalOpen) { " profile_edit_modal_open=$([bool]$ExpectedProfileEditModalOpen)" } else { "" }
+    throw "Timed out waiting for shortcut state '$Name'. Expected outer_pane_count=$ExpectedOuterPaneCount active_outer_tab_count=$ExpectedOuterTabCount active_terminal_inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen$profileEditExpectation. Last status: $lastStatusJson"
 }
 
 function Invoke-ZedTerminalShortcutInput {
@@ -1138,6 +1145,103 @@ function Write-ShortcutStartupConfig {
     return $startupConfigFile
 }
 
+function Write-ProfileEditStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $shortcutCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $EncodedProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $shortcutCommand = $shortcutCommand -join " "
+    $startupConfig = [ordered]@{
+        title = "Profile Edit Smoke"
+        command = $shortcutCommand
+        profiles = [ordered]@{
+            work = [ordered]@{
+                display_name = "Work Shell"
+                description = "Project shell"
+                icon = "terminal"
+                color = "#0f766e"
+            }
+        }
+    } | ConvertTo-Json -Depth 8
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
+function Write-ProfileEditKeymapConfig {
+    param([Parameter(Mandatory = $true)][string]$ConfigDir)
+
+    $keymapFile = Join-Path $ConfigDir "keymap.json"
+    $keymap = @'
+[
+  {
+    "bindings": {
+      "ctrl-shift-e": ["zed_terminal::EditStartupProfile", { "profile": "work" }]
+    }
+  }
+]
+'@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($keymapFile, $keymap, $utf8NoBom)
+    return $keymapFile
+}
+
+function Invoke-ZedTerminalProfileEditVerification {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_ESCAPE = [System.UInt16]0x1b
+    $VK_E = [System.UInt16][byte][char]'E'
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $comparisons = New-Object System.Collections.Generic.List[object]
+    $states = New-Object System.Collections.Generic.List[object]
+
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "00-initial" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -ExpectedProfileEditModalOpen $false -Step 200 -TimeoutSeconds $TimeoutSeconds))
+    $initial = Save-ShortcutScreenshot -Window $Window -Name "profile-edit-00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+    $inputMode = $null
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_E -Keystroke "ctrl-shift-e" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 201 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-shift-e-profile-edit-modal" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -ExpectedProfileEditModalOpen $true -Step 201 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $modalOpen = Save-ShortcutScreenshot -Window $Window -Name "profile-edit-01-modal-open" -RunDir $RunDir
+    $captures.Add($modalOpen)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $modalOpen -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 202 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "02-escape-close-profile-edit-modal" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -ExpectedProfileEditModalOpen $false -Step 202 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $modalClosed = Save-ShortcutScreenshot -Window $Window -Name "profile-edit-02-modal-closed" -RunDir $RunDir
+    $captures.Add($modalClosed)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $modalOpen -After $modalClosed -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        Comparisons = $comparisons
+        States = $states
+        FinalWindow = $Window
+        InputMode = $inputMode
+    }
+}
+
 $probeScript = @'
 $Host.UI.RawUI.WindowTitle = "zed-terminal-visual-smoke"
 Set-Content -LiteralPath __PROBE_READY_FILE__ -Value "ready"
@@ -1162,9 +1266,13 @@ if ($VerifySplitPane) {
 } elseif ($VerifyShortcuts) {
     $shortcutStartupConfigFile = Write-ShortcutStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
     $startupConfigFile = $shortcutStartupConfigFile
+} elseif ($VerifyProfileEditModal) {
+    $profileEditStartupConfigFile = Write-ProfileEditStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $profileEditKeymapFile = Write-ProfileEditKeymapConfig -ConfigDir $configDir
+    $startupConfigFile = $profileEditStartupConfigFile
 }
 
-$arguments = if ($VerifyShortcuts) {
+$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal) {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir
@@ -1197,10 +1305,10 @@ $previousShortcutSmokeDir = $null
 
 try {
     $subsystem = $null
-    if ($VerifyShortcuts) {
+    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
         $subsystem = Get-PortableExecutableSubsystem -Path $Binary
         if ($subsystem.Value -ne 2) {
-            throw "Shortcut E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
+            throw "Shortcut-driven E2E requires a Windows GUI subsystem binary so double-click does not create a console window. Actual subsystem: $($subsystem.Name). Build release first."
         }
         New-Item -ItemType Directory -Force -Path $shortcutSmokeDir | Out-Null
         $previousShortcutSmokeDir = [System.Environment]::GetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", "Process")
@@ -1210,7 +1318,7 @@ try {
     $process = Start-Process -FilePath $Binary -ArgumentList $argumentLine -WorkingDirectory $WorkingDirectory -PassThru
     $window = Get-ProcessWindow -Process $process -TimeoutSeconds $StartupTimeoutSeconds
     Wait-ProbeReadyFile -Process $process -Path $probeReadyFile -TimeoutSeconds $StartupTimeoutSeconds
-    if ($VerifyShortcuts) {
+    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
         Wait-ShortcutSmokeReady `
             -Process $process `
             -ShortcutSmokeDir $shortcutSmokeDir `
@@ -1278,6 +1386,7 @@ try {
     }
 
     $shortcutVerification = $null
+    $profileEditVerification = $null
     if ($VerifyShortcuts) {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
@@ -1286,6 +1395,14 @@ try {
             -ShortcutSmokeDir $shortcutSmokeDir `
             -TimeoutSeconds $StartupTimeoutSeconds
         $window = $shortcutVerification.FinalWindow
+    } elseif ($VerifyProfileEditModal) {
+        $profileEditVerification = Invoke-ZedTerminalProfileEditVerification `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
+        $window = $profileEditVerification.FinalWindow
     }
 
     $baselineComparison = $null
@@ -1359,6 +1476,30 @@ try {
             Write-Output "shortcut_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
         }
     }
+    if ($VerifyProfileEditModal) {
+        Write-Output "profile_edit_modal_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "profile_edit_input_mode: $($profileEditVerification.InputMode)"
+        Write-Output "profile_edit_startup_config_file: $profileEditStartupConfigFile"
+        Write-Output "profile_edit_keymap_file: $profileEditKeymapFile"
+        Write-Output "visible_top_level_windows: 1"
+        foreach ($state in $profileEditVerification.States) {
+            Write-Output "profile_edit_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"
+            Write-Output "profile_edit_state_$($state.Name)_outer_tab_count: $($state.OuterTabCount)"
+            Write-Output "profile_edit_state_$($state.Name)_inner_pane_count: $($state.InnerPaneCount)"
+            Write-Output "profile_edit_state_$($state.Name)_command_palette_open: $($state.CommandPaletteOpen)"
+            Write-Output "profile_edit_state_$($state.Name)_profile_edit_modal_open: $($state.ProfileEditModalOpen)"
+        }
+        foreach ($capture in $profileEditVerification.Captures) {
+            Write-Output "profile_edit_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "profile_edit_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "profile_edit_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+        foreach ($comparison in $profileEditVerification.Comparisons) {
+            Write-Output "profile_edit_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
+        }
+    }
     if ($VerifySplitPane) {
         Write-Output "split_mode: startup"
         Write-Output "split_direction: right"
@@ -1394,7 +1535,7 @@ try {
         Write-Output "baseline_updated_file: $UpdateBaselineImage"
     }
 } finally {
-    if ($VerifyShortcuts) {
+    if ($VerifyShortcuts -or $VerifyProfileEditModal) {
         [System.Environment]::SetEnvironmentVariable("ZED_TERMINAL_SHORTCUT_SMOKE_DIR", $previousShortcutSmokeDir, "Process")
     }
     if ($process -and -not $process.HasExited -and -not $KeepRunning) {
