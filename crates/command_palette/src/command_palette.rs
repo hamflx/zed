@@ -136,6 +136,10 @@ impl CommandPalette {
         self.picker
             .update(cx, |picker, cx| picker.set_query(query, window, cx))
     }
+
+    pub fn query(&self, cx: &App) -> String {
+        self.picker.read(cx).query(cx)
+    }
 }
 
 impl EventEmitter<DismissEvent> for CommandPalette {}

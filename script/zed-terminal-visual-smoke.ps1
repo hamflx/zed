@@ -14,6 +14,7 @@ Param(
     [Parameter()][switch]$VerifyShortcuts,
     [Parameter()][switch]$VerifyProfileEditModal,
     [Parameter()][switch]$VerifyWindowLifecycle,
+    [Parameter()][switch]$VerifySettingsTools,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -42,8 +43,8 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
-if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle) | Where-Object { $_ }).Count -gt 1) {
-    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, or -VerifyWindowLifecycle."
+if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle, $VerifySettingsTools) | Where-Object { $_ }).Count -gt 1) {
+    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, -VerifyWindowLifecycle, or -VerifySettingsTools."
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -82,6 +83,8 @@ $shortcutStartupConfigFile = $null
 $profileEditStartupConfigFile = $null
 $profileEditKeymapFile = $null
 $windowLifecycleStartupConfigFile = $null
+$settingsToolsStartupConfigFile = $null
+$settingsToolsKeymapFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -965,6 +968,7 @@ function Wait-ZedTerminalShortcutState {
         [Parameter(Mandatory = $true)][int]$ExpectedOuterTabCount,
         [Parameter(Mandatory = $true)][int]$ExpectedInnerPaneCount,
         [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen,
+        [Parameter()]$ExpectedCommandPaletteQuery = $null,
         [Parameter()]$ExpectedProfileEditModalOpen = $null,
         [Parameter(Mandatory = $true)][int]$Step,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds
@@ -984,6 +988,7 @@ function Wait-ZedTerminalShortcutState {
             $lastStatus.active_outer_tab_count -eq $ExpectedOuterTabCount -and
             $lastStatus.active_terminal_inner_pane_count -eq $ExpectedInnerPaneCount -and
             [bool]$lastStatus.command_palette_open -eq $ExpectedCommandPaletteOpen -and
+            ($null -eq $ExpectedCommandPaletteQuery -or [string]$lastStatus.command_palette_query -eq [string]$ExpectedCommandPaletteQuery) -and
             ($null -eq $ExpectedProfileEditModalOpen -or [bool]$lastStatus.profile_edit_modal_open -eq [bool]$ExpectedProfileEditModalOpen)
         ) {
             return [PSCustomObject]@{
@@ -992,6 +997,7 @@ function Wait-ZedTerminalShortcutState {
                 OuterTabCount = [int]$lastStatus.active_outer_tab_count
                 InnerPaneCount = [int]$lastStatus.active_terminal_inner_pane_count
                 CommandPaletteOpen = [bool]$lastStatus.command_palette_open
+                CommandPaletteQuery = [string]$lastStatus.command_palette_query
                 ProfileEditModalOpen = [bool]$lastStatus.profile_edit_modal_open
             }
         }
@@ -1000,8 +1006,9 @@ function Wait-ZedTerminalShortcutState {
     } while ((Get-Date) -lt $deadline)
 
     $lastStatusJson = if ($lastStatus) { $lastStatus | ConvertTo-Json -Compress } else { "<none>" }
+    $queryExpectation = if ($null -ne $ExpectedCommandPaletteQuery) { " command_palette_query='$ExpectedCommandPaletteQuery'" } else { "" }
     $profileEditExpectation = if ($null -ne $ExpectedProfileEditModalOpen) { " profile_edit_modal_open=$([bool]$ExpectedProfileEditModalOpen)" } else { "" }
-    throw "Timed out waiting for shortcut state '$Name'. Expected outer_pane_count=$ExpectedOuterPaneCount active_outer_tab_count=$ExpectedOuterTabCount active_terminal_inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen$profileEditExpectation. Last status: $lastStatusJson"
+    throw "Timed out waiting for shortcut state '$Name'. Expected outer_pane_count=$ExpectedOuterPaneCount active_outer_tab_count=$ExpectedOuterTabCount active_terminal_inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen$queryExpectation$profileEditExpectation. Last status: $lastStatusJson"
 }
 
 function Invoke-ZedTerminalShortcutInput {
@@ -1278,6 +1285,48 @@ function Write-ProfileEditKeymapConfig {
     return $keymapFile
 }
 
+function Write-SettingsToolsStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $shortcutCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $EncodedProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $shortcutCommand = $shortcutCommand -join " "
+    $startupConfig = [ordered]@{
+        title = "Settings Tools Smoke"
+        command = $shortcutCommand
+    } | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
+function Write-SettingsToolsKeymapConfig {
+    param([Parameter(Mandatory = $true)][string]$ConfigDir)
+
+    $keymapFile = Join-Path $ConfigDir "keymap.json"
+    $keymap = @'
+[
+  {
+    "bindings": {
+      "ctrl-shift-y": "zed_terminal::OpenSettingsToolsPicker"
+    }
+  }
+]
+'@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($keymapFile, $keymap, $utf8NoBom)
+    return $keymapFile
+}
+
 function Invoke-ZedTerminalProfileEditVerification {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -1315,6 +1364,53 @@ function Invoke-ZedTerminalProfileEditVerification {
     $modalClosed = Save-ShortcutScreenshot -Window $Window -Name "profile-edit-02-modal-closed" -RunDir $RunDir
     $captures.Add($modalClosed)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $modalOpen -After $modalClosed -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        Comparisons = $comparisons
+        States = $states
+        FinalWindow = $Window
+        InputMode = $inputMode
+    }
+}
+
+function Invoke-ZedTerminalSettingsToolsVerification {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_ESCAPE = [System.UInt16]0x1b
+    $VK_Y = [System.UInt16][byte][char]'Y'
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $comparisons = New-Object System.Collections.Generic.List[object]
+    $states = New-Object System.Collections.Generic.List[object]
+
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "00-initial" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -ExpectedCommandPaletteQuery "" -Step 300 -TimeoutSeconds $TimeoutSeconds))
+    $initial = Save-ShortcutScreenshot -Window $Window -Name "settings-tools-00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+    $inputMode = $null
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_Y -Keystroke "ctrl-shift-y" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 301 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-shift-y-settings-tools" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $true -ExpectedCommandPaletteQuery "settings" -Step 301 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $settingsTools = Save-ShortcutScreenshot -Window $Window -Name "settings-tools-01-picker-open" -RunDir $RunDir
+    $captures.Add($settingsTools)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $settingsTools -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@()) -Key $VK_ESCAPE -Keystroke "escape" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 302 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "02-escape-close-settings-tools" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -ExpectedCommandPaletteQuery "" -Step 302 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $closed = Save-ShortcutScreenshot -Window $Window -Name "settings-tools-02-picker-closed" -RunDir $RunDir
+    $captures.Add($closed)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $settingsTools -After $closed -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
 
     return [PSCustomObject]@{
         Captures = $captures
@@ -1417,9 +1513,13 @@ if ($VerifySplitPane) {
 } elseif ($VerifyWindowLifecycle) {
     $windowLifecycleStartupConfigFile = Write-WindowLifecycleStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
     $startupConfigFile = $windowLifecycleStartupConfigFile
+} elseif ($VerifySettingsTools) {
+    $settingsToolsStartupConfigFile = Write-SettingsToolsStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $settingsToolsKeymapFile = Write-SettingsToolsKeymapConfig -ConfigDir $configDir
+    $startupConfigFile = $settingsToolsStartupConfigFile
 }
 
-$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle) {
+$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools) {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir
@@ -1449,8 +1549,8 @@ $arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowL
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 $previousShortcutSmokeDir = $null
-$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle
-$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal
+$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools
+$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifySettingsTools
 
 try {
     $subsystem = $null
@@ -1539,6 +1639,7 @@ try {
     $shortcutVerification = $null
     $profileEditVerification = $null
     $windowLifecycleVerification = $null
+    $settingsToolsVerification = $null
     if ($VerifyShortcuts) {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
@@ -1562,6 +1663,14 @@ try {
             -RunDir $runDir `
             -TimeoutSeconds $StartupTimeoutSeconds
         $window = $windowLifecycleVerification.FinalWindow
+    } elseif ($VerifySettingsTools) {
+        $settingsToolsVerification = Invoke-ZedTerminalSettingsToolsVerification `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
+        $window = $settingsToolsVerification.FinalWindow
     }
 
     $baselineComparison = $null
@@ -1675,6 +1784,30 @@ try {
             Write-Output "window_lifecycle_capture_$($capture.Name): $($capture.Path)"
             Write-Output "window_lifecycle_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
             Write-Output "window_lifecycle_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+    }
+    if ($VerifySettingsTools) {
+        Write-Output "settings_tools_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "settings_tools_input_mode: $($settingsToolsVerification.InputMode)"
+        Write-Output "settings_tools_startup_config_file: $settingsToolsStartupConfigFile"
+        Write-Output "settings_tools_keymap_file: $settingsToolsKeymapFile"
+        Write-Output "visible_top_level_windows: 1"
+        foreach ($state in $settingsToolsVerification.States) {
+            Write-Output "settings_tools_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"
+            Write-Output "settings_tools_state_$($state.Name)_outer_tab_count: $($state.OuterTabCount)"
+            Write-Output "settings_tools_state_$($state.Name)_inner_pane_count: $($state.InnerPaneCount)"
+            Write-Output "settings_tools_state_$($state.Name)_command_palette_open: $($state.CommandPaletteOpen)"
+            Write-Output "settings_tools_state_$($state.Name)_command_palette_query: $($state.CommandPaletteQuery)"
+        }
+        foreach ($capture in $settingsToolsVerification.Captures) {
+            Write-Output "settings_tools_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "settings_tools_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "settings_tools_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+        foreach ($comparison in $settingsToolsVerification.Comparisons) {
+            Write-Output "settings_tools_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
         }
     }
     if ($VerifySplitPane) {

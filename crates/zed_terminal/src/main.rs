@@ -28632,9 +28632,11 @@ fn terminal_shortcut_smoke_status(
                 .active_item_as::<TerminalTab>(cx)
                 .map(|terminal_tab| terminal_tab.read(cx).pane_count(cx))
                 .unwrap_or(0);
-            let command_palette_open = workspace
-                .active_modal::<command_palette::CommandPalette>(cx)
-                .is_some();
+            let command_palette = workspace.active_modal::<command_palette::CommandPalette>(cx);
+            let command_palette_open = command_palette.is_some();
+            let command_palette_query = command_palette
+                .map(|command_palette| command_palette.read(cx).query(cx))
+                .unwrap_or_default();
             let profile_edit_modal_open = workspace
                 .active_modal::<EditStartupProfileModal>(cx)
                 .is_some();
@@ -28643,6 +28645,7 @@ fn terminal_shortcut_smoke_status(
                 "active_outer_tab_count": active_outer_tab_count,
                 "active_terminal_inner_pane_count": active_terminal_inner_pane_count,
                 "command_palette_open": command_palette_open,
+                "command_palette_query": command_palette_query,
                 "profile_edit_modal_open": profile_edit_modal_open,
                 "window_title": window.window_title(),
             })

@@ -119,6 +119,7 @@ $splitVisualSmokeDir = Join-Path $runDir "visual-smoke-split"
 $shortcutVisualSmokeDir = Join-Path $runDir "visual-smoke-shortcuts"
 $profileEditVisualSmokeDir = Join-Path $runDir "visual-smoke-profile-edit"
 $windowLifecycleVisualSmokeDir = Join-Path $runDir "visual-smoke-window-lifecycle"
+$settingsToolsVisualSmokeDir = Join-Path $runDir "visual-smoke-settings-tools"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -145,6 +146,7 @@ $script:SplitVisualSmoke = $null
 $script:ShortcutVisualSmoke = $null
 $script:ProfileEditVisualSmoke = $null
 $script:WindowLifecycleVisualSmoke = $null
+$script:SettingsToolsVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -900,6 +902,20 @@ function Get-RequiredOutputValue {
     return $Values[$Key]
 }
 
+function Get-RequiredOutputValueAllowEmpty {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    if (-not $Values.ContainsKey($Key)) {
+        throw "$Context output did not include $Key"
+    }
+
+    return [string]$Values[$Key]
+}
+
 function Test-SameFullPath {
     param(
         [Parameter(Mandatory = $true)][string]$Left,
@@ -1059,6 +1075,52 @@ function Read-ProfileEditState {
         inner_pane_count = $innerPaneCount
         command_palette_open = $commandPaletteOpen
         profile_edit_modal_open = $profileEditModalOpen
+    }
+}
+
+function Read-SettingsToolsState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$ExpectedCommandPaletteQuery
+    )
+
+    $prefix = "settings_tools_state_$Name"
+    $outerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_pane_count" -Context "settings tools visual smoke state $Name") `
+        -Name "$Name settings tools outer pane count"
+    $outerTabCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_tab_count" -Context "settings tools visual smoke state $Name") `
+        -Name "$Name settings tools outer tab count"
+    $innerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_inner_pane_count" -Context "settings tools visual smoke state $Name") `
+        -Name "$Name settings tools inner pane count"
+    $commandPaletteOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_command_palette_open" -Context "settings tools visual smoke state $Name") `
+        -Name "$Name settings tools command palette state"
+    $commandPaletteQuery = Get-RequiredOutputValueAllowEmpty -Values $Values -Key "$($prefix)_command_palette_query" -Context "settings tools visual smoke state $Name"
+
+    if (
+        $outerPaneCount -ne $ExpectedOuterPaneCount -or
+        $outerTabCount -ne $ExpectedOuterTabCount -or
+        $innerPaneCount -ne $ExpectedInnerPaneCount -or
+        $commandPaletteOpen -ne $ExpectedCommandPaletteOpen -or
+        $commandPaletteQuery -ne $ExpectedCommandPaletteQuery
+    ) {
+        throw "settings tools visual smoke state $Name did not match expected product hierarchy/query. Expected outer_pane_count=$ExpectedOuterPaneCount outer_tab_count=$ExpectedOuterTabCount inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen command_palette_query='$ExpectedCommandPaletteQuery'; actual outer_pane_count=$outerPaneCount outer_tab_count=$outerTabCount inner_pane_count=$innerPaneCount command_palette_open=$commandPaletteOpen command_palette_query='$commandPaletteQuery'"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        outer_pane_count = $outerPaneCount
+        outer_tab_count = $outerTabCount
+        inner_pane_count = $innerPaneCount
+        command_palette_open = $commandPaletteOpen
+        command_palette_query = $commandPaletteQuery
     }
 }
 
@@ -1433,7 +1495,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle", "settings-tools")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1534,6 +1596,12 @@ function Convert-VisualSmokeOutput {
     $windowLifecycleRemainingWindow = $null
     $windowLifecycleCaptures = @()
     $windowLifecycleStates = @()
+    $settingsToolsE2EVerified = $null
+    $settingsToolsInputMode = $null
+    $settingsToolsKeymapFile = $null
+    $settingsToolsCaptures = @()
+    $settingsToolsComparisons = @()
+    $settingsToolsStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -1855,6 +1923,116 @@ function Convert-VisualSmokeOutput {
 
         $windowLifecycleE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
+    } elseif ($Mode -eq "settings-tools") {
+        foreach ($key in @("settings_tools_e2e_verified", "binary_subsystem", "binary_subsystem_value", "settings_tools_input_mode", "settings_tools_startup_config_file", "settings_tools_keymap_file", "visible_top_level_windows")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "settings tools visual smoke"
+        }
+        if ($values["settings_tools_e2e_verified"] -ne "True") {
+            throw "settings tools visual smoke did not verify the settings tools picker workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "settings tools visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "settings tools visual smoke binary_subsystem_value"
+        $visibleTopLevelWindows = Convert-OutputInt64 -Value $values["visible_top_level_windows"] -Name "settings tools visual smoke visible_top_level_windows"
+        if ($binarySubsystemValue -ne 2) {
+            throw "settings tools visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        if ($visibleTopLevelWindows -ne 1) {
+            throw "settings tools visual smoke expected exactly one visible top-level process window"
+        }
+        $settingsToolsInputMode = $values["settings_tools_input_mode"]
+        if ($settingsToolsInputMode -notin @("windows-sendinput", "gpui-dispatch")) {
+            throw "settings tools visual smoke reported an unexpected input mode: $settingsToolsInputMode"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["settings_tools_startup_config_file"])
+        $settingsToolsKeymapFile = [System.IO.Path]::GetFullPath($values["settings_tools_keymap_file"])
+        foreach ($file in @($startupConfigFile, $settingsToolsKeymapFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "settings tools visual smoke referenced a missing file: $file"
+            }
+        }
+
+        $expectedSettingsToolsStates = @(
+            [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; Query = "" },
+            [pscustomobject]@{ Name = "01-ctrl-shift-y-settings-tools"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $true; Query = "settings" },
+            [pscustomobject]@{ Name = "02-escape-close-settings-tools"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; Query = "" }
+        )
+        foreach ($expectedState in $expectedSettingsToolsStates) {
+            $settingsToolsStates += Read-SettingsToolsState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedOuterPaneCount $expectedState.OuterPanes `
+                -ExpectedOuterTabCount $expectedState.OuterTabs `
+                -ExpectedInnerPaneCount $expectedState.InnerPanes `
+                -ExpectedCommandPaletteOpen $expectedState.PaletteOpen `
+                -ExpectedCommandPaletteQuery $expectedState.Query
+        }
+
+        foreach ($captureName in @(
+                "settings-tools-00-initial",
+                "settings-tools-01-picker-open",
+                "settings-tools-02-picker-closed"
+            )) {
+            $pathKey = "settings_tools_capture_$captureName"
+            $bytesKey = "settings_tools_capture_$($captureName)_bytes"
+            $colorsKey = "settings_tools_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "settings tools visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "settings tools visual smoke") -Name "$captureName settings tools screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "settings tools visual smoke") -Name "$captureName settings tools sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "settings tools screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "settings tools screenshot $captureName appears blank or nearly blank"
+            }
+
+            $settingsToolsCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $settingsToolsComparisonEntries = @(
+            $values.GetEnumerator() |
+                Where-Object { $_.Key -like "settings_tools_comparison_*" } |
+                Sort-Object Key
+        )
+        if ($settingsToolsComparisonEntries.Count -ne 2) {
+            throw "settings tools visual smoke expected two settings tools comparison diff entries, got $($settingsToolsComparisonEntries.Count)"
+        }
+        foreach ($entry in $settingsToolsComparisonEntries) {
+            if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
+                throw "settings tools visual smoke comparison entry was not parseable: $($entry.Key): $($entry.Value)"
+            }
+
+            $comparisonName = $entry.Key.Substring("settings_tools_comparison_".Length)
+            $differentPixelRatio = Convert-OutputDouble -Value $Matches[1] -Name "$comparisonName settings tools different_pixel_ratio"
+            $averageChannelDelta = Convert-OutputDouble -Value $Matches[2] -Name "$comparisonName settings tools average_channel_delta"
+            $diffFile = [System.IO.Path]::GetFullPath($Matches[3])
+            if (-not (Test-Path -LiteralPath $diffFile -PathType Leaf)) {
+                throw "settings tools visual smoke comparison diff file was missing: $diffFile"
+            }
+            if ((Get-Item -LiteralPath $diffFile).Length -le 0) {
+                throw "settings tools visual smoke comparison diff file was empty: $diffFile"
+            }
+            if ($differentPixelRatio -le 0 -or $averageChannelDelta -le 0) {
+                throw "settings tools visual smoke comparison did not record a visible image difference for $comparisonName"
+            }
+
+            $settingsToolsComparisons += [pscustomobject]@{
+                name = $comparisonName
+                different_pixel_ratio = $differentPixelRatio
+                average_channel_delta = $averageChannelDelta
+                diff_file = $diffFile
+            }
+        }
+
+        $settingsToolsE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -1968,6 +2146,12 @@ function Convert-VisualSmokeOutput {
         window_lifecycle_remaining_window = $windowLifecycleRemainingWindow
         window_lifecycle_states = @($windowLifecycleStates)
         window_lifecycle_captures = @($windowLifecycleCaptures)
+        settings_tools_e2e_verified = $settingsToolsE2EVerified
+        settings_tools_input_mode = $settingsToolsInputMode
+        settings_tools_keymap_file = $settingsToolsKeymapFile
+        settings_tools_states = @($settingsToolsStates)
+        settings_tools_captures = @($settingsToolsCaptures)
+        settings_tools_comparisons = @($settingsToolsComparisons)
         baseline = $baseline
     }
 }
@@ -2010,6 +2194,7 @@ function Get-SkippedReleaseChecks {
         $skipped.Add("shortcut visual smoke")
         $skipped.Add("profile edit visual smoke")
         $skipped.Add("window lifecycle visual smoke")
+        $skipped.Add("settings tools visual smoke")
     } else {
         if ($SkipVisualBaseline) {
             $skipped.Add("default visual baseline")
@@ -2034,6 +2219,7 @@ function Get-SkippedReleaseChecks {
             $skipped.Add("shortcut visual smoke")
             $skipped.Add("profile edit visual smoke")
             $skipped.Add("window lifecycle visual smoke")
+            $skipped.Add("settings tools visual smoke")
         }
     }
 
@@ -2165,7 +2351,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke, $Summary.settings_tools_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -2232,6 +2418,22 @@ function New-ReleaseReportMarkdown {
                 $lines += "| Window lifecycle state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
             }
         }
+        if ($visual.settings_tools_e2e_verified -ne $null) {
+            $lines += "| Settings tools E2E verified | $(Format-MarkdownValue $visual.settings_tools_e2e_verified) |"
+            $lines += "| Settings tools input mode | $(Format-MarkdownValue $visual.settings_tools_input_mode) |"
+            $lines += "| Settings tools keymap | $(Format-MarkdownValue $visual.settings_tools_keymap_file) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Settings tools states | $(Format-MarkdownValue @($visual.settings_tools_states).Count) |"
+            $lines += "| Settings tools captures | $(Format-MarkdownValue @($visual.settings_tools_captures).Count) |"
+            $lines += "| Settings tools comparisons | $(Format-MarkdownValue @($visual.settings_tools_comparisons).Count) |"
+            if ($visual.settings_tools_states) {
+                $stateSummary = @($visual.settings_tools_states) | ForEach-Object {
+                    "$($_.name): outer=$($_.outer_pane_count)/tabs=$($_.outer_tab_count)/inner=$($_.inner_pane_count)/palette=$($_.command_palette_open)/query='$($_.command_palette_query)'"
+                }
+                $lines += "| Settings tools state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -2240,7 +2442,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke -and -not $Summary.settings_tools_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -2280,6 +2482,7 @@ function Write-ReleaseSummary {
             shortcut_visual_smoke = [bool]$SkipShortcutVisualSmoke
             profile_edit_visual_smoke = [bool]$SkipShortcutVisualSmoke
             window_lifecycle_visual_smoke = [bool]$SkipShortcutVisualSmoke
+            settings_tools_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
@@ -2307,6 +2510,8 @@ function Write-ReleaseSummary {
         profile_edit_visual_smoke = $script:ProfileEditVisualSmoke
         window_lifecycle_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
         window_lifecycle_visual_smoke = $script:WindowLifecycleVisualSmoke
+        settings_tools_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        settings_tools_visual_smoke = $script:SettingsToolsVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -4620,6 +4825,24 @@ try {
                 $script:ProfileEditVisualSmoke = Convert-VisualSmokeOutput `
                     -Output (($profileEditVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "profile-edit" `
+                    -BaselineExpected $false
+            }
+
+            $settingsToolsVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $settingsToolsVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifySettingsTools"
+            )
+            Invoke-Step "visual smoke settings tools" {
+                $settingsToolsVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $settingsToolsVisualSmokeArgs
+                $script:SettingsToolsVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($settingsToolsVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "settings-tools" `
                     -BaselineExpected $false
             }
 
