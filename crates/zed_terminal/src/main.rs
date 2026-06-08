@@ -102,6 +102,7 @@ actions!(
         OpenStartupLayoutReport,
         OpenStartupDescriptionReport,
         OpenStartupProfilePicker,
+        OpenStartupProfileManagementReport,
         OpenStartupProfilesReport,
         OpenStartupProfileSlotsReport,
         OpenStartupProfileReferencesReport,
@@ -308,6 +309,8 @@ const TERMINAL_STARTUP_CONFIG_RESTORE_REPORT_FILE: &str = "zed-terminal-startup-
 const TERMINAL_KEYMAP_RESTORE_REPORT_FILE: &str = "zed-terminal-keymap-restore.json";
 const TERMINAL_STARTUP_LAYOUT_REPORT_FILE: &str = "zed-terminal-startup-layout.json";
 const TERMINAL_STARTUP_DESCRIPTION_REPORT_FILE: &str = "zed-terminal-startup.json";
+const TERMINAL_STARTUP_PROFILE_MANAGEMENT_REPORT_FILE: &str =
+    "zed-terminal-profile-management.json";
 const TERMINAL_STARTUP_PROFILES_REPORT_FILE: &str = "zed-terminal-profiles.json";
 const TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE: &str = "zed-terminal-profile-slots.json";
 const TERMINAL_STARTUP_PROFILE_REFERENCES_REPORT_FILE: &str =
@@ -4183,6 +4186,25 @@ struct TerminalStartupProfileReferencesEntry {
     is_default: bool,
     reference_count: usize,
     references: Vec<TerminalStartupProfileReference>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalStartupProfileManagementReport {
+    startup_config_file: PathBuf,
+    status: &'static str,
+    profile_count: usize,
+    visible_profile_count: usize,
+    hidden_profile_count: usize,
+    slot_count: usize,
+    mapped_slot_count: usize,
+    reference_count: usize,
+    referenced_profile_count: usize,
+    unreferenced_profile_count: usize,
+    metadata_only: bool,
+    includes_environment_values: bool,
+    profiles: TerminalStartupProfileListReport,
+    slots: TerminalStartupProfileSlotReport,
+    references: TerminalStartupProfileReferencesReport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20212,6 +20234,33 @@ fn startup_profile_references_report(
     })
 }
 
+fn startup_profile_management_report(
+    startup_config: &TerminalStartupConfig,
+    startup_config_file: &Path,
+) -> Result<TerminalStartupProfileManagementReport> {
+    let profiles = startup_profile_list_report(startup_config, startup_config_file, true);
+    let slots = startup_profile_slot_report(startup_config, startup_config_file);
+    let references = startup_profile_references_report(startup_config, startup_config_file)?;
+
+    Ok(TerminalStartupProfileManagementReport {
+        startup_config_file: startup_config_file.to_path_buf(),
+        status: "ok",
+        profile_count: profiles.total_count,
+        visible_profile_count: profiles.visible_count,
+        hidden_profile_count: profiles.hidden_count,
+        slot_count: slots.slot_count,
+        mapped_slot_count: slots.mapped_count,
+        reference_count: references.reference_count,
+        referenced_profile_count: references.referenced_profile_count,
+        unreferenced_profile_count: references.unreferenced_profile_count,
+        metadata_only: true,
+        includes_environment_values: false,
+        profiles,
+        slots,
+        references,
+    })
+}
+
 fn startup_profile_description_report(
     startup_config: &TerminalStartupConfig,
     startup_config_file: &Path,
@@ -20487,7 +20536,17 @@ fn format_startup_profiles_report(report: &TerminalStartupProfileListReport) -> 
 }
 
 fn format_startup_profiles_json(report: &TerminalStartupProfileListReport) -> Result<String> {
-    let value = serde_json::json!({
+    let value = startup_profile_list_report_json(report);
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profiles as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_list_report_json(
+    report: &TerminalStartupProfileListReport,
+) -> serde_json::Value {
+    serde_json::json!({
         "startup_config_file": report.startup_config_file.display().to_string(),
         "include_hidden": report.include_hidden,
         "total_count": report.total_count,
@@ -20498,11 +20557,7 @@ fn format_startup_profiles_json(report: &TerminalStartupProfileListReport) -> Re
             .iter()
             .map(startup_profile_summary_json)
             .collect::<Vec<_>>(),
-    });
-    let mut output = serde_json::to_string_pretty(&value)
-        .context("failed to serialize terminal startup profiles as json")?;
-    output.push('\n');
-    Ok(output)
+    })
 }
 
 fn startup_profile_summary_json(profile: &TerminalStartupProfileSummary) -> serde_json::Value {
@@ -20578,7 +20633,17 @@ fn format_startup_profile_slots(report: &TerminalStartupProfileSlotReport) -> St
 }
 
 fn format_startup_profile_slots_json(report: &TerminalStartupProfileSlotReport) -> Result<String> {
-    let value = serde_json::json!({
+    let value = startup_profile_slots_report_json(report);
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile slots as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_slots_report_json(
+    report: &TerminalStartupProfileSlotReport,
+) -> serde_json::Value {
+    serde_json::json!({
         "startup_config_file": report.startup_config_file.display().to_string(),
         "status": report.status,
         "slot_count": report.slot_count,
@@ -20588,11 +20653,7 @@ fn format_startup_profile_slots_json(report: &TerminalStartupProfileSlotReport) 
             .iter()
             .map(startup_profile_slot_json)
             .collect::<Vec<_>>(),
-    });
-    let mut output = serde_json::to_string_pretty(&value)
-        .context("failed to serialize terminal startup profile slots as json")?;
-    output.push('\n');
-    Ok(output)
+    })
 }
 
 fn startup_profile_slot_json(slot: &TerminalStartupProfileSlot) -> serde_json::Value {
@@ -20682,7 +20743,17 @@ fn format_startup_profile_references_report(
 fn format_startup_profile_references_json(
     report: &TerminalStartupProfileReferencesReport,
 ) -> Result<String> {
-    let value = serde_json::json!({
+    let value = startup_profile_references_report_json(report);
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile references as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn startup_profile_references_report_json(
+    report: &TerminalStartupProfileReferencesReport,
+) -> serde_json::Value {
+    serde_json::json!({
         "startup_config_file": report.startup_config_file.display().to_string(),
         "status": report.status,
         "profile_count": report.profile_count,
@@ -20695,11 +20766,7 @@ fn format_startup_profile_references_json(
             .map(startup_profile_references_entry_json)
             .collect::<Vec<_>>(),
         "unreferenced_profiles": &report.unreferenced_profiles,
-    });
-    let mut output = serde_json::to_string_pretty(&value)
-        .context("failed to serialize terminal startup profile references as json")?;
-    output.push('\n');
-    Ok(output)
+    })
 }
 
 fn startup_profile_references_entry_json(
@@ -20717,6 +20784,34 @@ fn startup_profile_references_entry_json(
             .map(startup_profile_reference_json)
             .collect::<Vec<_>>(),
     })
+}
+
+fn format_startup_profile_management_json(
+    report: &TerminalStartupProfileManagementReport,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "startup_config_file": report.startup_config_file.display().to_string(),
+        "status": report.status,
+        "profile_count": report.profile_count,
+        "visible_profile_count": report.visible_profile_count,
+        "hidden_profile_count": report.hidden_profile_count,
+        "slot_count": report.slot_count,
+        "mapped_slot_count": report.mapped_slot_count,
+        "reference_count": report.reference_count,
+        "referenced_profile_count": report.referenced_profile_count,
+        "unreferenced_profile_count": report.unreferenced_profile_count,
+        "privacy": {
+            "metadata_only": report.metadata_only,
+            "includes_environment_values": report.includes_environment_values,
+        },
+        "profiles": startup_profile_list_report_json(&report.profiles),
+        "slots": startup_profile_slots_report_json(&report.slots),
+        "references": startup_profile_references_report_json(&report.references),
+    });
+    let mut output = serde_json::to_string_pretty(&value)
+        .context("failed to serialize terminal startup profile management report as json")?;
+    output.push('\n');
+    Ok(output)
 }
 
 fn format_startup_profile_description(report: &TerminalStartupProfileDescription) -> String {
@@ -24365,6 +24460,28 @@ fn write_startup_profiles_report_file(
         .with_context(|| format!("failed to write startup profiles report {}", path.display()))
 }
 
+fn write_startup_profile_management_report_file(
+    path: &Path,
+    report: &TerminalStartupProfileManagementReport,
+) -> Result<()> {
+    let report = format_startup_profile_management_json(report)?;
+    if let Some(parent) = path.parent() {
+        std_fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed to create startup profile management report directory {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    std_fs::write(path, report).with_context(|| {
+        format!(
+            "failed to write startup profile management report {}",
+            path.display()
+        )
+    })
+}
+
 fn write_startup_profile_slots_report_file(
     path: &Path,
     report: &TerminalStartupProfileSlotReport,
@@ -27378,6 +27495,10 @@ fn active_terminal_startup_profiles_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILES_REPORT_FILE)
 }
 
+fn active_terminal_startup_profile_management_report_file() -> PathBuf {
+    paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_MANAGEMENT_REPORT_FILE)
+}
+
 fn active_terminal_startup_profile_slots_report_file() -> PathBuf {
     paths::logs_dir().join(TERMINAL_STARTUP_PROFILE_SLOTS_REPORT_FILE)
 }
@@ -27547,6 +27668,7 @@ fn init(launch_options: LaunchOptions, cx: &mut App) -> Result<()> {
     cx.on_action(open_config_bundle_backups_report);
     cx.on_action(open_startup_layout_report);
     cx.on_action(open_startup_description_report);
+    cx.on_action(open_startup_profile_management_report);
     cx.on_action(open_startup_profiles_report);
     cx.on_action(open_startup_profile_slots_report);
     cx.on_action(open_startup_profile_references_report);
@@ -27854,6 +27976,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<RestoreLatestStartupProfileMutationBackup>(),
         TerminalActionSurface::new::<RestoreStartupProfileMutationBackup>(),
         TerminalActionSurface::new::<OpenStartupProfilePicker>(),
+        TerminalActionSurface::new::<OpenStartupProfileManagementReport>(),
         TerminalActionSurface::new::<OpenStartupProfilesReport>(),
         TerminalActionSurface::new::<OpenStartupProfileSlotsReport>(),
         TerminalActionSurface::new::<OpenStartupProfileReferencesReport>(),
@@ -27964,6 +28087,10 @@ fn terminal_control_center_command_palette_items(
         (
             "Control Center: Profile Picker",
             OpenStartupProfilePicker.boxed_clone(),
+        ),
+        (
+            "Control Center: Profile Management Report",
+            OpenStartupProfileManagementReport.boxed_clone(),
         ),
         (
             "Control Center: Keymap Tools",
@@ -28835,6 +28962,10 @@ fn app_menu_items() -> Vec<MenuItem> {
         MenuItem::action(
             "Open Startup Description Report",
             OpenStartupDescriptionReport,
+        ),
+        MenuItem::action(
+            "Open Startup Profile Management Report",
+            OpenStartupProfileManagementReport,
         ),
         MenuItem::action("Open Startup Profiles Report", OpenStartupProfilesReport),
         MenuItem::action(
@@ -31448,6 +31579,37 @@ fn open_startup_profiles_report(_: &OpenStartupProfilesReport, cx: &mut App) {
     cx.open_with_system(&startup_profiles_report_file);
 }
 
+fn open_startup_profile_management_report(_: &OpenStartupProfileManagementReport, cx: &mut App) {
+    let startup_config_file = active_terminal_startup_config_file();
+    let startup_profile_management_report_file =
+        active_terminal_startup_profile_management_report_file();
+    let startup_config = match TerminalStartupConfig::load(&startup_config_file) {
+        Ok(startup_config) => startup_config,
+        Err(error) => {
+            log::warn!(
+                "failed to load startup config for startup profile management report: {error:#}"
+            );
+            return;
+        }
+    };
+    let report = match startup_profile_management_report(&startup_config, &startup_config_file) {
+        Ok(report) => report,
+        Err(error) => {
+            log::warn!("failed to build startup profile management report: {error:#}");
+            return;
+        }
+    };
+    if let Err(error) = write_startup_profile_management_report_file(
+        &startup_profile_management_report_file,
+        &report,
+    ) {
+        log::warn!("failed to write startup profile management report file: {error:#}");
+        return;
+    }
+
+    cx.open_with_system(&startup_profile_management_report_file);
+}
+
 fn open_startup_profile_slots_report(_: &OpenStartupProfileSlotsReport, cx: &mut App) {
     let startup_config_file = active_terminal_startup_config_file();
     let startup_profile_slots_report_file = active_terminal_startup_profile_slots_report_file();
@@ -33182,6 +33344,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &OpenStartupLayoutReport);
         assert_command_palette_action_visible(&filter, &OpenStartupDescriptionReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilePicker);
+        assert_command_palette_action_visible(&filter, &OpenStartupProfileManagementReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfilesReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileSlotsReport);
         assert_command_palette_action_visible(&filter, &OpenStartupProfileReferencesReport);
@@ -33311,6 +33474,7 @@ mod tests {
                 "Control Center: Settings Tools",
                 "Control Center: Startup and Profile Tools",
                 "Control Center: Profile Picker",
+                "Control Center: Profile Management Report",
                 "Control Center: Keymap Tools",
                 "Control Center: Support and Diagnostics",
             ]
@@ -33319,8 +33483,9 @@ mod tests {
         assert_control_center_action::<OpenSettingsToolsPicker>(&result.results[0]);
         assert_control_center_action::<OpenStartupToolsPicker>(&result.results[1]);
         assert_control_center_action::<OpenStartupProfilePicker>(&result.results[2]);
-        assert_control_center_action::<OpenKeymapToolsPicker>(&result.results[3]);
-        assert_control_center_action::<OpenSupportToolsPicker>(&result.results[4]);
+        assert_control_center_action::<OpenStartupProfileManagementReport>(&result.results[3]);
+        assert_control_center_action::<OpenKeymapToolsPicker>(&result.results[4]);
+        assert_control_center_action::<OpenSupportToolsPicker>(&result.results[5]);
     }
 
     #[test]
@@ -34830,6 +34995,11 @@ mod tests {
         );
         assert_menu_action(
             &items,
+            "Open Startup Profile Management Report",
+            "zed_terminal::OpenStartupProfileManagementReport",
+        );
+        assert_menu_action(
+            &items,
             "Open Startup Profiles Report",
             "zed_terminal::OpenStartupProfilesReport",
         );
@@ -34986,6 +35156,7 @@ mod tests {
                 "Restore Startup Config Backup...",
                 "Open Startup Layout Report",
                 "Open Startup Description Report",
+                "Open Startup Profile Management Report",
                 "Open Startup Profiles Report",
                 "Open Startup Profile References Report",
                 "Open Startup Profile Slots Report",
@@ -36061,6 +36232,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_open_startup_profile_management_report_action_input() {
+        let action = <OpenStartupProfileManagementReport as Action>::build(
+            gpui::private::serde_json::json!({}),
+        )
+        .expect("open startup profile management report action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenStartupProfileManagementReport>()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn parses_open_startup_profile_slots_report_action_input() {
         let action =
             <OpenStartupProfileSlotsReport as Action>::build(gpui::private::serde_json::json!({}))
@@ -36816,6 +37002,49 @@ mod tests {
 
         assert!(
             format!("{error:#}").contains("default_profile references missing startup profile")
+        );
+    }
+
+    #[test]
+    fn formats_startup_profile_management_report_without_environment_values() {
+        let config = sample_startup_profile_references_config();
+        let report = startup_profile_management_report(&config, Path::new("terminal.json"))
+            .expect("profile management should report");
+
+        assert_eq!(report.status, "ok");
+        assert_eq!(report.profile_count, 3);
+        assert_eq!(report.visible_profile_count, 2);
+        assert_eq!(report.hidden_profile_count, 1);
+        assert_eq!(report.slot_count, 9);
+        assert_eq!(report.mapped_slot_count, 2);
+        assert_eq!(report.reference_count, 3);
+        assert_eq!(report.referenced_profile_count, 1);
+        assert_eq!(report.unreferenced_profile_count, 2);
+        assert!(report.metadata_only);
+        assert!(!report.includes_environment_values);
+
+        let json = format_startup_profile_management_json(&report)
+            .expect("profile management json should format");
+        let json: serde_json::Value =
+            serde_json::from_str(&json).expect("profile management json should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile_count"], 3);
+        assert_eq!(json["visible_profile_count"], 2);
+        assert_eq!(json["hidden_profile_count"], 1);
+        assert_eq!(json["slot_count"], 9);
+        assert_eq!(json["mapped_slot_count"], 2);
+        assert_eq!(json["reference_count"], 3);
+        assert_eq!(json["privacy"]["metadata_only"], true);
+        assert_eq!(json["privacy"]["includes_environment_values"], false);
+        assert_eq!(json["profiles"]["total_count"], 3);
+        assert_eq!(json["slots"]["mapped_count"], 2);
+        assert_eq!(json["references"]["unreferenced_profiles"][0], "admin");
+        assert_eq!(json["references"]["profiles"][2]["profile"], "work");
+        assert!(
+            !serde_json::to_string(&json)
+                .unwrap()
+                .contains("SECRET_VALUE")
         );
     }
 
@@ -38534,6 +38763,7 @@ mod tests {
             "zed_terminal::RestoreLatestStartupProfileMutationBackup",
             "zed_terminal::RestoreStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenStartupProfileManagementReport",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenStartupProfileReferencesReport",
             "zed_terminal::OpenSupportBundleManifestFile",
@@ -39657,6 +39887,16 @@ mod tests {
             .find(|action| action.name == "zed_terminal::OpenStartupToolsPicker")
             .expect("startup tools picker action should be listed");
         assert_eq!(startup_tools_picker.input, TerminalKeymapActionInput::None);
+
+        let startup_profile_management_report = report
+            .actions
+            .iter()
+            .find(|action| action.name == "zed_terminal::OpenStartupProfileManagementReport")
+            .expect("startup profile management report action should be listed");
+        assert_eq!(
+            startup_profile_management_report.input,
+            TerminalKeymapActionInput::None
+        );
 
         let startup_profile_slots_report = report
             .actions
@@ -41651,6 +41891,39 @@ mod tests {
         assert_eq!(json["profiles"][0]["hidden"], true);
         assert_eq!(json["profiles"][1]["name"], "work");
         assert_eq!(json["profiles"][1]["is_default"], true);
+        assert!(report_text.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn writes_startup_profile_management_report_file_as_metadata_json() {
+        let root_dir = temp_test_dir();
+        let report_file = root_dir
+            .join("logs")
+            .join(TERMINAL_STARTUP_PROFILE_MANAGEMENT_REPORT_FILE);
+        let report = startup_profile_management_report(
+            &sample_startup_profile_references_config(),
+            Path::new("terminal.json"),
+        )
+        .expect("profile management should report");
+
+        write_startup_profile_management_report_file(&report_file, &report)
+            .expect("startup profile management report should write");
+
+        let report_text =
+            std_fs::read_to_string(&report_file).expect("failed to read profile management report");
+        let json: serde_json::Value =
+            serde_json::from_str(&report_text).expect("profile management report should parse");
+        assert_eq!(json["startup_config_file"], "terminal.json");
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["profile_count"], 3);
+        assert_eq!(json["privacy"]["metadata_only"], true);
+        assert_eq!(json["privacy"]["includes_environment_values"], false);
+        assert_eq!(json["profiles"]["profiles"][2]["name"], "work");
+        assert_eq!(json["slots"]["slot_count"], 9);
+        assert_eq!(json["references"]["reference_count"], 3);
+        assert!(!report_text.contains("SECRET_VALUE"));
         assert!(report_text.ends_with('\n'));
 
         std_fs::remove_dir_all(root_dir).ok();

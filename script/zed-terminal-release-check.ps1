@@ -1139,6 +1139,7 @@ function Assert-PackageConfigTemplateSchemas {
             "zed_terminal::RestoreLatestStartupProfileMutationBackup",
             "zed_terminal::RestoreStartupProfileMutationBackup",
             "zed_terminal::OpenStartupProfilePicker",
+            "zed_terminal::OpenStartupProfileManagementReport",
             "zed_terminal::OpenStartupProfileSlotsReport",
             "zed_terminal::OpenSupportBundleManifestFile",
             "zed_terminal::OpenSupportToolsPicker",
@@ -2538,6 +2539,7 @@ try {
                 "zed_terminal::RestoreLatestStartupProfileMutationBackup",
                 "zed_terminal::RestoreStartupProfileMutationBackup",
                 "zed_terminal::OpenStartupProfilePicker",
+                "zed_terminal::OpenStartupProfileManagementReport",
                 "zed_terminal::OpenStartupProfileSlotsReport",
                 "zed_terminal::OpenStartupProfileReferencesReport",
                 "zed_terminal::OpenSupportBundleManifestFile",
@@ -2669,6 +2671,10 @@ try {
             $startupToolsPickerAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupToolsPicker" } | Select-Object -First 1
             if (-not $startupToolsPickerAction -or $startupToolsPickerAction.namespace -ne "zed_terminal" -or $startupToolsPickerAction.input -ne "none") {
                 throw "Keymap action list did not report the expected OpenStartupToolsPicker no-input metadata."
+            }
+            $startupProfileManagementReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileManagementReport" } | Select-Object -First 1
+            if (-not $startupProfileManagementReportAction -or $startupProfileManagementReportAction.namespace -ne "zed_terminal" -or $startupProfileManagementReportAction.input -ne "none") {
+                throw "Keymap action list did not report the expected OpenStartupProfileManagementReport no-input metadata."
             }
             $startupProfileSlotsReportAction = $keymapActions.actions | Where-Object { $_.name -eq "zed_terminal::OpenStartupProfileSlotsReport" } | Select-Object -First 1
             if (-not $startupProfileSlotsReportAction -or $startupProfileSlotsReportAction.namespace -ne "zed_terminal" -or $startupProfileSlotsReportAction.input -ne "none") {
@@ -2940,6 +2946,15 @@ try {
             )
             if ($startupToolsPickerActionDescription.action.name -ne "zed_terminal::OpenStartupToolsPicker" -or $startupToolsPickerActionDescription.action.namespace -ne "zed_terminal" -or $startupToolsPickerActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected startup tools picker action contract."
+            }
+            $startupProfileManagementReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-management-report" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed_terminal::OpenStartupProfileManagementReport",
+                "--describe-keymap-action-format", "json"
+            )
+            if ($startupProfileManagementReportActionDescription.action.name -ne "zed_terminal::OpenStartupProfileManagementReport" -or $startupProfileManagementReportActionDescription.action.namespace -ne "zed_terminal" -or $startupProfileManagementReportActionDescription.action.input -ne "none") {
+                throw "Keymap action description did not report the expected startup profile management report action contract."
             }
             $startupProfileSlotsReportActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-startup-profile-slots-report" @(
                 "--user-data-dir", $cliDataDir,
