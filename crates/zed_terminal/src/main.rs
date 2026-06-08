@@ -64,6 +64,7 @@ actions!(
     zed_terminal,
     [
         OpenSettingsFile,
+        OpenControlCenter,
         OpenSettingsSchemaFile,
         OpenSettingsToolsPicker,
         OpenStartupConfigFile,
@@ -27805,6 +27806,7 @@ fn terminal_action_surfaces() -> Vec<TerminalActionSurface> {
         TerminalActionSurface::new::<NewTerminalSplitWithProfileSlot>(),
         TerminalActionSurface::new::<NewTerminalTabWithProfile>(),
         TerminalActionSurface::new::<NewTerminalTabWithProfileSlot>(),
+        TerminalActionSurface::new::<OpenControlCenter>(),
         TerminalActionSurface::new::<OpenConfigDirectory>(),
         TerminalActionSurface::new::<OpenDataDirectory>(),
         TerminalActionSurface::new::<OpenDefaultKeymapReferenceFile>(),
@@ -27938,12 +27940,43 @@ fn terminal_profile_command_palette_result_from_summaries(
     profiles: Vec<TerminalStartupProfileSummary>,
 ) -> command_palette_hooks::CommandInterceptResult {
     let query = command_palette::normalize_action_query(query);
-    let results = terminal_profile_command_palette_items(&query, profiles);
+    let mut results = terminal_control_center_command_palette_items(&query);
+    results.extend(terminal_profile_command_palette_items(&query, profiles));
 
     command_palette_hooks::CommandInterceptResult {
         results,
         exclusive: false,
     }
+}
+
+fn terminal_control_center_command_palette_items(
+    query: &str,
+) -> Vec<command_palette_hooks::CommandInterceptItem> {
+    [
+        (
+            "Control Center: Settings Tools",
+            OpenSettingsToolsPicker.boxed_clone(),
+        ),
+        (
+            "Control Center: Startup and Profile Tools",
+            OpenStartupToolsPicker.boxed_clone(),
+        ),
+        (
+            "Control Center: Profile Picker",
+            OpenStartupProfilePicker.boxed_clone(),
+        ),
+        (
+            "Control Center: Keymap Tools",
+            OpenKeymapToolsPicker.boxed_clone(),
+        ),
+        (
+            "Control Center: Support and Diagnostics",
+            OpenSupportToolsPicker.boxed_clone(),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(string, action)| terminal_command_palette_item(query, string.to_string(), action))
+    .collect()
 }
 
 fn terminal_profile_command_palette_items(
@@ -27956,7 +27989,7 @@ fn terminal_profile_command_palette_items(
         let label = profile_command_palette_label(&profile);
         let profile_name = profile.name.clone();
         if profile.hidden {
-            items.push(terminal_profile_command_palette_item(
+            items.push(terminal_command_palette_item(
                 query,
                 format!("Show Profile: {label}"),
                 ShowStartupProfile {
@@ -27964,7 +27997,7 @@ fn terminal_profile_command_palette_items(
                 }
                 .boxed_clone(),
             ));
-            items.push(terminal_profile_command_palette_item(
+            items.push(terminal_command_palette_item(
                 query,
                 format!("Remove Profile: {label}"),
                 RemoveStartupProfile {
@@ -27975,7 +28008,7 @@ fn terminal_profile_command_palette_items(
             continue;
         }
 
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("New Tab With Profile: {label}"),
             NewTerminalTabWithProfile {
@@ -27983,7 +28016,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("New Window With Profile: {label}"),
             NewTerminalWindowWithProfile {
@@ -27992,7 +28025,7 @@ fn terminal_profile_command_palette_items(
             .boxed_clone(),
         ));
         for split_direction in terminal_profile_split_direction_entries() {
-            items.push(terminal_profile_command_palette_item(
+            items.push(terminal_command_palette_item(
                 query,
                 format!("Split {} With Profile: {label}", split_direction.label),
                 NewTerminalSplitWithProfile {
@@ -28002,7 +28035,7 @@ fn terminal_profile_command_palette_items(
                 .boxed_clone(),
             ));
         }
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Set Default Profile: {label}"),
             SetDefaultStartupProfile {
@@ -28010,7 +28043,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Open Config For Profile: {label}"),
             OpenStartupProfileConfig {
@@ -28018,7 +28051,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Open Description Report For Profile: {label}"),
             OpenProfileDescriptionReport {
@@ -28026,7 +28059,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Copy Profile: {label}"),
             CopyStartupProfile {
@@ -28034,7 +28067,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Rename Profile: {label}"),
             RenameStartupProfile {
@@ -28043,7 +28076,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Export Profile: {label}"),
             ExportStartupProfile {
@@ -28051,7 +28084,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Remove Profile: {label}"),
             RemoveStartupProfile {
@@ -28059,7 +28092,7 @@ fn terminal_profile_command_palette_items(
             }
             .boxed_clone(),
         ));
-        items.push(terminal_profile_command_palette_item(
+        items.push(terminal_command_palette_item(
             query,
             format!("Hide Profile: {label}"),
             HideStartupProfile {
@@ -28076,7 +28109,7 @@ fn terminal_profile_command_palette_items(
         .collect()
 }
 
-fn terminal_profile_command_palette_item(
+fn terminal_command_palette_item(
     query: &str,
     string: String,
     action: Box<dyn Action>,
@@ -28758,6 +28791,7 @@ fn pane_menu_items() -> Vec<MenuItem> {
 fn app_menu_items() -> Vec<MenuItem> {
     vec![
         MenuItem::action("Command Palette...", zed_actions::command_palette::Toggle),
+        MenuItem::action("Open Control Center...", OpenControlCenter),
         MenuItem::separator(),
         MenuItem::action("Open Settings Tools...", OpenSettingsToolsPicker),
         MenuItem::action("Open Settings File", zed_actions::OpenSettingsFile),
@@ -29601,6 +29635,9 @@ fn open_terminal_window(
                 });
                 workspace.register_action(|workspace, _: &OpenStartupProfilePicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "profile", window, cx);
+                });
+                workspace.register_action(|workspace, _: &OpenControlCenter, window, cx| {
+                    command_palette::CommandPalette::toggle(workspace, "control", window, cx);
                 });
                 workspace.register_action(|workspace, _: &OpenSupportToolsPicker, window, cx| {
                     command_palette::CommandPalette::toggle(workspace, "support", window, cx);
@@ -33107,6 +33144,7 @@ mod tests {
         assert_command_palette_action_visible(&filter, &ZoomTerminalWindow);
         assert_command_palette_action_visible(&filter, &zed_actions::command_palette::Toggle);
         assert_command_palette_action_visible(&filter, &zed_actions::OpenSettingsFile);
+        assert_command_palette_action_visible(&filter, &OpenControlCenter);
         assert_command_palette_action_visible(&filter, &OpenConfigInitializationReport);
         assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupFile);
         assert_command_palette_action_visible(&filter, &OpenConfigBundleBackupDirectory);
@@ -33256,6 +33294,33 @@ mod tests {
                 "terminal command palette should hide broad namespace {namespace:?}"
             );
         }
+    }
+
+    #[test]
+    fn terminal_control_center_command_palette_exposes_product_tool_groups() {
+        let result = terminal_profile_command_palette_result_from_summaries("control", Vec::new());
+
+        assert!(!result.exclusive);
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|item| item.string.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Control Center: Settings Tools",
+                "Control Center: Startup and Profile Tools",
+                "Control Center: Profile Picker",
+                "Control Center: Keymap Tools",
+                "Control Center: Support and Diagnostics",
+            ]
+        );
+
+        assert_control_center_action::<OpenSettingsToolsPicker>(&result.results[0]);
+        assert_control_center_action::<OpenStartupToolsPicker>(&result.results[1]);
+        assert_control_center_action::<OpenStartupProfilePicker>(&result.results[2]);
+        assert_control_center_action::<OpenKeymapToolsPicker>(&result.results[3]);
+        assert_control_center_action::<OpenSupportToolsPicker>(&result.results[4]);
     }
 
     #[test]
@@ -33840,6 +33905,16 @@ mod tests {
             .downcast_ref::<NewTerminalTabWithProfile>()
             .expect("expected profile tab action");
         assert_eq!(action.profile, expected_profile);
+    }
+
+    fn assert_control_center_action<T: Action + 'static>(
+        item: &command_palette_hooks::CommandInterceptItem,
+    ) {
+        assert!(
+            item.action.as_any().downcast_ref::<T>().is_some(),
+            "expected {}",
+            std::any::type_name::<T>()
+        );
     }
 
     fn assert_profile_window_action(
@@ -34670,6 +34745,11 @@ mod tests {
         assert_menu_action(&items, "Command Palette...", "command_palette::Toggle");
         assert_menu_action(
             &items,
+            "Open Control Center...",
+            "zed_terminal::OpenControlCenter",
+        );
+        assert_menu_action(
+            &items,
             "Open Support Tools...",
             "zed_terminal::OpenSupportToolsPicker",
         );
@@ -34885,6 +34965,7 @@ mod tests {
             menu_item_labels(&items),
             vec![
                 "Command Palette...",
+                "Open Control Center...",
                 "---",
                 "Open Settings Tools...",
                 "Open Settings File",
@@ -36018,6 +36099,19 @@ mod tests {
             action
                 .as_any()
                 .downcast_ref::<OpenStartupToolsPicker>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn parses_open_control_center_action_input() {
+        let action = <OpenControlCenter as Action>::build(gpui::private::serde_json::json!({}))
+            .expect("open control center action input should parse");
+
+        assert!(
+            action
+                .as_any()
+                .downcast_ref::<OpenControlCenter>()
                 .is_some()
         );
     }
