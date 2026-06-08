@@ -2,7 +2,7 @@
 
 use std::{
     any::TypeId,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     env,
     ffi::OsString,
     fmt::Write as _,
@@ -29271,6 +29271,7 @@ impl Render for TerminalWindowRoot {
         let split_down_workspace = workspace.clone();
         let split_horizontal_workspace = workspace.clone();
         let split_vertical_workspace = workspace.clone();
+        let reopen_closed_tab_workspace = workspace.clone();
         let workspace_key_context = workspace.update(cx, |workspace, cx| workspace.key_context(cx));
         let root = workspace.update(cx, |workspace, cx| {
             workspace.actions(div().flex().flex_row().items_center(), window, cx)
@@ -29339,6 +29340,17 @@ impl Render for TerminalWindowRoot {
                         cx,
                     );
                 })
+                .capture_action(
+                    move |_: &workspace::pane::ReopenClosedItem, window, cx| {
+                        let handled =
+                            reopen_closed_tab_workspace.update(cx, |workspace, cx| {
+                                reopen_closed_terminal_tab(workspace, window, cx)
+                            });
+                        if handled {
+                            cx.stop_propagation();
+                        }
+                    },
+                )
                 .capture_action(cx.listener(
                     |_root, _: &ClearSavedWindowState, window, cx| {
                         let prompt = window.prompt(
@@ -29440,6 +29452,34 @@ fn configure_terminal_workspace_container_panes(
             pane.set_can_split(Some(Arc::new(|_, _, _, _| false)));
             pane.set_can_navigate(false, cx);
         });
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClosedTerminalTab {
+    working_directory: Option<PathBuf>,
+    title: Option<String>,
+}
+
+#[derive(Default)]
+struct ClosedTerminalTabs {
+    tabs: VecDeque<ClosedTerminalTab>,
+}
+
+impl gpui::Global for ClosedTerminalTabs {}
+
+impl ClosedTerminalTabs {
+    const MAX_TABS: usize = 25;
+
+    fn push(&mut self, tab: ClosedTerminalTab) {
+        if self.tabs.len() >= Self::MAX_TABS {
+            self.tabs.pop_front();
+        }
+        self.tabs.push_back(tab);
+    }
+
+    fn pop(&mut self) -> Option<ClosedTerminalTab> {
+        self.tabs.pop_back()
     }
 }
 
@@ -29569,6 +29609,8 @@ fn activate_last_terminal_tab(
 }
 
 fn close_terminal_tab(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    record_active_terminal_tab_for_reopen(workspace, cx);
+
     let pane = workspace.active_pane().clone();
     pane.update(cx, |pane, cx| {
         pane.close_active_item(
@@ -29583,12 +29625,50 @@ fn close_terminal_tab(workspace: &mut Workspace, window: &mut Window, cx: &mut C
     });
 }
 
+fn record_active_terminal_tab_for_reopen(workspace: &Workspace, cx: &mut Context<Workspace>) {
+    let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) else {
+        return;
+    };
+
+    let closed_tab = terminal_tab.update(cx, |terminal_tab, cx| {
+        terminal_tab
+            .active_terminal(cx)
+            .map(|terminal| ClosedTerminalTab {
+                working_directory: terminal.read(cx).working_directory(),
+                title: terminal_tab.active_terminal_custom_title(cx),
+            })
+    });
+    if let Some(closed_tab) = closed_tab {
+        cx.default_global::<ClosedTerminalTabs>().push(closed_tab);
+    }
+}
+
+fn reopen_closed_terminal_tab(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> bool {
+    let Some(closed_tab) = cx.default_global::<ClosedTerminalTabs>().pop() else {
+        return false;
+    };
+
+    let create_terminal = move |project: &mut Project, cx: &mut Context<Project>| {
+        project.create_terminal_shell(closed_tab.working_directory, cx)
+    };
+    add_terminal_tab_with_custom_title(workspace, window, cx, closed_tab.title, create_terminal)
+        .detach_and_log_err(cx);
+    true
+}
+
 fn close_terminal_pane(
     workspace: &mut Workspace,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+        if terminal_tab.read(cx).pane_count(cx) <= 1 {
+            record_active_terminal_tab_for_reopen(workspace, cx);
+        }
         terminal_tab.update(cx, |terminal_tab, cx| {
             terminal_tab.close_active_pane(window, cx);
         });
@@ -35000,6 +35080,60 @@ mod tests {
         let items = shell_menu_items(Vec::new());
 
         assert_menu_action(&items, "Reopen Closed Tab", "pane::ReopenClosedItem");
+    }
+
+    #[test]
+    fn closed_terminal_tabs_reopen_most_recent_tab_first() {
+        let mut tabs = ClosedTerminalTabs::default();
+        tabs.push(ClosedTerminalTab {
+            working_directory: Some(PathBuf::from("first")),
+            title: Some("First".into()),
+        });
+        tabs.push(ClosedTerminalTab {
+            working_directory: Some(PathBuf::from("second")),
+            title: Some("Second".into()),
+        });
+
+        assert_eq!(
+            tabs.pop(),
+            Some(ClosedTerminalTab {
+                working_directory: Some(PathBuf::from("second")),
+                title: Some("Second".into()),
+            })
+        );
+        assert_eq!(
+            tabs.pop(),
+            Some(ClosedTerminalTab {
+                working_directory: Some(PathBuf::from("first")),
+                title: Some("First".into()),
+            })
+        );
+        assert_eq!(tabs.pop(), None);
+    }
+
+    #[test]
+    fn closed_terminal_tabs_keep_bounded_history() {
+        let mut tabs = ClosedTerminalTabs::default();
+        for index in 0..=ClosedTerminalTabs::MAX_TABS {
+            tabs.push(ClosedTerminalTab {
+                working_directory: Some(PathBuf::from(format!("tab-{index}"))),
+                title: None,
+            });
+        }
+
+        assert_eq!(tabs.tabs.len(), ClosedTerminalTabs::MAX_TABS);
+        assert!(
+            tabs.tabs
+                .iter()
+                .all(|tab| tab.working_directory != Some(PathBuf::from("tab-0")))
+        );
+        assert_eq!(
+            tabs.pop().and_then(|tab| tab.working_directory),
+            Some(PathBuf::from(format!(
+                "tab-{}",
+                ClosedTerminalTabs::MAX_TABS
+            )))
+        );
     }
 
     #[test]

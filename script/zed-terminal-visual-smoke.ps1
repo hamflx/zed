@@ -15,6 +15,7 @@ Param(
     [Parameter()][switch]$VerifyProfileEditModal,
     [Parameter()][switch]$VerifyWindowLifecycle,
     [Parameter()][switch]$VerifySettingsTools,
+    [Parameter()][switch]$VerifyTabRecovery,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -43,8 +44,8 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
-if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle, $VerifySettingsTools) | Where-Object { $_ }).Count -gt 1) {
-    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, -VerifyWindowLifecycle, or -VerifySettingsTools."
+if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle, $VerifySettingsTools, $VerifyTabRecovery) | Where-Object { $_ }).Count -gt 1) {
+    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, -VerifyWindowLifecycle, -VerifySettingsTools, or -VerifyTabRecovery."
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -84,6 +85,8 @@ $profileEditStartupConfigFile = $null
 $profileEditKeymapFile = $null
 $windowLifecycleStartupConfigFile = $null
 $settingsToolsStartupConfigFile = $null
+$tabRecoveryStartupConfigFile = $null
+$tabRecoveryKeymapFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -1308,6 +1311,48 @@ function Write-SettingsToolsStartupConfig {
     return $startupConfigFile
 }
 
+function Write-TabRecoveryStartupConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$ConfigDir,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+    )
+
+    $startupConfigFile = Join-Path $ConfigDir "terminal.json"
+    $shortcutCommand = @(
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-EncodedCommand", $EncodedProbeScript
+    ) | ForEach-Object { Quote-ProcessArgument $_ }
+    $shortcutCommand = $shortcutCommand -join " "
+    $startupConfig = [ordered]@{
+        title = "Tab Recovery Smoke"
+        command = $shortcutCommand
+    } | ConvertTo-Json -Depth 6
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($startupConfigFile, $startupConfig, $utf8NoBom)
+    return $startupConfigFile
+}
+
+function Write-TabRecoveryKeymapConfig {
+    param([Parameter(Mandatory = $true)][string]$ConfigDir)
+
+    $keymapFile = Join-Path $ConfigDir "keymap.json"
+    $keymap = @'
+[
+  {
+    "bindings": {
+      "ctrl-shift-u": "pane::ReopenClosedItem"
+    }
+  }
+]
+'@
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($keymapFile, $keymap, $utf8NoBom)
+    return $keymapFile
+}
+
 function Invoke-ZedTerminalProfileEditVerification {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -1391,6 +1436,61 @@ function Invoke-ZedTerminalSettingsToolsVerification {
     $closed = Save-ShortcutScreenshot -Window $Window -Name "settings-tools-02-picker-closed" -RunDir $RunDir
     $captures.Add($closed)
     $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $settingsTools -After $closed -MinimumDifferentPixelRatio 0.005 -RunDir $RunDir))
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        Comparisons = $comparisons
+        States = $states
+        FinalWindow = $Window
+        InputMode = $inputMode
+    }
+}
+
+function Invoke-ZedTerminalTabRecoveryVerification {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_T = [System.UInt16][byte][char]'T'
+    $VK_U = [System.UInt16][byte][char]'U'
+    $VK_W = [System.UInt16][byte][char]'W'
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $comparisons = New-Object System.Collections.Generic.List[object]
+    $states = New-Object System.Collections.Generic.List[object]
+
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "00-initial" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 400 -TimeoutSeconds $TimeoutSeconds))
+    $initial = Save-ShortcutScreenshot -Window $Window -Name "tab-recovery-00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+    $inputMode = $null
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_T -Keystroke "ctrl-shift-t" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 401 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-shift-t-new-tab" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 401 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $newTab = Save-ShortcutScreenshot -Window $Window -Name "tab-recovery-01-new-tab" -RunDir $RunDir
+    $captures.Add($newTab)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $initial -After $newTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_W -Keystroke "ctrl-shift-w" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 402 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "02-ctrl-shift-w-close-tab" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 402 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $closedTab = Save-ShortcutScreenshot -Window $Window -Name "tab-recovery-02-closed-tab" -RunDir $RunDir
+    $captures.Add($closedTab)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $newTab -After $closedTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_U -Keystroke "ctrl-shift-u" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 403 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "03-ctrl-shift-u-reopen-tab" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 403 -TimeoutSeconds $TimeoutSeconds))
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $reopenedTab = Save-ShortcutScreenshot -Window $Window -Name "tab-recovery-03-reopened-tab" -RunDir $RunDir
+    $captures.Add($reopenedTab)
+    $comparisons.Add((Assert-ShortcutScreenshotChanged -Before $closedTab -After $reopenedTab -MinimumDifferentPixelRatio 0.001 -RunDir $RunDir))
 
     return [PSCustomObject]@{
         Captures = $captures
@@ -1496,9 +1596,13 @@ if ($VerifySplitPane) {
 } elseif ($VerifySettingsTools) {
     $settingsToolsStartupConfigFile = Write-SettingsToolsStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
     $startupConfigFile = $settingsToolsStartupConfigFile
+} elseif ($VerifyTabRecovery) {
+    $tabRecoveryStartupConfigFile = Write-TabRecoveryStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $tabRecoveryKeymapFile = Write-TabRecoveryKeymapConfig -ConfigDir $configDir
+    $startupConfigFile = $tabRecoveryStartupConfigFile
 }
 
-$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools) {
+$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery) {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir
@@ -1528,8 +1632,8 @@ $arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowL
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 $previousShortcutSmokeDir = $null
-$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools
-$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifySettingsTools
+$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery
+$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifySettingsTools -or $VerifyTabRecovery
 
 try {
     $subsystem = $null
@@ -1619,6 +1723,7 @@ try {
     $profileEditVerification = $null
     $windowLifecycleVerification = $null
     $settingsToolsVerification = $null
+    $tabRecoveryVerification = $null
     if ($VerifyShortcuts) {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
@@ -1650,6 +1755,14 @@ try {
             -ShortcutSmokeDir $shortcutSmokeDir `
             -TimeoutSeconds $StartupTimeoutSeconds
         $window = $settingsToolsVerification.FinalWindow
+    } elseif ($VerifyTabRecovery) {
+        $tabRecoveryVerification = Invoke-ZedTerminalTabRecoveryVerification `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -TimeoutSeconds $StartupTimeoutSeconds
+        $window = $tabRecoveryVerification.FinalWindow
     }
 
     $baselineComparison = $null
@@ -1786,6 +1899,29 @@ try {
         }
         foreach ($comparison in $settingsToolsVerification.Comparisons) {
             Write-Output "settings_tools_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
+        }
+    }
+    if ($VerifyTabRecovery) {
+        Write-Output "tab_recovery_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "tab_recovery_input_mode: $($tabRecoveryVerification.InputMode)"
+        Write-Output "tab_recovery_startup_config_file: $tabRecoveryStartupConfigFile"
+        Write-Output "tab_recovery_keymap_file: $tabRecoveryKeymapFile"
+        Write-Output "visible_top_level_windows: 1"
+        foreach ($state in $tabRecoveryVerification.States) {
+            Write-Output "tab_recovery_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"
+            Write-Output "tab_recovery_state_$($state.Name)_outer_tab_count: $($state.OuterTabCount)"
+            Write-Output "tab_recovery_state_$($state.Name)_inner_pane_count: $($state.InnerPaneCount)"
+            Write-Output "tab_recovery_state_$($state.Name)_command_palette_open: $($state.CommandPaletteOpen)"
+        }
+        foreach ($capture in $tabRecoveryVerification.Captures) {
+            Write-Output "tab_recovery_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "tab_recovery_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "tab_recovery_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
+        }
+        foreach ($comparison in $tabRecoveryVerification.Comparisons) {
+            Write-Output "tab_recovery_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
         }
     }
     if ($VerifySplitPane) {

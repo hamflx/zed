@@ -120,6 +120,7 @@ $shortcutVisualSmokeDir = Join-Path $runDir "visual-smoke-shortcuts"
 $profileEditVisualSmokeDir = Join-Path $runDir "visual-smoke-profile-edit"
 $windowLifecycleVisualSmokeDir = Join-Path $runDir "visual-smoke-window-lifecycle"
 $settingsToolsVisualSmokeDir = Join-Path $runDir "visual-smoke-settings-tools"
+$tabRecoveryVisualSmokeDir = Join-Path $runDir "visual-smoke-tab-recovery"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -147,6 +148,7 @@ $script:ShortcutVisualSmoke = $null
 $script:ProfileEditVisualSmoke = $null
 $script:WindowLifecycleVisualSmoke = $null
 $script:SettingsToolsVisualSmoke = $null
+$script:TabRecoveryVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -1124,6 +1126,48 @@ function Read-SettingsToolsState {
     }
 }
 
+function Read-TabRecoveryState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen
+    )
+
+    $prefix = "tab_recovery_state_$Name"
+    $outerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_pane_count" -Context "tab recovery visual smoke state $Name") `
+        -Name "$Name tab recovery outer pane count"
+    $outerTabCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_tab_count" -Context "tab recovery visual smoke state $Name") `
+        -Name "$Name tab recovery outer tab count"
+    $innerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_inner_pane_count" -Context "tab recovery visual smoke state $Name") `
+        -Name "$Name tab recovery inner pane count"
+    $commandPaletteOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_command_palette_open" -Context "tab recovery visual smoke state $Name") `
+        -Name "$Name tab recovery command palette state"
+
+    if (
+        $outerPaneCount -ne $ExpectedOuterPaneCount -or
+        $outerTabCount -ne $ExpectedOuterTabCount -or
+        $innerPaneCount -ne $ExpectedInnerPaneCount -or
+        $commandPaletteOpen -ne $ExpectedCommandPaletteOpen
+    ) {
+        throw "tab recovery visual smoke state $Name did not match expected product hierarchy. Expected outer_pane_count=$ExpectedOuterPaneCount outer_tab_count=$ExpectedOuterTabCount inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen; actual outer_pane_count=$outerPaneCount outer_tab_count=$outerTabCount inner_pane_count=$innerPaneCount command_palette_open=$commandPaletteOpen"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        outer_pane_count = $outerPaneCount
+        outer_tab_count = $outerTabCount
+        inner_pane_count = $innerPaneCount
+        command_palette_open = $commandPaletteOpen
+    }
+}
+
 function Read-WindowLifecycleState {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Values,
@@ -1495,7 +1539,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle", "settings-tools")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle", "settings-tools", "tab-recovery")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1598,10 +1642,15 @@ function Convert-VisualSmokeOutput {
     $windowLifecycleStates = @()
     $settingsToolsE2EVerified = $null
     $settingsToolsInputMode = $null
-    $settingsToolsKeymapFile = $null
     $settingsToolsCaptures = @()
     $settingsToolsComparisons = @()
     $settingsToolsStates = @()
+    $tabRecoveryE2EVerified = $null
+    $tabRecoveryInputMode = $null
+    $tabRecoveryKeymapFile = $null
+    $tabRecoveryCaptures = @()
+    $tabRecoveryComparisons = @()
+    $tabRecoveryStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -2030,6 +2079,117 @@ function Convert-VisualSmokeOutput {
 
         $settingsToolsE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
+    } elseif ($Mode -eq "tab-recovery") {
+        foreach ($key in @("tab_recovery_e2e_verified", "binary_subsystem", "binary_subsystem_value", "tab_recovery_input_mode", "tab_recovery_startup_config_file", "tab_recovery_keymap_file", "visible_top_level_windows")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "tab recovery visual smoke"
+        }
+        if ($values["tab_recovery_e2e_verified"] -ne "True") {
+            throw "tab recovery visual smoke did not verify the reopen closed tab workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "tab recovery visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "tab recovery visual smoke binary_subsystem_value"
+        $visibleTopLevelWindows = Convert-OutputInt64 -Value $values["visible_top_level_windows"] -Name "tab recovery visual smoke visible_top_level_windows"
+        if ($binarySubsystemValue -ne 2) {
+            throw "tab recovery visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        if ($visibleTopLevelWindows -ne 1) {
+            throw "tab recovery visual smoke expected exactly one visible top-level process window"
+        }
+        $tabRecoveryInputMode = $values["tab_recovery_input_mode"]
+        if ($tabRecoveryInputMode -notin @("windows-sendinput", "gpui-dispatch")) {
+            throw "tab recovery visual smoke reported an unexpected input mode: $tabRecoveryInputMode"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["tab_recovery_startup_config_file"])
+        $tabRecoveryKeymapFile = [System.IO.Path]::GetFullPath($values["tab_recovery_keymap_file"])
+        foreach ($file in @($startupConfigFile, $tabRecoveryKeymapFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "tab recovery visual smoke referenced a missing file: $file"
+            }
+        }
+
+        $expectedTabRecoveryStates = @(
+            [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "01-ctrl-shift-t-new-tab"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "02-ctrl-shift-w-close-tab"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "03-ctrl-shift-u-reopen-tab"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 1; PaletteOpen = $false }
+        )
+        foreach ($expectedState in $expectedTabRecoveryStates) {
+            $tabRecoveryStates += Read-TabRecoveryState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedOuterPaneCount $expectedState.OuterPanes `
+                -ExpectedOuterTabCount $expectedState.OuterTabs `
+                -ExpectedInnerPaneCount $expectedState.InnerPanes `
+                -ExpectedCommandPaletteOpen $expectedState.PaletteOpen
+        }
+
+        foreach ($captureName in @(
+                "tab-recovery-00-initial",
+                "tab-recovery-01-new-tab",
+                "tab-recovery-02-closed-tab",
+                "tab-recovery-03-reopened-tab"
+            )) {
+            $pathKey = "tab_recovery_capture_$captureName"
+            $bytesKey = "tab_recovery_capture_$($captureName)_bytes"
+            $colorsKey = "tab_recovery_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "tab recovery visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "tab recovery visual smoke") -Name "$captureName tab recovery screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "tab recovery visual smoke") -Name "$captureName tab recovery sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "tab recovery screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "tab recovery screenshot $captureName appears blank or nearly blank"
+            }
+
+            $tabRecoveryCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $tabRecoveryComparisonEntries = @(
+            $values.GetEnumerator() |
+                Where-Object { $_.Key -like "tab_recovery_comparison_*" } |
+                Sort-Object Key
+        )
+        if ($tabRecoveryComparisonEntries.Count -ne 3) {
+            throw "tab recovery visual smoke expected three tab recovery comparison diff entries, got $($tabRecoveryComparisonEntries.Count)"
+        }
+        foreach ($entry in $tabRecoveryComparisonEntries) {
+            if ($entry.Value -notmatch '^different_pixel_ratio=([0-9.Ee+-]+)\s+average_channel_delta=([0-9.Ee+-]+)\s+diff=(.+)$') {
+                throw "tab recovery visual smoke comparison entry was not parseable: $($entry.Key): $($entry.Value)"
+            }
+
+            $comparisonName = $entry.Key.Substring("tab_recovery_comparison_".Length)
+            $differentPixelRatio = Convert-OutputDouble -Value $Matches[1] -Name "$comparisonName tab recovery different_pixel_ratio"
+            $averageChannelDelta = Convert-OutputDouble -Value $Matches[2] -Name "$comparisonName tab recovery average_channel_delta"
+            $diffFile = [System.IO.Path]::GetFullPath($Matches[3])
+            if (-not (Test-Path -LiteralPath $diffFile -PathType Leaf)) {
+                throw "tab recovery visual smoke comparison diff file was missing: $diffFile"
+            }
+            if ((Get-Item -LiteralPath $diffFile).Length -le 0) {
+                throw "tab recovery visual smoke comparison diff file was empty: $diffFile"
+            }
+            if ($differentPixelRatio -le 0 -or $averageChannelDelta -le 0) {
+                throw "tab recovery visual smoke comparison did not record a visible image difference for $comparisonName"
+            }
+
+            $tabRecoveryComparisons += [pscustomobject]@{
+                name = $comparisonName
+                different_pixel_ratio = $differentPixelRatio
+                average_channel_delta = $averageChannelDelta
+                diff_file = $diffFile
+            }
+        }
+
+        $tabRecoveryE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -2148,6 +2308,12 @@ function Convert-VisualSmokeOutput {
         settings_tools_states = @($settingsToolsStates)
         settings_tools_captures = @($settingsToolsCaptures)
         settings_tools_comparisons = @($settingsToolsComparisons)
+        tab_recovery_e2e_verified = $tabRecoveryE2EVerified
+        tab_recovery_input_mode = $tabRecoveryInputMode
+        tab_recovery_keymap_file = $tabRecoveryKeymapFile
+        tab_recovery_states = @($tabRecoveryStates)
+        tab_recovery_captures = @($tabRecoveryCaptures)
+        tab_recovery_comparisons = @($tabRecoveryComparisons)
         baseline = $baseline
     }
 }
@@ -2191,6 +2357,7 @@ function Get-SkippedReleaseChecks {
         $skipped.Add("profile edit visual smoke")
         $skipped.Add("window lifecycle visual smoke")
         $skipped.Add("settings tools visual smoke")
+        $skipped.Add("tab recovery visual smoke")
     } else {
         if ($SkipVisualBaseline) {
             $skipped.Add("default visual baseline")
@@ -2216,6 +2383,7 @@ function Get-SkippedReleaseChecks {
             $skipped.Add("profile edit visual smoke")
             $skipped.Add("window lifecycle visual smoke")
             $skipped.Add("settings tools visual smoke")
+            $skipped.Add("tab recovery visual smoke")
         }
     }
 
@@ -2347,7 +2515,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke, $Summary.settings_tools_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke, $Summary.settings_tools_visual_smoke, $Summary.tab_recovery_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -2429,6 +2597,22 @@ function New-ReleaseReportMarkdown {
                 $lines += "| Settings tools state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
             }
         }
+        if ($visual.tab_recovery_e2e_verified -ne $null) {
+            $lines += "| Tab recovery E2E verified | $(Format-MarkdownValue $visual.tab_recovery_e2e_verified) |"
+            $lines += "| Tab recovery input mode | $(Format-MarkdownValue $visual.tab_recovery_input_mode) |"
+            $lines += "| Tab recovery keymap | $(Format-MarkdownValue $visual.tab_recovery_keymap_file) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Tab recovery states | $(Format-MarkdownValue @($visual.tab_recovery_states).Count) |"
+            $lines += "| Tab recovery captures | $(Format-MarkdownValue @($visual.tab_recovery_captures).Count) |"
+            $lines += "| Tab recovery comparisons | $(Format-MarkdownValue @($visual.tab_recovery_comparisons).Count) |"
+            if ($visual.tab_recovery_states) {
+                $stateSummary = @($visual.tab_recovery_states) | ForEach-Object {
+                    "$($_.name): outer=$($_.outer_pane_count)/tabs=$($_.outer_tab_count)/inner=$($_.inner_pane_count)/palette=$($_.command_palette_open)"
+                }
+                $lines += "| Tab recovery state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -2437,7 +2621,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke -and -not $Summary.settings_tools_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke -and -not $Summary.settings_tools_visual_smoke -and -not $Summary.tab_recovery_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -2478,6 +2662,7 @@ function Write-ReleaseSummary {
             profile_edit_visual_smoke = [bool]$SkipShortcutVisualSmoke
             window_lifecycle_visual_smoke = [bool]$SkipShortcutVisualSmoke
             settings_tools_visual_smoke = [bool]$SkipShortcutVisualSmoke
+            tab_recovery_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
@@ -2507,6 +2692,8 @@ function Write-ReleaseSummary {
         window_lifecycle_visual_smoke = $script:WindowLifecycleVisualSmoke
         settings_tools_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
         settings_tools_visual_smoke = $script:SettingsToolsVisualSmoke
+        tab_recovery_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        tab_recovery_visual_smoke = $script:TabRecoveryVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -4845,6 +5032,24 @@ try {
                 $script:ShortcutVisualSmoke = Convert-VisualSmokeOutput `
                     -Output (($shortcutVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "shortcut" `
+                    -BaselineExpected $false
+            }
+
+            $tabRecoveryVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $tabRecoveryVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifyTabRecovery"
+            )
+            Invoke-Step "visual smoke tab recovery" {
+                $tabRecoveryVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $tabRecoveryVisualSmokeArgs
+                $script:TabRecoveryVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($tabRecoveryVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "tab-recovery" `
                     -BaselineExpected $false
             }
 
