@@ -84,7 +84,6 @@ $profileEditStartupConfigFile = $null
 $profileEditKeymapFile = $null
 $windowLifecycleStartupConfigFile = $null
 $settingsToolsStartupConfigFile = $null
-$settingsToolsKeymapFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -1309,24 +1308,6 @@ function Write-SettingsToolsStartupConfig {
     return $startupConfigFile
 }
 
-function Write-SettingsToolsKeymapConfig {
-    param([Parameter(Mandatory = $true)][string]$ConfigDir)
-
-    $keymapFile = Join-Path $ConfigDir "keymap.json"
-    $keymap = @'
-[
-  {
-    "bindings": {
-      "ctrl-shift-y": "zed_terminal::OpenSettingsToolsPicker"
-    }
-  }
-]
-'@
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($keymapFile, $keymap, $utf8NoBom)
-    return $keymapFile
-}
-
 function Invoke-ZedTerminalProfileEditVerification {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -1384,9 +1365,8 @@ function Invoke-ZedTerminalSettingsToolsVerification {
     )
 
     $VK_CONTROL = [System.UInt16]0x11
-    $VK_SHIFT = [System.UInt16]0x10
     $VK_ESCAPE = [System.UInt16]0x1b
-    $VK_Y = [System.UInt16][byte][char]'Y'
+    $VK_OEM_COMMA = [System.UInt16]0xbc
 
     $captures = New-Object System.Collections.Generic.List[object]
     $comparisons = New-Object System.Collections.Generic.List[object]
@@ -1398,8 +1378,8 @@ function Invoke-ZedTerminalSettingsToolsVerification {
     $captures.Add($initial)
     $inputMode = $null
 
-    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_Y -Keystroke "ctrl-shift-y" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 301 -TimeoutSeconds $TimeoutSeconds
-    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-shift-y-settings-tools" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $true -ExpectedCommandPaletteQuery "settings" -Step 301 -TimeoutSeconds $TimeoutSeconds))
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL)) -Key $VK_OEM_COMMA -Keystroke "ctrl-," -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 301 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-ctrl-comma-settings-tools" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $true -ExpectedCommandPaletteQuery "settings" -Step 301 -TimeoutSeconds $TimeoutSeconds))
     $Window = Assert-SingleVisibleProcessWindow -Process $Process
     $settingsTools = Save-ShortcutScreenshot -Window $Window -Name "settings-tools-01-picker-open" -RunDir $RunDir
     $captures.Add($settingsTools)
@@ -1515,7 +1495,6 @@ if ($VerifySplitPane) {
     $startupConfigFile = $windowLifecycleStartupConfigFile
 } elseif ($VerifySettingsTools) {
     $settingsToolsStartupConfigFile = Write-SettingsToolsStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
-    $settingsToolsKeymapFile = Write-SettingsToolsKeymapConfig -ConfigDir $configDir
     $startupConfigFile = $settingsToolsStartupConfigFile
 }
 
@@ -1792,7 +1771,6 @@ try {
         Write-Output "binary_subsystem_value: $($subsystem.Value)"
         Write-Output "settings_tools_input_mode: $($settingsToolsVerification.InputMode)"
         Write-Output "settings_tools_startup_config_file: $settingsToolsStartupConfigFile"
-        Write-Output "settings_tools_keymap_file: $settingsToolsKeymapFile"
         Write-Output "visible_top_level_windows: 1"
         foreach ($state in $settingsToolsVerification.States) {
             Write-Output "settings_tools_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"

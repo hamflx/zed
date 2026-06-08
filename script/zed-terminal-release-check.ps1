@@ -1924,7 +1924,7 @@ function Convert-VisualSmokeOutput {
         $windowLifecycleE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
     } elseif ($Mode -eq "settings-tools") {
-        foreach ($key in @("settings_tools_e2e_verified", "binary_subsystem", "binary_subsystem_value", "settings_tools_input_mode", "settings_tools_startup_config_file", "settings_tools_keymap_file", "visible_top_level_windows")) {
+        foreach ($key in @("settings_tools_e2e_verified", "binary_subsystem", "binary_subsystem_value", "settings_tools_input_mode", "settings_tools_startup_config_file", "visible_top_level_windows")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "settings tools visual smoke"
         }
         if ($values["settings_tools_e2e_verified"] -ne "True") {
@@ -1948,16 +1948,13 @@ function Convert-VisualSmokeOutput {
         }
 
         $startupConfigFile = [System.IO.Path]::GetFullPath($values["settings_tools_startup_config_file"])
-        $settingsToolsKeymapFile = [System.IO.Path]::GetFullPath($values["settings_tools_keymap_file"])
-        foreach ($file in @($startupConfigFile, $settingsToolsKeymapFile)) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-                throw "settings tools visual smoke referenced a missing file: $file"
-            }
+        if (-not (Test-Path -LiteralPath $startupConfigFile -PathType Leaf)) {
+            throw "settings tools visual smoke referenced a missing file: $startupConfigFile"
         }
 
         $expectedSettingsToolsStates = @(
             [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; Query = "" },
-            [pscustomobject]@{ Name = "01-ctrl-shift-y-settings-tools"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $true; Query = "settings" },
+            [pscustomobject]@{ Name = "01-ctrl-comma-settings-tools"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $true; Query = "settings" },
             [pscustomobject]@{ Name = "02-escape-close-settings-tools"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false; Query = "" }
         )
         foreach ($expectedState in $expectedSettingsToolsStates) {
@@ -2148,7 +2145,6 @@ function Convert-VisualSmokeOutput {
         window_lifecycle_captures = @($windowLifecycleCaptures)
         settings_tools_e2e_verified = $settingsToolsE2EVerified
         settings_tools_input_mode = $settingsToolsInputMode
-        settings_tools_keymap_file = $settingsToolsKeymapFile
         settings_tools_states = @($settingsToolsStates)
         settings_tools_captures = @($settingsToolsCaptures)
         settings_tools_comparisons = @($settingsToolsComparisons)
@@ -2421,7 +2417,6 @@ function New-ReleaseReportMarkdown {
         if ($visual.settings_tools_e2e_verified -ne $null) {
             $lines += "| Settings tools E2E verified | $(Format-MarkdownValue $visual.settings_tools_e2e_verified) |"
             $lines += "| Settings tools input mode | $(Format-MarkdownValue $visual.settings_tools_input_mode) |"
-            $lines += "| Settings tools keymap | $(Format-MarkdownValue $visual.settings_tools_keymap_file) |"
             $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
             $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
             $lines += "| Settings tools states | $(Format-MarkdownValue @($visual.settings_tools_states).Count) |"
@@ -3576,6 +3571,18 @@ try {
             if ($settingsToolsPickerActionDescription.action.name -ne "zed_terminal::OpenSettingsToolsPicker" -or $settingsToolsPickerActionDescription.action.namespace -ne "zed_terminal" -or $settingsToolsPickerActionDescription.action.input -ne "none") {
                 throw "Keymap action description did not report the expected settings tools picker action contract."
             }
+            if (-not ($settingsToolsPickerActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-," -and $null -eq $_.context })) {
+                throw "Keymap action description is missing the Settings Tools ctrl-, default binding."
+            }
+            $settingsFileActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-settings-file" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-action", "zed::OpenSettingsFile",
+                "--describe-keymap-action-format", "json"
+            )
+            if (-not ($settingsFileActionDescription.action.default_bindings | Where-Object { $_.keystrokes -eq "ctrl-alt-," -and $null -eq $_.context })) {
+                throw "Keymap action description is missing the settings file ctrl-alt-, default binding."
+            }
             $settingsSchemaFileActionDescription = Invoke-NativeJsonCommandResult "describe-keymap-action-settings-schema-file" @(
                 "--user-data-dir", $cliDataDir,
                 "--config-dir", $cliConfigDir,
@@ -3673,6 +3680,7 @@ try {
                 $supportToolsPickerActionDescription,
                 $supportBundleManifestFileActionDescription,
                 $settingsToolsPickerActionDescription,
+                $settingsFileActionDescription,
                 $keymapToolsPickerActionDescription,
                 $activeBindingsReportActionDescription,
                 $activeConflictsReportActionDescription,
@@ -3717,10 +3725,30 @@ try {
             if (-not ($pasteBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-shift-V" -and $_.match -eq "exact" -and $_.action -eq "terminal::Paste" -and $_.context -eq "Terminal" })) {
                 throw "Keymap binding description is missing the terminal Paste exact binding."
             }
+            $settingsToolsBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-settings-tools" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-binding", "ctrl-,",
+                "--describe-keymap-binding-format", "json"
+            )
+            if (-not ($settingsToolsBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-," -and $_.match -eq "exact" -and $_.action -eq "zed_terminal::OpenSettingsToolsPicker" -and $null -eq $_.context })) {
+                throw "Keymap binding description is missing the Settings Tools ctrl-, exact binding."
+            }
+            $settingsFileBindingDescription = Invoke-NativeJsonCommandResult "describe-keymap-binding-settings-file" @(
+                "--user-data-dir", $cliDataDir,
+                "--config-dir", $cliConfigDir,
+                "--describe-keymap-binding", "ctrl-alt-,",
+                "--describe-keymap-binding-format", "json"
+            )
+            if (-not ($settingsFileBindingDescription.matches | Where-Object { $_.keystrokes -eq "ctrl-alt-," -and $_.match -eq "exact" -and $_.action -eq "zed::OpenSettingsFile" -and $null -eq $_.context })) {
+                throw "Keymap binding description is missing the settings file ctrl-alt-, exact binding."
+            }
             $keymapBindingDescriptionText = @(
                 $newTabBindingDescription,
                 $profileSlotBindingDescription,
-                $pasteBindingDescription
+                $pasteBindingDescription,
+                $settingsToolsBindingDescription,
+                $settingsFileBindingDescription
             ) | ConvertTo-Json -Depth 20
             if ($keymapBindingDescriptionText -match "do-not-log") {
                 throw "Keymap binding description output unexpectedly contained release fixture content."
@@ -3736,6 +3764,8 @@ try {
                 '"ctrl-shift-1": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 1 \}\]',
                 '"ctrl-shift-9": \["zed_terminal::NewTerminalTabWithProfileSlot", \{ "slot": 9 \}\]',
                 '"ctrl-shift-p": "command_palette::Toggle"',
+                '"ctrl-,": "zed_terminal::OpenSettingsToolsPicker"',
+                '"ctrl-alt-,": "zed::OpenSettingsFile"',
                 '"alt-shift-d": "zed_terminal::DuplicateTerminalSplitAuto"',
                 '"alt-shift-plus": "zed_terminal::DuplicateTerminalSplitRight"',
                 '"alt-shift-minus": "zed_terminal::DuplicateTerminalSplitDown"',
@@ -3843,6 +3873,14 @@ try {
             $activeProfileSlotListEntry = @($activeKeymapBindings.bindings) | Where-Object { $_.keystrokes -eq "ctrl-shift-1" } | Select-Object -First 1
             if (-not $activeProfileSlotListEntry -or -not (@($activeProfileSlotListEntry.matches) | Where-Object { $_.source -eq "Default" -and $_.action -eq "zed_terminal::NewTerminalTabWithProfileSlot" -and $null -eq $_.context -and $_.input -eq '{"slot":1}' })) {
                 throw "Active keymap binding list is missing the bundled profile slot binding."
+            }
+            $activeSettingsToolsListEntry = @($activeKeymapBindings.bindings) | Where-Object { $_.keystrokes -eq "ctrl-," } | Select-Object -First 1
+            if (-not $activeSettingsToolsListEntry -or -not (@($activeSettingsToolsListEntry.matches) | Where-Object { $_.source -eq "Default" -and $_.action -eq "zed_terminal::OpenSettingsToolsPicker" -and $null -eq $_.context })) {
+                throw "Active keymap binding list is missing the bundled Settings Tools binding."
+            }
+            $activeSettingsFileListEntry = @($activeKeymapBindings.bindings) | Where-Object { $_.keystrokes -eq "ctrl-alt-," } | Select-Object -First 1
+            if (-not $activeSettingsFileListEntry -or -not (@($activeSettingsFileListEntry.matches) | Where-Object { $_.source -eq "Default" -and $_.action -eq "zed::OpenSettingsFile" -and $null -eq $_.context })) {
+                throw "Active keymap binding list is missing the bundled settings file binding."
             }
             $activeKeymapBindingsText = $activeKeymapBindings | ConvertTo-Json -Depth 20
             if ($activeKeymapBindingsText -match "do-not-log-keymap") {

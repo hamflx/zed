@@ -39,7 +39,8 @@
       "alt-_": "zed_terminal::DuplicateTerminalSplitDown",
       "alt-shift-minus": "zed_terminal::DuplicateTerminalSplitDown",
       "shift-escape": "workspace::ToggleZoom",
-      "ctrl-,": "zed::OpenSettingsFile",
+      "ctrl-,": "zed_terminal::OpenSettingsToolsPicker",
+      "ctrl-alt-,": "zed::OpenSettingsFile",
     },
   },
   {

@@ -33550,6 +33550,13 @@ mod tests {
         )
         .expect("terminal keymap asset should parse as json");
 
+        assert_key_binding(
+            &keymap,
+            None,
+            "ctrl-,",
+            "zed_terminal::OpenSettingsToolsPicker",
+        );
+        assert_key_binding(&keymap, None, "ctrl-alt-,", "zed::OpenSettingsFile");
         assert_key_binding(&keymap, None, "ctrl-shift-p", "command_palette::Toggle");
         assert_key_binding(&keymap, None, "f1", "command_palette::Toggle");
         assert_key_binding(&keymap, Some("CommandPalette"), "escape", "menu::Cancel");
@@ -40787,6 +40794,26 @@ mod tests {
                 })
         );
 
+        let settings_tools_report =
+            terminal_keymap_action_description_report(cx, "zed_terminal::OpenSettingsToolsPicker")
+                .expect("settings tools action description should build");
+        assert!(
+            settings_tools_report.actions[0]
+                .default_bindings
+                .iter()
+                .any(|binding| binding.keystrokes == "ctrl-," && binding.context.is_none())
+        );
+
+        let settings_file_report =
+            terminal_keymap_action_description_report(cx, "zed::OpenSettingsFile")
+                .expect("settings file action description should build");
+        assert!(
+            settings_file_report.actions[0]
+                .default_bindings
+                .iter()
+                .any(|binding| binding.keystrokes == "ctrl-alt-," && binding.context.is_none())
+        );
+
         let error = terminal_keymap_action_description_report(cx, "zed_terminal::MissingAction")
             .expect_err("unknown action should be rejected");
         assert!(format!("{error:#}").contains("unknown keymap action"));
@@ -40855,6 +40882,27 @@ mod tests {
                 && binding_match.action == "zed_terminal::NewTerminalTabWithProfileSlot"
                 && binding_match.context.is_none()
                 && binding_match.input.as_deref() == Some("{\"slot\":1}")
+        }));
+
+        let settings_tools_report = terminal_keymap_binding_description_report(cx, "ctrl-,")
+            .expect("settings tools keymap binding description should build");
+        assert_eq!(settings_tools_report.keystrokes, "ctrl-,");
+        assert!(settings_tools_report.matches.iter().any(|binding_match| {
+            binding_match.match_kind == TerminalKeymapBindingMatchKind::Exact
+                && binding_match.keystrokes == "ctrl-,"
+                && binding_match.action == "zed_terminal::OpenSettingsToolsPicker"
+                && binding_match.context.is_none()
+        }));
+
+        let settings_file_report = terminal_keymap_binding_description_report(cx, "ctrl-alt-,")
+            .expect("settings file keymap binding description should build");
+        assert_eq!(settings_file_report.keystrokes, "ctrl-alt-,");
+        assert_eq!(settings_file_report.parsed_keystrokes, vec!["ctrl-alt-,"]);
+        assert!(settings_file_report.matches.iter().any(|binding_match| {
+            binding_match.match_kind == TerminalKeymapBindingMatchKind::Exact
+                && binding_match.keystrokes == "ctrl-alt-,"
+                && binding_match.action == "zed::OpenSettingsFile"
+                && binding_match.context.is_none()
         }));
 
         let missing_report = terminal_keymap_binding_description_report(cx, "ctrl-alt-shift-f12")
