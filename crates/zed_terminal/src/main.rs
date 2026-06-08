@@ -48,7 +48,7 @@ use task::{
     HideStrategy, RevealStrategy, RevealTarget, SaveStrategy, Shell, SpawnInTerminal, TaskId,
 };
 use terminal::Terminal;
-use terminal_tab::TerminalTab;
+use terminal_tab::{TerminalTab, TerminalTabLayoutSnapshot, TerminalTabSnapshot};
 use terminal_view::default_working_directory;
 use theme::{ActiveTheme, ThemeRegistry};
 use theme_settings::{ThemeSettings, load_user_theme};
@@ -3727,6 +3727,7 @@ struct LaunchOptions {
     initial_tab: LaunchTab,
     additional_tabs: Vec<LaunchTab>,
     new_terminal_tab: LaunchTab,
+    allow_session_restore: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -3765,6 +3766,84 @@ struct TerminalWindowState {
     version: u64,
     saved_at_unix_seconds: u64,
     window: TerminalSavedWindow,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct TerminalSavedSession {
+    format: String,
+    version: u64,
+    saved_at_unix_seconds: u64,
+    window_count: u64,
+    tab_count: u64,
+    pane_count: u64,
+    active_window_index: usize,
+    buffer_restore_enabled: bool,
+    contains_buffer_contents: bool,
+    windows: Vec<TerminalSavedSessionWindow>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct TerminalSavedSessionWindow {
+    active_tab_index: usize,
+    tabs: Vec<TerminalSavedSessionTab>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct TerminalSavedSessionTab {
+    active_pane_index: usize,
+    panes: Vec<TerminalSavedSessionPane>,
+    layout: TerminalSavedSessionLayout,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct TerminalSavedSessionPane {
+    working_directory: Option<PathBuf>,
+    title: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSessionRestorePlan {
+    initial_tab: LaunchTab,
+    additional_tabs: Vec<LaunchTab>,
+    active_tab_index: usize,
+    active_pane_indices: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TerminalSavedSessionLayout {
+    Pane {
+        pane_index: usize,
+    },
+    Axis {
+        axis: TerminalSavedSessionAxis,
+        members: Vec<TerminalSavedSessionLayout>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TerminalSavedSessionAxis {
+    Horizontal,
+    Vertical,
+}
+
+impl From<Axis> for TerminalSavedSessionAxis {
+    fn from(axis: Axis) -> Self {
+        match axis {
+            Axis::Horizontal => Self::Horizontal,
+            Axis::Vertical => Self::Vertical,
+        }
+    }
+}
+
+impl TerminalSavedSessionAxis {
+    fn default_split_direction(self) -> TerminalStartupSplitDirection {
+        match self {
+            Self::Horizontal => TerminalStartupSplitDirection::Right,
+            Self::Vertical => TerminalStartupSplitDirection::Down,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -9781,6 +9860,7 @@ impl LaunchOptions {
         startup_config: TerminalStartupConfig,
         path_options: TerminalPathOptions,
     ) -> Result<Self> {
+        let allow_session_restore = cli.allows_automatic_session_restore();
         let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
@@ -9841,6 +9921,7 @@ impl LaunchOptions {
             initial_tab,
             additional_tabs,
             new_terminal_tab,
+            allow_session_restore,
         })
     }
 
@@ -9869,6 +9950,7 @@ impl LaunchOptions {
             initial_tab: initial_tab.clone(),
             additional_tabs: Vec::new(),
             new_terminal_tab: initial_tab,
+            allow_session_restore: false,
         }
     }
 
@@ -9887,7 +9969,27 @@ impl LaunchOptions {
             initial_tab: initial_tab.clone(),
             additional_tabs: Vec::new(),
             new_terminal_tab: initial_tab,
+            allow_session_restore: false,
         })
+    }
+}
+
+impl Cli {
+    fn allows_automatic_session_restore(&self) -> bool {
+        self.profile.is_none()
+            && !self.no_startup_config
+            && self.working_directory.is_none()
+            && self.directory.is_none()
+            && self.title.is_none()
+            && self.command.is_empty()
+            && self.new_tabs.is_empty()
+            && self.new_tab_titles.is_empty()
+            && self.new_tab_profiles.is_empty()
+            && self.new_tab_profile_titles.is_empty()
+            && self.new_tab_profile_splits.is_empty()
+            && self.new_tab_commands.is_empty()
+            && self.new_tab_command_directories.is_empty()
+            && self.new_tab_command_titles.is_empty()
     }
 }
 
@@ -12365,6 +12467,385 @@ fn clear_terminal_session(data_dir: &Path) -> Result<TerminalSessionClear> {
         removed_buffer_file_count,
         removed_buffer_byte_count,
     })
+}
+
+fn load_terminal_saved_session(data_dir: &Path) -> Result<Option<TerminalSavedSession>> {
+    let session_file = terminal_session_file(data_dir);
+    let content = match std_fs::read_to_string(&session_file) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("failed to read saved session {}", session_file.display())
+            });
+        }
+    };
+    let session: TerminalSavedSession = serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse saved session {}", session_file.display()))?;
+    validate_terminal_saved_session(&session)?;
+    Ok(Some(session))
+}
+
+fn format_terminal_saved_session_json(session: &TerminalSavedSession) -> Result<String> {
+    validate_terminal_saved_session(session)?;
+    let mut output = serde_json::to_string_pretty(session)
+        .context("failed to serialize terminal saved session as json")?;
+    output.push('\n');
+    Ok(output)
+}
+
+fn validate_terminal_saved_session(session: &TerminalSavedSession) -> Result<()> {
+    if session.format != TERMINAL_SESSION_FORMAT {
+        bail!(
+            "unsupported terminal session format {:?}; expected {:?}",
+            session.format,
+            TERMINAL_SESSION_FORMAT
+        );
+    }
+    if session.version != TERMINAL_SESSION_VERSION {
+        bail!(
+            "unsupported terminal session version {}; expected {}",
+            session.version,
+            TERMINAL_SESSION_VERSION
+        );
+    }
+    if session.buffer_restore_enabled || session.contains_buffer_contents {
+        bail!("terminal session v1 restores layout metadata only");
+    }
+    if session.windows.len() != session.window_count as usize {
+        bail!(
+            "terminal session window count mismatch: header={} windows={}",
+            session.window_count,
+            session.windows.len()
+        );
+    }
+    if session.windows.is_empty() {
+        bail!("terminal session must contain at least one window");
+    }
+    if session.active_window_index >= session.windows.len() {
+        bail!(
+            "terminal session active window index {} is out of range for {} windows",
+            session.active_window_index,
+            session.windows.len()
+        );
+    }
+
+    let actual_tab_count = session
+        .windows
+        .iter()
+        .map(|window| window.tabs.len())
+        .sum::<usize>();
+    let actual_pane_count = session
+        .windows
+        .iter()
+        .flat_map(|window| window.tabs.iter())
+        .map(|tab| tab.panes.len())
+        .sum::<usize>();
+    if session.tab_count as usize != actual_tab_count {
+        bail!(
+            "terminal session tab count mismatch: header={} tabs={}",
+            session.tab_count,
+            actual_tab_count
+        );
+    }
+    if session.pane_count as usize != actual_pane_count {
+        bail!(
+            "terminal session pane count mismatch: header={} panes={}",
+            session.pane_count,
+            actual_pane_count
+        );
+    }
+
+    for (window_index, window) in session.windows.iter().enumerate() {
+        if window.tabs.is_empty() {
+            bail!("terminal session window {window_index} has no tabs");
+        }
+        if window.active_tab_index >= window.tabs.len() {
+            bail!(
+                "terminal session window {window_index} active tab index {} is out of range for {} tabs",
+                window.active_tab_index,
+                window.tabs.len()
+            );
+        }
+        for (tab_index, tab) in window.tabs.iter().enumerate() {
+            if tab.panes.is_empty() {
+                bail!("terminal session window {window_index} tab {tab_index} has no panes");
+            }
+            if tab.active_pane_index >= tab.panes.len() {
+                bail!(
+                    "terminal session window {window_index} tab {tab_index} active pane index {} is out of range for {} panes",
+                    tab.active_pane_index,
+                    tab.panes.len()
+                );
+            }
+            let mut layout_pane_indices = Vec::new();
+            validate_terminal_saved_session_layout(
+                &tab.layout,
+                tab.panes.len(),
+                &format!("window {window_index} tab {tab_index}"),
+                &mut layout_pane_indices,
+            )?;
+            layout_pane_indices.sort_unstable();
+            let expected_pane_indices = (0..tab.panes.len()).collect::<Vec<_>>();
+            if layout_pane_indices != expected_pane_indices {
+                bail!(
+                    "terminal session window {window_index} tab {tab_index} layout pane indices do not match pane list"
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_terminal_saved_session_layout(
+    layout: &TerminalSavedSessionLayout,
+    pane_count: usize,
+    label: &str,
+    pane_indices: &mut Vec<usize>,
+) -> Result<()> {
+    match layout {
+        TerminalSavedSessionLayout::Pane { pane_index } => {
+            if *pane_index >= pane_count {
+                bail!(
+                    "terminal session {label} layout pane index {pane_index} is out of range for {pane_count} panes"
+                );
+            }
+            pane_indices.push(*pane_index);
+        }
+        TerminalSavedSessionLayout::Axis { members, .. } => {
+            if members.len() < 2 {
+                bail!("terminal session {label} axis layout must contain at least two members");
+            }
+            for member in members {
+                validate_terminal_saved_session_layout(member, pane_count, label, pane_indices)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_terminal_saved_session_file(
+    path: PathBuf,
+    session: TerminalSavedSession,
+    fs: Arc<dyn fs::Fs>,
+    executor: BackgroundExecutor,
+) -> Task<Result<()>> {
+    let content = match format_terminal_saved_session_json(&session) {
+        Ok(content) => content,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    executor.spawn(async move {
+        if let Some(parent) = path.parent() {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create terminal session directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs.atomic_write(path.clone(), content)
+            .await
+            .with_context(|| format!("failed to write terminal session {}", path.display()))
+    })
+}
+
+fn write_terminal_saved_session_file_std(
+    path: PathBuf,
+    session: TerminalSavedSession,
+    executor: BackgroundExecutor,
+) -> Task<Result<()>> {
+    let content = match format_terminal_saved_session_json(&session) {
+        Ok(content) => content,
+        Err(error) => return Task::ready(Err(error)),
+    };
+    executor.spawn(async move {
+        if let Some(parent) = path.parent() {
+            std_fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create terminal session directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let temporary_path = path.with_extension(format!(
+            "json.tmp-{}-{}",
+            process::id(),
+            terminal_unix_timestamp_nanos()
+        ));
+        std_fs::write(&temporary_path, content).with_context(|| {
+            format!(
+                "failed to write temporary terminal session {}",
+                temporary_path.display()
+            )
+        })?;
+        std_fs::rename(&temporary_path, &path).with_context(|| {
+            format!(
+                "failed to replace terminal session {} with {}",
+                path.display(),
+                temporary_path.display()
+            )
+        })?;
+        Ok(())
+    })
+}
+
+fn save_terminal_session_snapshot(workspace: &Workspace, cx: &mut App) {
+    let Some(session) = terminal_saved_session_from_workspace(workspace, cx) else {
+        return;
+    };
+    write_terminal_saved_session_file_std(
+        active_terminal_session_file(),
+        session,
+        cx.background_executor().clone(),
+    )
+    .detach_and_log_err(cx);
+}
+
+fn terminal_saved_session_from_workspace(
+    workspace: &Workspace,
+    cx: &App,
+) -> Option<TerminalSavedSession> {
+    let active_pane = workspace.active_pane().read(cx);
+    let mut tabs = Vec::new();
+    let mut active_tab_index = active_pane.active_item_index();
+    for item in active_pane.items() {
+        let Ok(terminal_tab) = item.to_any_view().downcast::<TerminalTab>() else {
+            continue;
+        };
+        let Some(snapshot) = terminal_tab.read(cx).snapshot(cx) else {
+            continue;
+        };
+        tabs.push(terminal_saved_session_tab_from_snapshot(snapshot));
+    }
+
+    if tabs.is_empty() {
+        return None;
+    }
+    if active_tab_index >= tabs.len() {
+        active_tab_index = 0;
+    }
+    let pane_count = tabs.iter().map(|tab| tab.panes.len()).sum::<usize>();
+    let session = TerminalSavedSession {
+        format: TERMINAL_SESSION_FORMAT.into(),
+        version: TERMINAL_SESSION_VERSION,
+        saved_at_unix_seconds: terminal_unix_timestamp_seconds(),
+        window_count: 1,
+        tab_count: tabs.len() as u64,
+        pane_count: pane_count as u64,
+        active_window_index: 0,
+        buffer_restore_enabled: false,
+        contains_buffer_contents: false,
+        windows: vec![TerminalSavedSessionWindow {
+            active_tab_index,
+            tabs,
+        }],
+    };
+    validate_terminal_saved_session(&session).ok()?;
+    Some(session)
+}
+
+fn terminal_saved_session_tab_from_snapshot(
+    snapshot: TerminalTabSnapshot,
+) -> TerminalSavedSessionTab {
+    TerminalSavedSessionTab {
+        active_pane_index: snapshot.active_pane_index,
+        panes: snapshot
+            .panes
+            .into_iter()
+            .map(|pane| TerminalSavedSessionPane {
+                working_directory: pane.working_directory,
+                title: pane.custom_title,
+            })
+            .collect(),
+        layout: terminal_saved_session_layout_from_snapshot(snapshot.layout),
+    }
+}
+
+fn terminal_saved_session_layout_from_snapshot(
+    snapshot: TerminalTabLayoutSnapshot,
+) -> TerminalSavedSessionLayout {
+    match snapshot {
+        TerminalTabLayoutSnapshot::Pane(pane_index) => {
+            TerminalSavedSessionLayout::Pane { pane_index }
+        }
+        TerminalTabLayoutSnapshot::Axis { axis, members } => TerminalSavedSessionLayout::Axis {
+            axis: axis.into(),
+            members: members
+                .into_iter()
+                .map(terminal_saved_session_layout_from_snapshot)
+                .collect(),
+        },
+    }
+}
+
+fn launch_tabs_from_saved_session(
+    session: &TerminalSavedSession,
+) -> Option<TerminalSessionRestorePlan> {
+    if validate_terminal_saved_session(session).is_err() {
+        return None;
+    }
+    let window = session.windows.get(session.active_window_index)?;
+    let mut tabs = Vec::new();
+    let mut active_pane_indices = Vec::new();
+    for tab in &window.tabs {
+        append_launch_tabs_from_saved_session_tab(tab, &mut tabs);
+        active_pane_indices.push(tab.active_pane_index);
+    }
+    let initial_tab = tabs.first()?.clone();
+    let additional_tabs = tabs.into_iter().skip(1).collect();
+    Some(TerminalSessionRestorePlan {
+        initial_tab,
+        additional_tabs,
+        active_tab_index: window.active_tab_index,
+        active_pane_indices,
+    })
+}
+
+fn append_launch_tabs_from_saved_session_tab(
+    tab: &TerminalSavedSessionTab,
+    launch_tabs: &mut Vec<LaunchTab>,
+) {
+    let mut tab_launch_tabs = Vec::new();
+    append_launch_tabs_from_saved_session_layout(&tab.layout, tab, None, &mut tab_launch_tabs);
+    launch_tabs.extend(tab_launch_tabs);
+}
+
+fn append_launch_tabs_from_saved_session_layout(
+    layout: &TerminalSavedSessionLayout,
+    tab: &TerminalSavedSessionTab,
+    split: Option<TerminalStartupSplitDirection>,
+    launch_tabs: &mut Vec<LaunchTab>,
+) {
+    match layout {
+        TerminalSavedSessionLayout::Pane { pane_index } => {
+            if let Some(pane) = tab.panes.get(*pane_index) {
+                launch_tabs.push(LaunchTab {
+                    working_directory: pane.working_directory.clone(),
+                    command: None,
+                    env: HashMap::default(),
+                    title: pane.title.clone(),
+                    shell: None,
+                    split,
+                });
+            }
+        }
+        TerminalSavedSessionLayout::Axis { axis, members } => {
+            for (index, member) in members.iter().enumerate() {
+                let member_split = if launch_tabs.is_empty() && index == 0 {
+                    split
+                } else {
+                    Some(axis.default_split_direction())
+                };
+                append_launch_tabs_from_saved_session_layout(
+                    member,
+                    tab,
+                    member_split,
+                    launch_tabs,
+                );
+            }
+        }
+    }
 }
 
 fn directory_file_summary(dir: &Path) -> Result<(usize, u64)> {
@@ -27371,6 +27852,10 @@ fn terminal_session_file(data_dir: &Path) -> PathBuf {
     terminal_session_dir(data_dir).join(TERMINAL_SESSION_FILE)
 }
 
+fn active_terminal_session_file() -> PathBuf {
+    terminal_session_file(paths::data_dir())
+}
+
 fn terminal_session_buffers_dir(data_dir: &Path) -> PathBuf {
     terminal_session_dir(data_dir).join(TERMINAL_SESSION_BUFFERS_DIR)
 }
@@ -27449,6 +27934,13 @@ fn terminal_unix_timestamp_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn terminal_unix_timestamp_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn active_terminal_config_bundle_backup_file() -> PathBuf {
@@ -29137,9 +29629,12 @@ struct TerminalWindowRoot {
     workspace: Entity<Workspace>,
     fs: Arc<dyn fs::Fs>,
     window_state_file: PathBuf,
+    session_file: PathBuf,
     latest_window_state: Option<TerminalWindowState>,
+    latest_session: Option<TerminalSavedSession>,
     window_state_save_task_queued: Option<Task<()>>,
     window_state_save_disabled: bool,
+    session_save_disabled: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -29148,6 +29643,7 @@ impl TerminalWindowRoot {
         workspace: Entity<Workspace>,
         fs: Arc<dyn fs::Fs>,
         window_state_file: PathBuf,
+        session_file: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -29157,15 +29653,21 @@ impl TerminalWindowRoot {
             }),
             cx.on_release_in(window, |root, window, cx| {
                 root.capture_window_state(window, cx);
+                root.capture_session(cx);
                 root.window_state_save_task_queued.take();
                 root.write_latest_window_state(cx).detach_and_log_err(cx);
+                root.write_latest_session(cx).detach_and_log_err(cx);
             }),
             cx.on_app_quit(|root, cx| {
                 root.window_state_save_task_queued.take();
                 let task = root.write_latest_window_state(cx);
+                let session_task = root.write_latest_session(cx);
                 async move {
                     if let Err(error) = task.await {
                         log::warn!("failed to save terminal window state on quit: {error:#}");
+                    }
+                    if let Err(error) = session_task.await {
+                        log::warn!("failed to save terminal session on quit: {error:#}");
                     }
                 }
             }),
@@ -29175,12 +29677,16 @@ impl TerminalWindowRoot {
             workspace,
             fs,
             window_state_file,
+            session_file,
             latest_window_state: None,
+            latest_session: None,
             window_state_save_task_queued: None,
             window_state_save_disabled: false,
+            session_save_disabled: false,
             _subscriptions,
         };
         root.capture_window_state(window, cx);
+        root.capture_session(cx);
         root
     }
 
@@ -29189,6 +29695,15 @@ impl TerminalWindowRoot {
             return;
         }
         self.latest_window_state = Some(terminal_window_state_from_window(window, cx));
+    }
+
+    fn capture_session(&mut self, cx: &App) {
+        if self.session_save_disabled {
+            return;
+        }
+        self.latest_session = self.workspace.read_with(cx, |workspace, cx| {
+            terminal_saved_session_from_workspace(workspace, cx)
+        });
     }
 
     fn queue_window_state_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -29222,6 +29737,21 @@ impl TerminalWindowRoot {
         write_terminal_window_state_file(
             self.window_state_file.clone(),
             state,
+            self.fs.clone(),
+            cx.background_executor().clone(),
+        )
+    }
+
+    fn write_latest_session(&self, cx: &mut App) -> Task<Result<()>> {
+        if self.session_save_disabled {
+            return Task::ready(Ok(()));
+        }
+        let Some(session) = self.latest_session.clone() else {
+            return Task::ready(Ok(()));
+        };
+        write_terminal_saved_session_file(
+            self.session_file.clone(),
+            session,
             self.fs.clone(),
             cx.background_executor().clone(),
         )
@@ -29608,6 +30138,28 @@ fn activate_last_terminal_tab(
     });
 }
 
+fn activate_restored_terminal_session(
+    workspace: &mut Workspace,
+    active_tab_index: usize,
+    active_pane_indices: &[usize],
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.active_pane().clone();
+    pane.update(cx, |pane, cx| {
+        pane.activate_item(active_tab_index, true, false, window, cx);
+    });
+    if let Some(terminal_tab) = workspace.active_item_as::<TerminalTab>(cx) {
+        let active_pane_index = active_pane_indices
+            .get(active_tab_index)
+            .copied()
+            .unwrap_or(0);
+        terminal_tab.update(cx, |terminal_tab, cx| {
+            terminal_tab.focus_pane_index(active_pane_index, window, cx);
+        });
+    }
+}
+
 fn close_terminal_tab(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     record_active_terminal_tab_for_reopen(workspace, cx);
 
@@ -29860,8 +30412,34 @@ fn open_terminal_window(
     let new_terminal_split_down = new_terminal_tab.clone();
     let new_terminal_split_left = new_terminal_tab.clone();
     let new_terminal_split_up = new_terminal_tab.clone();
-    let initial_tab = launch_options.initial_tab;
-    let additional_tabs = launch_options.additional_tabs;
+    let restore_plan = if launch_options.allow_session_restore {
+        match load_terminal_saved_session(&launch_options.path_options.data_dir) {
+            Ok(Some(session)) => launch_tabs_from_saved_session(&session),
+            Ok(None) => None,
+            Err(error) => {
+                log::warn!("failed to load saved terminal session: {error:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let (initial_tab, additional_tabs, restored_active_tab_index, restored_active_pane_indices) =
+        if let Some(restore_plan) = restore_plan {
+            (
+                restore_plan.initial_tab,
+                restore_plan.additional_tabs,
+                Some(restore_plan.active_tab_index),
+                Some(restore_plan.active_pane_indices),
+            )
+        } else {
+            (
+                launch_options.initial_tab,
+                launch_options.additional_tabs,
+                None,
+                None,
+            )
+        };
     let window_options = zed_terminal_window_options(None, cx);
 
     cx.open_window(
@@ -30529,6 +31107,7 @@ fn open_terminal_window(
             });
             let window_handle = window.window_handle();
             let window_state_file = active_terminal_window_state_file();
+            let session_file = active_terminal_session_file();
             install_terminal_shortcut_smoke_driver(window_handle, workspace.downgrade(), cx);
             cx.subscribe(
                 &workspace,
@@ -30550,8 +31129,25 @@ fn open_terminal_window(
 
             let initial_tab = initial_tab.clone();
             let additional_tabs = additional_tabs.clone();
+            let restored_active_pane_indices = restored_active_pane_indices.clone();
             workspace.update(cx, |_workspace, cx| {
-                add_launch_tabs(window, cx, initial_tab, additional_tabs).detach_and_log_err(cx);
+                let add_tabs = add_launch_tabs(window, cx, initial_tab, additional_tabs);
+                cx.spawn_in(window, async move |workspace, cx| {
+                    add_tabs.await?;
+                    if let Some(active_tab_index) = restored_active_tab_index {
+                        workspace.update_in(cx, |workspace, window, cx| {
+                            activate_restored_terminal_session(
+                                workspace,
+                                active_tab_index,
+                                restored_active_pane_indices.as_deref().unwrap_or(&[]),
+                                window,
+                                cx,
+                            );
+                        })?;
+                    }
+                    anyhow::Ok(())
+                })
+                .detach_and_log_err(cx);
             });
 
             window.defer(cx, set_terminal_window_title);
@@ -30560,6 +31156,7 @@ fn open_terminal_window(
                     workspace,
                     app_state.fs.clone(),
                     window_state_file,
+                    session_file,
                     window,
                     cx,
                 )
@@ -30751,6 +31348,7 @@ fn add_terminal_tab_with_custom_title(
                 )
             });
             workspace.add_item_to_active_pane(Box::new(terminal_tab), None, true, window, cx);
+            save_terminal_session_snapshot(workspace, cx);
         })?;
         Ok(terminal.downgrade())
     })
@@ -30802,6 +31400,7 @@ fn add_terminal_split_with_custom_title(
                 });
                 workspace.add_item_to_active_pane(Box::new(terminal_tab), None, true, window, cx);
             }
+            save_terminal_session_snapshot(workspace, cx);
         })?;
         Ok(terminal.downgrade())
     })
@@ -42058,6 +42657,240 @@ mod tests {
         assert_eq!(json["removed_session_file"], true);
         assert_eq!(json["removed_buffers_dir"], true);
         assert!(output.ends_with('\n'));
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn saved_session_json_is_layout_metadata_only() {
+        let root_dir = temp_test_dir();
+        let session = TerminalSavedSession {
+            format: TERMINAL_SESSION_FORMAT.into(),
+            version: TERMINAL_SESSION_VERSION,
+            saved_at_unix_seconds: 42,
+            window_count: 1,
+            tab_count: 2,
+            pane_count: 3,
+            active_window_index: 0,
+            buffer_restore_enabled: false,
+            contains_buffer_contents: false,
+            windows: vec![TerminalSavedSessionWindow {
+                active_tab_index: 1,
+                tabs: vec![
+                    TerminalSavedSessionTab {
+                        active_pane_index: 0,
+                        panes: vec![TerminalSavedSessionPane {
+                            working_directory: Some(root_dir.clone()),
+                            title: Some("shell".into()),
+                        }],
+                        layout: TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                    },
+                    TerminalSavedSessionTab {
+                        active_pane_index: 1,
+                        panes: vec![
+                            TerminalSavedSessionPane {
+                                working_directory: Some(root_dir.join("left")),
+                                title: Some("left".into()),
+                            },
+                            TerminalSavedSessionPane {
+                                working_directory: Some(root_dir.join("right")),
+                                title: Some("right".into()),
+                            },
+                        ],
+                        layout: TerminalSavedSessionLayout::Axis {
+                            axis: TerminalSavedSessionAxis::Horizontal,
+                            members: vec![
+                                TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                                TerminalSavedSessionLayout::Pane { pane_index: 1 },
+                            ],
+                        },
+                    },
+                ],
+            }],
+        };
+
+        let output =
+            format_terminal_saved_session_json(&session).expect("session json should format");
+        assert!(output.contains("\"format\": \"zed-terminal-session\""));
+        assert!(output.contains("\"contains_buffer_contents\": false"));
+        assert!(!output.contains("buffer text"));
+
+        std_fs::create_dir_all(terminal_session_dir(&root_dir))
+            .expect("failed to create session dir");
+        std_fs::write(terminal_session_file(&root_dir), output)
+            .expect("failed to write session file");
+        let loaded = load_terminal_saved_session(&root_dir)
+            .expect("session should load")
+            .expect("session should exist");
+        assert_eq!(loaded, session);
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn saved_session_restore_plan_preserves_tabs_panes_and_focus_indexes() {
+        let root_dir = temp_test_dir();
+        let session = TerminalSavedSession {
+            format: TERMINAL_SESSION_FORMAT.into(),
+            version: TERMINAL_SESSION_VERSION,
+            saved_at_unix_seconds: 42,
+            window_count: 1,
+            tab_count: 2,
+            pane_count: 3,
+            active_window_index: 0,
+            buffer_restore_enabled: false,
+            contains_buffer_contents: false,
+            windows: vec![TerminalSavedSessionWindow {
+                active_tab_index: 1,
+                tabs: vec![
+                    TerminalSavedSessionTab {
+                        active_pane_index: 0,
+                        panes: vec![TerminalSavedSessionPane {
+                            working_directory: Some(root_dir.join("one")),
+                            title: Some("one".into()),
+                        }],
+                        layout: TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                    },
+                    TerminalSavedSessionTab {
+                        active_pane_index: 1,
+                        panes: vec![
+                            TerminalSavedSessionPane {
+                                working_directory: Some(root_dir.join("two-a")),
+                                title: Some("two-a".into()),
+                            },
+                            TerminalSavedSessionPane {
+                                working_directory: Some(root_dir.join("two-b")),
+                                title: Some("two-b".into()),
+                            },
+                        ],
+                        layout: TerminalSavedSessionLayout::Axis {
+                            axis: TerminalSavedSessionAxis::Vertical,
+                            members: vec![
+                                TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                                TerminalSavedSessionLayout::Pane { pane_index: 1 },
+                            ],
+                        },
+                    },
+                ],
+            }],
+        };
+
+        let plan = launch_tabs_from_saved_session(&session).expect("restore plan should build");
+        assert_eq!(plan.active_tab_index, 1);
+        assert_eq!(plan.active_pane_indices, vec![0, 1]);
+        assert_eq!(plan.initial_tab.title.as_deref(), Some("one"));
+        assert_eq!(plan.initial_tab.split, None);
+        assert_eq!(plan.additional_tabs.len(), 2);
+        assert_eq!(plan.additional_tabs[0].title.as_deref(), Some("two-a"));
+        assert_eq!(plan.additional_tabs[0].split, None);
+        assert_eq!(plan.additional_tabs[1].title.as_deref(), Some("two-b"));
+        assert_eq!(
+            plan.additional_tabs[1].split,
+            Some(TerminalStartupSplitDirection::Down)
+        );
+        assert!(
+            plan.additional_tabs
+                .iter()
+                .all(|tab| tab.command.is_none() && tab.shell.is_none())
+        );
+
+        std_fs::remove_dir_all(root_dir).ok();
+    }
+
+    #[test]
+    fn rejects_saved_session_with_buffer_contents() {
+        let session = TerminalSavedSession {
+            format: TERMINAL_SESSION_FORMAT.into(),
+            version: TERMINAL_SESSION_VERSION,
+            saved_at_unix_seconds: 42,
+            window_count: 1,
+            tab_count: 1,
+            pane_count: 1,
+            active_window_index: 0,
+            buffer_restore_enabled: false,
+            contains_buffer_contents: true,
+            windows: vec![TerminalSavedSessionWindow {
+                active_tab_index: 0,
+                tabs: vec![TerminalSavedSessionTab {
+                    active_pane_index: 0,
+                    panes: vec![TerminalSavedSessionPane {
+                        working_directory: None,
+                        title: None,
+                    }],
+                    layout: TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                }],
+            }],
+        };
+
+        let error = validate_terminal_saved_session(&session)
+            .expect_err("buffer contents should be rejected in v1");
+        assert!(format!("{error:#}").contains("layout metadata only"));
+    }
+
+    #[test]
+    fn rejects_saved_session_layout_that_does_not_cover_each_pane_once() {
+        let session = TerminalSavedSession {
+            format: TERMINAL_SESSION_FORMAT.into(),
+            version: TERMINAL_SESSION_VERSION,
+            saved_at_unix_seconds: 42,
+            window_count: 1,
+            tab_count: 1,
+            pane_count: 2,
+            active_window_index: 0,
+            buffer_restore_enabled: false,
+            contains_buffer_contents: false,
+            windows: vec![TerminalSavedSessionWindow {
+                active_tab_index: 0,
+                tabs: vec![TerminalSavedSessionTab {
+                    active_pane_index: 0,
+                    panes: vec![
+                        TerminalSavedSessionPane {
+                            working_directory: None,
+                            title: Some("one".into()),
+                        },
+                        TerminalSavedSessionPane {
+                            working_directory: None,
+                            title: Some("two".into()),
+                        },
+                    ],
+                    layout: TerminalSavedSessionLayout::Axis {
+                        axis: TerminalSavedSessionAxis::Horizontal,
+                        members: vec![
+                            TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                            TerminalSavedSessionLayout::Pane { pane_index: 0 },
+                        ],
+                    },
+                }],
+            }],
+        };
+
+        let error = validate_terminal_saved_session(&session)
+            .expect_err("layout with duplicated pane index should be rejected");
+        assert!(format!("{error:#}").contains("layout pane indices do not match pane list"));
+    }
+
+    #[test]
+    fn explicit_launch_arguments_disable_automatic_session_restore() {
+        let root_dir = temp_test_dir();
+        let default_cli = Cli::try_parse_from(["zed-terminal"]).expect("default cli should parse");
+        assert!(default_cli.allows_automatic_session_restore());
+
+        let root_dir_text = root_dir.to_str().expect("temp path should be utf-8");
+        let cases = vec![
+            vec!["zed-terminal", "--no-startup-config"],
+            vec!["zed-terminal", "--profile", "work"],
+            vec!["zed-terminal", "--title", "manual"],
+            vec!["zed-terminal", "--new-tab", root_dir_text],
+            vec!["zed-terminal", "--new-tab-command", "echo hi"],
+            vec!["zed-terminal", "--", "echo", "hi"],
+        ];
+        for case in cases {
+            let cli = Cli::try_parse_from(case.clone()).expect("cli case should parse");
+            assert!(
+                !cli.allows_automatic_session_restore(),
+                "case {case:?} should disable automatic restore"
+            );
+        }
 
         std_fs::remove_dir_all(root_dir).ok();
     }
@@ -64321,6 +65154,7 @@ mod tests {
                 shell: None,
                 split: None,
             },
+            allow_session_restore: false,
         };
 
         assert_eq!(

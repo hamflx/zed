@@ -16,6 +16,7 @@ Param(
     [Parameter()][switch]$VerifyWindowLifecycle,
     [Parameter()][switch]$VerifySettingsTools,
     [Parameter()][switch]$VerifyTabRecovery,
+    [Parameter()][switch]$VerifySessionRestore,
     [Parameter()][switch]$KeepRunning
 )
 
@@ -44,8 +45,8 @@ if ($MaxBaselineAverageChannelDelta -lt 0 -or $MaxBaselineAverageChannelDelta -g
 if ($BaselinePixelTolerance -lt 0 -or $BaselinePixelTolerance -gt 255) {
     throw "-BaselinePixelTolerance must be between 0 and 255."
 }
-if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle, $VerifySettingsTools, $VerifyTabRecovery) | Where-Object { $_ }).Count -gt 1) {
-    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, -VerifyWindowLifecycle, -VerifySettingsTools, or -VerifyTabRecovery."
+if ((@($VerifySplitPane, $VerifyShortcuts, $VerifyProfileEditModal, $VerifyWindowLifecycle, $VerifySettingsTools, $VerifyTabRecovery, $VerifySessionRestore) | Where-Object { $_ }).Count -gt 1) {
+    throw "Use only one of -VerifySplitPane, -VerifyShortcuts, -VerifyProfileEditModal, -VerifyWindowLifecycle, -VerifySettingsTools, -VerifyTabRecovery, or -VerifySessionRestore."
 }
 
 $Binary = [System.IO.Path]::GetFullPath($Binary)
@@ -87,6 +88,7 @@ $windowLifecycleStartupConfigFile = $null
 $settingsToolsStartupConfigFile = $null
 $tabRecoveryStartupConfigFile = $null
 $tabRecoveryKeymapFile = $null
+$sessionRestoreStartupConfigFile = $null
 $shortcutSmokeDir = Join-Path $runDir "shortcut-smoke"
 New-Item -ItemType Directory -Force -Path $dataDir, $configDir | Out-Null
 
@@ -1501,6 +1503,94 @@ function Invoke-ZedTerminalTabRecoveryVerification {
     }
 }
 
+function Invoke-ZedTerminalSessionRestoreVerification {
+    param(
+        [Parameter(Mandatory = $true)][string]$Binary,
+        [Parameter(Mandatory = $true)][string]$ArgumentLine,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)]$Window,
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
+        [Parameter(Mandatory = $true)][string]$SessionFile,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $VK_CONTROL = [System.UInt16]0x11
+    $VK_SHIFT = [System.UInt16]0x10
+    $VK_MENU = [System.UInt16]0x12
+    $VK_D = [System.UInt16][byte][char]'D'
+    $VK_F4 = [System.UInt16]0x73
+    $VK_T = [System.UInt16][byte][char]'T'
+    $VK_OEM_PLUS = [System.UInt16]0xbb
+
+    $captures = New-Object System.Collections.Generic.List[object]
+    $states = New-Object System.Collections.Generic.List[object]
+    $inputMode = $null
+
+    $Window = Assert-SingleVisibleProcessWindow -Process $Process
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "00-initial" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 500 -TimeoutSeconds $TimeoutSeconds))
+    $initial = Save-ShortcutScreenshot -Window $Window -Name "session-restore-00-initial" -RunDir $RunDir
+    $captures.Add($initial)
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_CONTROL, $VK_SHIFT)) -Key $VK_T -Keystroke "ctrl-shift-t" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 501 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "01-before-close-new-tab" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 501 -TimeoutSeconds $TimeoutSeconds))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_OEM_PLUS -Keystroke "alt-shift-plus" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 502 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "02-before-close-split-right" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 2 -ExpectedCommandPaletteOpen $false -Step 502 -TimeoutSeconds $TimeoutSeconds))
+
+    Invoke-ZedTerminalShortcutInput -Process $Process -Window $Window -Modifiers ([System.UInt16[]]@($VK_MENU, $VK_SHIFT)) -Key $VK_D -Keystroke "alt-shift-d" -ShortcutSmokeDir $ShortcutSmokeDir -InputMode ([ref]$inputMode) -Step 503 -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $Process -ShortcutSmokeDir $ShortcutSmokeDir -Name "03-before-close-duplicate-split" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 3 -ExpectedCommandPaletteOpen $false -Step 503 -TimeoutSeconds $TimeoutSeconds))
+    $beforeClose = Save-ShortcutScreenshot -Window $Window -Name "session-restore-03-before-close" -RunDir $RunDir
+    $captures.Add($beforeClose)
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($Window, ([System.UInt16[]]@($VK_MENU)), $VK_F4)
+    Wait-Process -Id $Process.Id -Timeout 10 -ErrorAction SilentlyContinue
+    if (-not $Process.HasExited) {
+        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $Process.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (-not (Test-Path -LiteralPath $SessionFile -PathType Leaf)) {
+        if ((Get-Date) -ge $deadline) {
+            throw "Timed out waiting for saved session file: $SessionFile"
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    $sessionJson = Get-Content -Raw -LiteralPath $SessionFile | ConvertFrom-Json
+    if (
+        $sessionJson.format -ne "zed-terminal-session" -or
+        [int]$sessionJson.window_count -ne 1 -or
+        [int]$sessionJson.tab_count -ne 2 -or
+        [int]$sessionJson.pane_count -ne 4 -or
+        [bool]$sessionJson.contains_buffer_contents -ne $false
+    ) {
+        throw "Saved session metadata did not match expected layout-only counts: $($sessionJson | ConvertTo-Json -Depth 8 -Compress)"
+    }
+
+    Remove-Item -LiteralPath (Join-Path $ShortcutSmokeDir "*.json") -Force -ErrorAction SilentlyContinue
+
+    $restoredProcess = Start-Process -FilePath $Binary -ArgumentList $ArgumentLine -WorkingDirectory $WorkingDirectory -PassThru
+    $restoredWindow = Get-ProcessWindow -Process $restoredProcess -TimeoutSeconds $TimeoutSeconds
+    Wait-ShortcutSmokeReady -Process $restoredProcess -ShortcutSmokeDir $ShortcutSmokeDir -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $restoredProcess -ShortcutSmokeDir $ShortcutSmokeDir -Name "04-restored" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 3 -ExpectedCommandPaletteOpen $false -Step 504 -TimeoutSeconds $TimeoutSeconds))
+    $restoredWindow = Assert-SingleVisibleProcessWindow -Process $restoredProcess
+    $restored = Save-ShortcutScreenshot -Window $restoredWindow -Name "session-restore-04-restored" -RunDir $RunDir
+    $captures.Add($restored)
+
+    return [PSCustomObject]@{
+        Captures = $captures
+        States = $states
+        FinalWindow = $restoredWindow
+        FinalProcess = $restoredProcess
+        InputMode = $inputMode
+        SessionFile = $SessionFile
+        SavedTabCount = [int]$sessionJson.tab_count
+        SavedPaneCount = [int]$sessionJson.pane_count
+    }
+}
+
 function Invoke-ZedTerminalWindowLifecycleVerification {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
@@ -1600,9 +1690,12 @@ if ($VerifySplitPane) {
     $tabRecoveryStartupConfigFile = Write-TabRecoveryStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
     $tabRecoveryKeymapFile = Write-TabRecoveryKeymapConfig -ConfigDir $configDir
     $startupConfigFile = $tabRecoveryStartupConfigFile
+} elseif ($VerifySessionRestore) {
+    $sessionRestoreStartupConfigFile = Write-ShortcutStartupConfig -ConfigDir $configDir -EncodedProbeScript $encodedProbeScript
+    $startupConfigFile = $sessionRestoreStartupConfigFile
 }
 
-$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery) {
+$arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery -or $VerifySessionRestore) {
     $arguments = @(
         "--user-data-dir", $dataDir,
         "--config-dir", $configDir
@@ -1632,8 +1725,8 @@ $arguments = if ($VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowL
 $argumentLine = ($arguments | ForEach-Object { Quote-ProcessArgument $_ }) -join " "
 $process = $null
 $previousShortcutSmokeDir = $null
-$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery
-$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifySettingsTools -or $VerifyTabRecovery
+$requiresGuiSubsystem = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifyWindowLifecycle -or $VerifySettingsTools -or $VerifyTabRecovery -or $VerifySessionRestore
+$usesShortcutSmoke = $VerifyShortcuts -or $VerifyProfileEditModal -or $VerifySettingsTools -or $VerifyTabRecovery -or $VerifySessionRestore
 
 try {
     $subsystem = $null
@@ -1724,6 +1817,7 @@ try {
     $windowLifecycleVerification = $null
     $settingsToolsVerification = $null
     $tabRecoveryVerification = $null
+    $sessionRestoreVerification = $null
     if ($VerifyShortcuts) {
         $shortcutVerification = Invoke-ZedTerminalShortcutVerification `
             -Process $process `
@@ -1763,6 +1857,19 @@ try {
             -ShortcutSmokeDir $shortcutSmokeDir `
             -TimeoutSeconds $StartupTimeoutSeconds
         $window = $tabRecoveryVerification.FinalWindow
+    } elseif ($VerifySessionRestore) {
+        $sessionRestoreVerification = Invoke-ZedTerminalSessionRestoreVerification `
+            -Binary $Binary `
+            -ArgumentLine $argumentLine `
+            -WorkingDirectory $WorkingDirectory `
+            -Process $process `
+            -Window $window `
+            -RunDir $runDir `
+            -ShortcutSmokeDir $shortcutSmokeDir `
+            -SessionFile (Join-Path (Join-Path $dataDir "session") "session.json") `
+            -TimeoutSeconds $StartupTimeoutSeconds
+        $process = $sessionRestoreVerification.FinalProcess
+        $window = $sessionRestoreVerification.FinalWindow
     }
 
     $baselineComparison = $null
@@ -1922,6 +2029,28 @@ try {
         }
         foreach ($comparison in $tabRecoveryVerification.Comparisons) {
             Write-Output "tab_recovery_comparison_$([System.IO.Path]::GetFileNameWithoutExtension($comparison.DiffFile)): different_pixel_ratio=$($comparison.DifferentPixelRatio) average_channel_delta=$($comparison.AverageChannelDelta) diff=$($comparison.DiffFile)"
+        }
+    }
+    if ($VerifySessionRestore) {
+        Write-Output "session_restore_e2e_verified: True"
+        Write-Output "binary_subsystem: $($subsystem.Name)"
+        Write-Output "binary_subsystem_value: $($subsystem.Value)"
+        Write-Output "session_restore_input_mode: $($sessionRestoreVerification.InputMode)"
+        Write-Output "session_restore_startup_config_file: $sessionRestoreStartupConfigFile"
+        Write-Output "session_restore_file: $($sessionRestoreVerification.SessionFile)"
+        Write-Output "session_restore_saved_tab_count: $($sessionRestoreVerification.SavedTabCount)"
+        Write-Output "session_restore_saved_pane_count: $($sessionRestoreVerification.SavedPaneCount)"
+        Write-Output "visible_top_level_windows: 1"
+        foreach ($state in $sessionRestoreVerification.States) {
+            Write-Output "session_restore_state_$($state.Name)_outer_pane_count: $($state.OuterPaneCount)"
+            Write-Output "session_restore_state_$($state.Name)_outer_tab_count: $($state.OuterTabCount)"
+            Write-Output "session_restore_state_$($state.Name)_inner_pane_count: $($state.InnerPaneCount)"
+            Write-Output "session_restore_state_$($state.Name)_command_palette_open: $($state.CommandPaletteOpen)"
+        }
+        foreach ($capture in $sessionRestoreVerification.Captures) {
+            Write-Output "session_restore_capture_$($capture.Name): $($capture.Path)"
+            Write-Output "session_restore_capture_$($capture.Name)_bytes: $($capture.Stats.FileBytes)"
+            Write-Output "session_restore_capture_$($capture.Name)_sampled_unique_colors: $($capture.Stats.UniqueColors)"
         }
     }
     if ($VerifySplitPane) {

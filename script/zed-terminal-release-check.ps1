@@ -121,6 +121,7 @@ $profileEditVisualSmokeDir = Join-Path $runDir "visual-smoke-profile-edit"
 $windowLifecycleVisualSmokeDir = Join-Path $runDir "visual-smoke-window-lifecycle"
 $settingsToolsVisualSmokeDir = Join-Path $runDir "visual-smoke-settings-tools"
 $tabRecoveryVisualSmokeDir = Join-Path $runDir "visual-smoke-tab-recovery"
+$sessionRestoreVisualSmokeDir = Join-Path $runDir "visual-smoke-session-restore"
 $releaseLog = Join-Path $runDir "zed-terminal-release-check.log"
 $summaryFile = Join-Path $runDir "zed-terminal-release-check.json"
 $reportFile = Join-Path $runDir "zed-terminal-release-check.md"
@@ -149,6 +150,7 @@ $script:ProfileEditVisualSmoke = $null
 $script:WindowLifecycleVisualSmoke = $null
 $script:SettingsToolsVisualSmoke = $null
 $script:TabRecoveryVisualSmoke = $null
+$script:SessionRestoreVisualSmoke = $null
 $script:ReleaseSummaryPayload = $null
 $script:SourceControl = $null
 
@@ -1168,6 +1170,48 @@ function Read-TabRecoveryState {
     }
 }
 
+function Read-SessionRestoreState {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Values,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterPaneCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedOuterTabCount,
+        [Parameter(Mandatory = $true)][int64]$ExpectedInnerPaneCount,
+        [Parameter(Mandatory = $true)][bool]$ExpectedCommandPaletteOpen
+    )
+
+    $prefix = "session_restore_state_$Name"
+    $outerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_pane_count" -Context "session restore visual smoke state $Name") `
+        -Name "$Name session restore outer pane count"
+    $outerTabCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_outer_tab_count" -Context "session restore visual smoke state $Name") `
+        -Name "$Name session restore outer tab count"
+    $innerPaneCount = Convert-OutputInt64 `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_inner_pane_count" -Context "session restore visual smoke state $Name") `
+        -Name "$Name session restore inner pane count"
+    $commandPaletteOpen = Convert-OutputBool `
+        -Value (Get-RequiredOutputValue -Values $Values -Key "$($prefix)_command_palette_open" -Context "session restore visual smoke state $Name") `
+        -Name "$Name session restore command palette state"
+
+    if (
+        $outerPaneCount -ne $ExpectedOuterPaneCount -or
+        $outerTabCount -ne $ExpectedOuterTabCount -or
+        $innerPaneCount -ne $ExpectedInnerPaneCount -or
+        $commandPaletteOpen -ne $ExpectedCommandPaletteOpen
+    ) {
+        throw "session restore visual smoke state $Name did not match expected product hierarchy. Expected outer_pane_count=$ExpectedOuterPaneCount outer_tab_count=$ExpectedOuterTabCount inner_pane_count=$ExpectedInnerPaneCount command_palette_open=$ExpectedCommandPaletteOpen; actual outer_pane_count=$outerPaneCount outer_tab_count=$outerTabCount inner_pane_count=$innerPaneCount command_palette_open=$commandPaletteOpen"
+    }
+
+    return [pscustomobject]@{
+        name = $Name
+        outer_pane_count = $outerPaneCount
+        outer_tab_count = $outerTabCount
+        inner_pane_count = $innerPaneCount
+        command_palette_open = $commandPaletteOpen
+    }
+}
+
 function Read-WindowLifecycleState {
     param(
         [Parameter(Mandatory = $true)][hashtable]$Values,
@@ -1539,7 +1583,7 @@ function Read-PackageSmokeSummary {
 function Convert-VisualSmokeOutput {
     param(
         [Parameter(Mandatory = $true)][object[]]$Output,
-        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle", "settings-tools", "tab-recovery")][string]$Mode,
+        [Parameter(Mandatory = $true)][ValidateSet("default", "package", "split", "shortcut", "profile-edit", "window-lifecycle", "settings-tools", "tab-recovery", "session-restore")][string]$Mode,
         [Parameter(Mandatory = $true)][bool]$BaselineExpected
     )
 
@@ -1651,6 +1695,13 @@ function Convert-VisualSmokeOutput {
     $tabRecoveryCaptures = @()
     $tabRecoveryComparisons = @()
     $tabRecoveryStates = @()
+    $sessionRestoreE2EVerified = $null
+    $sessionRestoreInputMode = $null
+    $sessionRestoreFile = $null
+    $sessionRestoreSavedTabCount = $null
+    $sessionRestoreSavedPaneCount = $null
+    $sessionRestoreCaptures = @()
+    $sessionRestoreStates = @()
     if ($Mode -eq "split") {
         foreach ($key in @("startup_config_file", "split_mode", "split_direction", "split_ready_file", "split_pane_verified")) {
             $null = Get-RequiredOutputValue -Values $values -Key $key -Context "split visual smoke"
@@ -2190,6 +2241,87 @@ function Convert-VisualSmokeOutput {
 
         $tabRecoveryE2EVerified = $true
         $binarySubsystem = $values["binary_subsystem"]
+    } elseif ($Mode -eq "session-restore") {
+        foreach ($key in @("session_restore_e2e_verified", "binary_subsystem", "binary_subsystem_value", "session_restore_input_mode", "session_restore_startup_config_file", "session_restore_file", "session_restore_saved_tab_count", "session_restore_saved_pane_count", "visible_top_level_windows")) {
+            $null = Get-RequiredOutputValue -Values $values -Key $key -Context "session restore visual smoke"
+        }
+        if ($values["session_restore_e2e_verified"] -ne "True") {
+            throw "session restore visual smoke did not verify the saved session workflow"
+        }
+        if ($values["binary_subsystem"] -ne "Windows GUI") {
+            throw "session restore visual smoke requires a Windows GUI subsystem binary; actual: $($values["binary_subsystem"])"
+        }
+
+        $binarySubsystemValue = Convert-OutputInt64 -Value $values["binary_subsystem_value"] -Name "session restore visual smoke binary_subsystem_value"
+        $visibleTopLevelWindows = Convert-OutputInt64 -Value $values["visible_top_level_windows"] -Name "session restore visual smoke visible_top_level_windows"
+        if ($binarySubsystemValue -ne 2) {
+            throw "session restore visual smoke reported an unexpected PE subsystem value: $binarySubsystemValue"
+        }
+        if ($visibleTopLevelWindows -ne 1) {
+            throw "session restore visual smoke expected exactly one visible top-level process window"
+        }
+        $sessionRestoreInputMode = $values["session_restore_input_mode"]
+        if ($sessionRestoreInputMode -notin @("windows-sendinput", "gpui-dispatch")) {
+            throw "session restore visual smoke reported an unexpected input mode: $sessionRestoreInputMode"
+        }
+
+        $startupConfigFile = [System.IO.Path]::GetFullPath($values["session_restore_startup_config_file"])
+        $sessionRestoreFile = [System.IO.Path]::GetFullPath($values["session_restore_file"])
+        foreach ($file in @($startupConfigFile, $sessionRestoreFile)) {
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                throw "session restore visual smoke referenced a missing file: $file"
+            }
+        }
+        $sessionRestoreSavedTabCount = Convert-OutputInt64 -Value $values["session_restore_saved_tab_count"] -Name "session restore saved tab count"
+        $sessionRestoreSavedPaneCount = Convert-OutputInt64 -Value $values["session_restore_saved_pane_count"] -Name "session restore saved pane count"
+        if ($sessionRestoreSavedTabCount -ne 2 -or $sessionRestoreSavedPaneCount -ne 4) {
+            throw "session restore visual smoke saved unexpected session counts: tabs=$sessionRestoreSavedTabCount panes=$sessionRestoreSavedPaneCount"
+        }
+
+        $expectedSessionRestoreStates = @(
+            [pscustomobject]@{ Name = "00-initial"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "01-before-close-new-tab"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "02-before-close-split-right"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 2; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "03-before-close-duplicate-split"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "04-restored"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false }
+        )
+        foreach ($expectedState in $expectedSessionRestoreStates) {
+            $sessionRestoreStates += Read-SessionRestoreState `
+                -Values $values `
+                -Name $expectedState.Name `
+                -ExpectedOuterPaneCount $expectedState.OuterPanes `
+                -ExpectedOuterTabCount $expectedState.OuterTabs `
+                -ExpectedInnerPaneCount $expectedState.InnerPanes `
+                -ExpectedCommandPaletteOpen $expectedState.PaletteOpen
+        }
+
+        foreach ($captureName in @(
+                "session-restore-00-initial",
+                "session-restore-03-before-close",
+                "session-restore-04-restored"
+            )) {
+            $pathKey = "session_restore_capture_$captureName"
+            $bytesKey = "session_restore_capture_$($captureName)_bytes"
+            $colorsKey = "session_restore_capture_$($captureName)_sampled_unique_colors"
+            $capturePath = [System.IO.Path]::GetFullPath((Get-RequiredOutputValue -Values $values -Key $pathKey -Context "session restore visual smoke"))
+            $captureBytes = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $bytesKey -Context "session restore visual smoke") -Name "$captureName session restore screenshot bytes"
+            $captureUniqueColors = Convert-OutputInt64 -Value (Get-RequiredOutputValue -Values $values -Key $colorsKey -Context "session restore visual smoke") -Name "$captureName session restore sampled colors"
+
+            Assert-VisualSmokeFile -Path $capturePath -ExpectedBytes $captureBytes -Name "session restore screenshot $captureName"
+            if ($captureUniqueColors -lt 8) {
+                throw "session restore screenshot $captureName appears blank or nearly blank"
+            }
+
+            $sessionRestoreCaptures += [pscustomobject]@{
+                name = $captureName
+                file = $capturePath
+                bytes = $captureBytes
+                sampled_unique_colors = $captureUniqueColors
+            }
+        }
+
+        $sessionRestoreE2EVerified = $true
+        $binarySubsystem = $values["binary_subsystem"]
     }
 
     $baseline = $null
@@ -2314,6 +2446,13 @@ function Convert-VisualSmokeOutput {
         tab_recovery_states = @($tabRecoveryStates)
         tab_recovery_captures = @($tabRecoveryCaptures)
         tab_recovery_comparisons = @($tabRecoveryComparisons)
+        session_restore_e2e_verified = $sessionRestoreE2EVerified
+        session_restore_input_mode = $sessionRestoreInputMode
+        session_restore_file = $sessionRestoreFile
+        session_restore_saved_tab_count = $sessionRestoreSavedTabCount
+        session_restore_saved_pane_count = $sessionRestoreSavedPaneCount
+        session_restore_states = @($sessionRestoreStates)
+        session_restore_captures = @($sessionRestoreCaptures)
         baseline = $baseline
     }
 }
@@ -2358,6 +2497,7 @@ function Get-SkippedReleaseChecks {
         $skipped.Add("window lifecycle visual smoke")
         $skipped.Add("settings tools visual smoke")
         $skipped.Add("tab recovery visual smoke")
+        $skipped.Add("session restore visual smoke")
     } else {
         if ($SkipVisualBaseline) {
             $skipped.Add("default visual baseline")
@@ -2384,6 +2524,7 @@ function Get-SkippedReleaseChecks {
             $skipped.Add("window lifecycle visual smoke")
             $skipped.Add("settings tools visual smoke")
             $skipped.Add("tab recovery visual smoke")
+            $skipped.Add("session restore visual smoke")
         }
     }
 
@@ -2515,7 +2656,7 @@ function New-ReleaseReportMarkdown {
     $lines += ""
 
     $lines += "## Visual Smoke"
-    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke, $Summary.settings_tools_visual_smoke, $Summary.tab_recovery_visual_smoke)) {
+    foreach ($visual in @($Summary.visual_smoke, $Summary.package_visual_smoke, $Summary.split_visual_smoke, $Summary.shortcut_visual_smoke, $Summary.profile_edit_visual_smoke, $Summary.window_lifecycle_visual_smoke, $Summary.settings_tools_visual_smoke, $Summary.tab_recovery_visual_smoke, $Summary.session_restore_visual_smoke)) {
         if (-not $visual) {
             continue
         }
@@ -2613,6 +2754,23 @@ function New-ReleaseReportMarkdown {
                 $lines += "| Tab recovery state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
             }
         }
+        if ($visual.session_restore_e2e_verified -ne $null) {
+            $lines += "| Session restore E2E verified | $(Format-MarkdownValue $visual.session_restore_e2e_verified) |"
+            $lines += "| Session restore input mode | $(Format-MarkdownValue $visual.session_restore_input_mode) |"
+            $lines += "| Session restore file | $(Format-MarkdownValue $visual.session_restore_file) |"
+            $lines += "| Saved tabs | $(Format-MarkdownValue $visual.session_restore_saved_tab_count) |"
+            $lines += "| Saved panes | $(Format-MarkdownValue $visual.session_restore_saved_pane_count) |"
+            $lines += "| Binary subsystem | $(Format-MarkdownValue "$($visual.binary_subsystem) ($($visual.binary_subsystem_value))") |"
+            $lines += "| Visible top-level windows | $(Format-MarkdownValue $visual.visible_top_level_windows) |"
+            $lines += "| Session restore states | $(Format-MarkdownValue @($visual.session_restore_states).Count) |"
+            $lines += "| Session restore captures | $(Format-MarkdownValue @($visual.session_restore_captures).Count) |"
+            if ($visual.session_restore_states) {
+                $stateSummary = @($visual.session_restore_states) | ForEach-Object {
+                    "$($_.name): outer=$($_.outer_pane_count)/tabs=$($_.outer_tab_count)/inner=$($_.inner_pane_count)/palette=$($_.command_palette_open)"
+                }
+                $lines += "| Session restore state sequence | $(Format-MarkdownValue ($stateSummary -join '; ')) |"
+            }
+        }
         if ($visual.baseline) {
             $lines += "| Baseline | $(Format-MarkdownValue $visual.baseline.file) |"
             $lines += "| Baseline diff | $(Format-MarkdownValue $visual.baseline.diff_file) |"
@@ -2621,7 +2779,7 @@ function New-ReleaseReportMarkdown {
         }
         $lines += ""
     }
-    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke -and -not $Summary.settings_tools_visual_smoke -and -not $Summary.tab_recovery_visual_smoke) {
+    if (-not $Summary.visual_smoke -and -not $Summary.package_visual_smoke -and -not $Summary.split_visual_smoke -and -not $Summary.shortcut_visual_smoke -and -not $Summary.profile_edit_visual_smoke -and -not $Summary.window_lifecycle_visual_smoke -and -not $Summary.settings_tools_visual_smoke -and -not $Summary.tab_recovery_visual_smoke -and -not $Summary.session_restore_visual_smoke) {
         $lines += "Visual smoke was not run."
         $lines += ""
     }
@@ -2663,6 +2821,7 @@ function Write-ReleaseSummary {
             window_lifecycle_visual_smoke = [bool]$SkipShortcutVisualSmoke
             settings_tools_visual_smoke = [bool]$SkipShortcutVisualSmoke
             tab_recovery_visual_smoke = [bool]$SkipShortcutVisualSmoke
+            session_restore_visual_smoke = [bool]$SkipShortcutVisualSmoke
         }
         skipped_release_checks = $skippedReleaseChecks
         release_blockers = $releaseBlockers
@@ -2694,6 +2853,8 @@ function Write-ReleaseSummary {
         settings_tools_visual_smoke = $script:SettingsToolsVisualSmoke
         tab_recovery_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
         tab_recovery_visual_smoke = $script:TabRecoveryVisualSmoke
+        session_restore_visual_smoke_skipped = [bool]($SkipVisualSmoke -or $SkipShortcutVisualSmoke)
+        session_restore_visual_smoke = $script:SessionRestoreVisualSmoke
         baseline_pixel_tolerance = $BaselinePixelTolerance
         baseline_max_different_pixel_ratio = $MaxBaselineDifferentPixelRatio
         baseline_max_average_channel_delta = $MaxBaselineAverageChannelDelta
@@ -5050,6 +5211,24 @@ try {
                 $script:TabRecoveryVisualSmoke = Convert-VisualSmokeOutput `
                     -Output (($tabRecoveryVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
                     -Mode "tab-recovery" `
+                    -BaselineExpected $false
+            }
+
+            $sessionRestoreVisualSmokeArgs = @(
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $repoRoot "script\zed-terminal-visual-smoke.ps1"),
+                "-Binary", $ShortcutBinary,
+                "-OutputDir", $sessionRestoreVisualSmokeDir,
+                "-StartupTimeoutSeconds", "$StartupTimeoutSeconds",
+                "-CaptureDelaySeconds", "$CaptureDelaySeconds",
+                "-VerifySessionRestore"
+            )
+            Invoke-Step "visual smoke session restore" {
+                $sessionRestoreVisualResult = Invoke-NativeCommandResult -FilePath "powershell" -Arguments $sessionRestoreVisualSmokeArgs
+                $script:SessionRestoreVisualSmoke = Convert-VisualSmokeOutput `
+                    -Output (($sessionRestoreVisualResult.Stdout -split "`r?`n") | Where-Object { $_.Length -gt 0 }) `
+                    -Mode "session-restore" `
                     -BaselineExpected $false
             }
 

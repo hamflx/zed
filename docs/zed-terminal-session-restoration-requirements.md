@@ -166,6 +166,11 @@ Phase 0: Storage and privacy foundation
 
 Phase 1: Layout-only restoration
 
+- Current status as of 2026-06-08: the first layout-only slice is implemented for the standalone `zed_terminal` app.
+- Implemented: valid `data/session/session.json` files restore top-level tabs, per-tab pane layout, active tab, active pane, working directory, and custom title metadata on normal launch.
+- Implemented: explicit launch arguments bypass automatic restoration and fall back to the requested startup behavior.
+- Implemented: real-window smoke and release-check coverage verify creating tabs/panes with keyboard shortcuts, saving the session file, relaunching, and restoring the tab-first hierarchy.
+- Not yet implemented in this phase: profile identity, explicit shell identity, command-backed pane identity, user-facing restore settings, and manual `--restore-session` / `--no-restore-session` flags.
 - Persist windows, tabs, panes, active selection, profile/shell/cwd/title metadata.
 - Restore fresh shells into the previous layout.
 - Add settings and clear command.

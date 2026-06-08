@@ -12,10 +12,33 @@ use terminal::Terminal;
 use terminal_view::TerminalView;
 use ui::prelude::*;
 use workspace::{
-    ActivePaneDecorator, Pane, PaneGroup, SplitDirection, SplitMode, Workspace, WorkspaceId,
+    ActivePaneDecorator, Member, Pane, PaneGroup, SplitDirection, SplitMode, Workspace,
+    WorkspaceId,
     item::{Item, ItemEvent, TabContentParams, TabTooltipContent},
     pane,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalTabPaneSnapshot {
+    pub working_directory: Option<std::path::PathBuf>,
+    pub custom_title: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TerminalTabLayoutSnapshot {
+    Pane(usize),
+    Axis {
+        axis: Axis,
+        members: Vec<TerminalTabLayoutSnapshot>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalTabSnapshot {
+    pub panes: Vec<TerminalTabPaneSnapshot>,
+    pub active_pane_index: usize,
+    pub layout: TerminalTabLayoutSnapshot,
+}
 
 pub struct TerminalTab {
     workspace: WeakEntity<Workspace>,
@@ -102,6 +125,38 @@ impl TerminalTab {
         self.center.panes().len()
     }
 
+    pub fn snapshot(&self, cx: &App) -> Option<TerminalTabSnapshot> {
+        let panes = self.center.panes();
+        if panes.is_empty() {
+            return None;
+        }
+
+        let mut pane_snapshots = Vec::with_capacity(panes.len());
+        for pane in panes.iter() {
+            let terminal_view = pane
+                .read(cx)
+                .active_item()
+                .and_then(|item| item.downcast::<TerminalView>())?;
+            let terminal = terminal_view.read(cx).terminal().clone();
+            pane_snapshots.push(TerminalTabPaneSnapshot {
+                working_directory: terminal.read(cx).working_directory(),
+                custom_title: terminal_view.read(cx).custom_title().map(str::to_owned),
+            });
+        }
+
+        let active_pane_index = panes
+            .iter()
+            .position(|pane| *pane == &self.active_pane)
+            .unwrap_or(0);
+        let layout = terminal_tab_layout_snapshot(&self.center.root, &panes)?;
+
+        Some(TerminalTabSnapshot {
+            panes: pane_snapshots,
+            active_pane_index,
+            layout,
+        })
+    }
+
     pub fn split_terminal(
         &mut self,
         terminal: Entity<Terminal>,
@@ -142,6 +197,23 @@ impl TerminalTab {
     pub fn reset_pane_sizes(&mut self, cx: &mut Context<Self>) {
         self.center.reset_pane_sizes(cx);
         cx.notify();
+    }
+
+    pub fn focus_pane_index(
+        &mut self,
+        pane_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(pane) = self
+            .center
+            .panes()
+            .get(pane_index)
+            .map(|pane| (*pane).clone())
+        {
+            self.focus_pane(pane, window, cx);
+            cx.notify();
+        }
     }
 
     pub fn close_active_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -382,6 +454,26 @@ impl TerminalTab {
             self.center.swap(&self.active_pane, &to, cx);
             cx.notify();
         }
+    }
+}
+
+fn terminal_tab_layout_snapshot(
+    member: &Member,
+    panes: &[&Entity<Pane>],
+) -> Option<TerminalTabLayoutSnapshot> {
+    match member {
+        Member::Pane(pane) => panes
+            .iter()
+            .position(|candidate| *candidate == pane)
+            .map(TerminalTabLayoutSnapshot::Pane),
+        Member::Axis(axis) => Some(TerminalTabLayoutSnapshot::Axis {
+            axis: axis.axis,
+            members: axis
+                .members
+                .iter()
+                .filter_map(|member| terminal_tab_layout_snapshot(member, panes))
+                .collect(),
+        }),
     }
 }
 
