@@ -1040,6 +1040,20 @@ struct Cli {
     no_startup_config: bool,
 
     #[arg(
+        long = "restore-session",
+        conflicts_with = "no_restore_session",
+        help = "Restore saved session layout for this launch, even when explicit startup arguments are present"
+    )]
+    restore_session: bool,
+
+    #[arg(
+        long = "no-restore-session",
+        conflicts_with = "restore_session",
+        help = "Do not restore saved session layout for this launch"
+    )]
+    no_restore_session: bool,
+
+    #[arg(
         long = "print-startup-layout",
         conflicts_with_all = [
             "list_profiles",
@@ -3727,7 +3741,14 @@ struct LaunchOptions {
     initial_tab: LaunchTab,
     additional_tabs: Vec<LaunchTab>,
     new_terminal_tab: LaunchTab,
-    allow_session_restore: bool,
+    session_restore_policy: TerminalSessionRestorePolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSessionRestorePolicy {
+    Disabled,
+    Automatic,
+    Forced,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4122,9 +4143,13 @@ impl TerminalStartupLayoutPlacement {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TerminalStartupConfig {
+    #[serde(default = "default_restore_previous_session")]
+    restore_previous_session: bool,
+    #[serde(default)]
+    restore_terminal_buffer: bool,
     #[serde(default)]
     working_directory: Option<PathBuf>,
     #[serde(default)]
@@ -4141,6 +4166,23 @@ struct TerminalStartupConfig {
     default_profile: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, TerminalStartupProfileConfig>,
+}
+
+impl Default for TerminalStartupConfig {
+    fn default() -> Self {
+        Self {
+            restore_previous_session: default_restore_previous_session(),
+            restore_terminal_buffer: false,
+            working_directory: None,
+            command: None,
+            title: None,
+            shell: None,
+            env: HashMap::default(),
+            tabs: Vec::new(),
+            default_profile: None,
+            profiles: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -4320,6 +4362,8 @@ struct TerminalStartupProfileDescription {
 struct TerminalStartupDescription {
     startup_config_file: PathBuf,
     source: TerminalDoctorConfigSource,
+    restore_previous_session: bool,
+    restore_terminal_buffer: bool,
     working_directory: Option<PathBuf>,
     command: Option<String>,
     title: Option<String>,
@@ -9860,18 +9904,18 @@ impl LaunchOptions {
         startup_config: TerminalStartupConfig,
         path_options: TerminalPathOptions,
     ) -> Result<Self> {
-        let allow_session_restore = cli.allows_automatic_session_restore();
+        let startup_config = if cli.no_startup_config {
+            TerminalStartupConfig::default()
+        } else {
+            startup_config
+        };
+        let session_restore_policy = cli.session_restore_policy(&startup_config);
         let command = LaunchCommand::from_args(cli.command);
         let working_directory = cli
             .working_directory
             .or(cli.directory)
             .map(|directory| resolve_working_directory(&directory))
             .transpose()?;
-        let startup_config = if cli.no_startup_config {
-            TerminalStartupConfig::default()
-        } else {
-            startup_config
-        };
         let profile = if cli.no_startup_config {
             None
         } else {
@@ -9921,7 +9965,7 @@ impl LaunchOptions {
             initial_tab,
             additional_tabs,
             new_terminal_tab,
-            allow_session_restore,
+            session_restore_policy,
         })
     }
 
@@ -9950,7 +9994,7 @@ impl LaunchOptions {
             initial_tab: initial_tab.clone(),
             additional_tabs: Vec::new(),
             new_terminal_tab: initial_tab,
-            allow_session_restore: false,
+            session_restore_policy: TerminalSessionRestorePolicy::Disabled,
         }
     }
 
@@ -9969,27 +10013,54 @@ impl LaunchOptions {
             initial_tab: initial_tab.clone(),
             additional_tabs: Vec::new(),
             new_terminal_tab: initial_tab,
-            allow_session_restore: false,
+            session_restore_policy: TerminalSessionRestorePolicy::Disabled,
         })
     }
 }
 
 impl Cli {
+    fn session_restore_policy(
+        &self,
+        startup_config: &TerminalStartupConfig,
+    ) -> TerminalSessionRestorePolicy {
+        if self.no_restore_session {
+            return TerminalSessionRestorePolicy::Disabled;
+        }
+
+        if self.restore_session {
+            return TerminalSessionRestorePolicy::Forced;
+        }
+
+        if !startup_config.restore_previous_session {
+            return TerminalSessionRestorePolicy::Disabled;
+        }
+
+        if self.allows_automatic_session_restore() {
+            TerminalSessionRestorePolicy::Automatic
+        } else {
+            TerminalSessionRestorePolicy::Disabled
+        }
+    }
+
     fn allows_automatic_session_restore(&self) -> bool {
-        self.profile.is_none()
-            && !self.no_startup_config
-            && self.working_directory.is_none()
-            && self.directory.is_none()
-            && self.title.is_none()
-            && self.command.is_empty()
-            && self.new_tabs.is_empty()
-            && self.new_tab_titles.is_empty()
-            && self.new_tab_profiles.is_empty()
-            && self.new_tab_profile_titles.is_empty()
-            && self.new_tab_profile_splits.is_empty()
-            && self.new_tab_commands.is_empty()
-            && self.new_tab_command_directories.is_empty()
-            && self.new_tab_command_titles.is_empty()
+        !self.has_explicit_startup_arguments()
+    }
+
+    fn has_explicit_startup_arguments(&self) -> bool {
+        self.profile.is_some()
+            || self.no_startup_config
+            || self.working_directory.is_some()
+            || self.directory.is_some()
+            || self.title.is_some()
+            || !self.command.is_empty()
+            || !self.new_tabs.is_empty()
+            || !self.new_tab_titles.is_empty()
+            || !self.new_tab_profiles.is_empty()
+            || !self.new_tab_profile_titles.is_empty()
+            || !self.new_tab_profile_splits.is_empty()
+            || !self.new_tab_commands.is_empty()
+            || !self.new_tab_command_directories.is_empty()
+            || !self.new_tab_command_titles.is_empty()
     }
 }
 
@@ -10284,6 +10355,10 @@ impl LaunchCommand {
     }
 }
 
+fn default_restore_previous_session() -> bool {
+    true
+}
+
 impl TerminalStartupConfig {
     fn load(path: &Path) -> Result<Self> {
         if !path.exists() {
@@ -10298,6 +10373,12 @@ impl TerminalStartupConfig {
     }
 
     fn validate(&self) -> Result<TerminalStartupConfigValidation> {
+        if self.restore_terminal_buffer {
+            bail!(
+                "restore_terminal_buffer is not supported yet; zed-terminal currently restores layout metadata only"
+            );
+        }
+
         if let Some(default_profile) = self.default_profile.as_deref() {
             self.validate_profile_reference("default_profile", default_profile)?;
         }
@@ -20914,6 +20995,8 @@ fn startup_description_report(
     Ok(TerminalStartupDescription {
         startup_config_file: startup_config_file.to_path_buf(),
         source,
+        restore_previous_session: startup_config.restore_previous_session,
+        restore_terminal_buffer: startup_config.restore_terminal_buffer,
         working_directory: startup_config.working_directory.clone(),
         command: startup_config.command.clone(),
         title: startup_config.title.clone(),
@@ -21415,6 +21498,18 @@ fn format_startup_description(report: &TerminalStartupDescription) -> String {
         .expect("writing to string should not fail");
     writeln!(
         &mut output,
+        "restore_previous_session: {}",
+        report.restore_previous_session
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
+        "restore_terminal_buffer: {}",
+        report.restore_terminal_buffer
+    )
+    .expect("writing to string should not fail");
+    writeln!(
+        &mut output,
         "working_directory: {}",
         report
             .working_directory
@@ -21597,6 +21692,8 @@ fn format_startup_description_json(report: &TerminalStartupDescription) -> Resul
         "startup_config_file": report.startup_config_file.display().to_string(),
         "status": "ok",
         "source": report.source.as_str(),
+        "restore_previous_session": report.restore_previous_session,
+        "restore_terminal_buffer": report.restore_terminal_buffer,
         "working_directory": report
             .working_directory
             .as_ref()
@@ -30412,18 +30509,19 @@ fn open_terminal_window(
     let new_terminal_split_down = new_terminal_tab.clone();
     let new_terminal_split_left = new_terminal_tab.clone();
     let new_terminal_split_up = new_terminal_tab.clone();
-    let restore_plan = if launch_options.allow_session_restore {
-        match load_terminal_saved_session(&launch_options.path_options.data_dir) {
-            Ok(Some(session)) => launch_tabs_from_saved_session(&session),
-            Ok(None) => None,
-            Err(error) => {
-                log::warn!("failed to load saved terminal session: {error:#}");
-                None
+    let restore_plan =
+        if launch_options.session_restore_policy != TerminalSessionRestorePolicy::Disabled {
+            match load_terminal_saved_session(&launch_options.path_options.data_dir) {
+                Ok(Some(session)) => launch_tabs_from_saved_session(&session),
+                Ok(None) => None,
+                Err(error) => {
+                    log::warn!("failed to load saved terminal session: {error:#}");
+                    None
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
     let (initial_tab, additional_tabs, restored_active_tab_index, restored_active_pane_indices) =
         if let Some(restore_plan) = restore_plan {
             (
@@ -33526,6 +33624,9 @@ fn initial_terminal_startup_config_content() -> &'static str {
 //   - tabs[].profile may reference a named profile and may be combined with
 //     "title" and "split" only.
 //   - default_profile selects a named profile for normal launches.
+//   - restore_previous_session restores saved tab/pane layout on normal launches.
+//   - restore_terminal_buffer is reserved for future scrollback restoration and
+//     must remain false in this release.
 //
 // Example shape, kept commented so the default launch stays unchanged:
 // {
@@ -33548,6 +33649,8 @@ fn initial_terminal_startup_config_content() -> &'static str {
 //   }
 // }
 {
+  "restore_previous_session": true,
+  "restore_terminal_buffer": false,
   "working_directory": null,
   "command": null,
   "title": null,
@@ -38557,6 +38660,8 @@ mod tests {
         let report = TerminalStartupDescription {
             startup_config_file: PathBuf::from("terminal.json"),
             source: TerminalDoctorConfigSource::File,
+            restore_previous_session: true,
+            restore_terminal_buffer: false,
             working_directory: Some(PathBuf::from(".")),
             command: Some("cmd /C echo root".into()),
             title: Some("Root".into()),
@@ -38587,6 +38692,8 @@ mod tests {
         assert!(output.contains("startup_config_file: terminal.json"));
         assert!(output.contains("status: ok"));
         assert!(output.contains("source: file"));
+        assert!(output.contains("restore_previous_session: true"));
+        assert!(output.contains("restore_terminal_buffer: false"));
         assert!(output.contains("working_directory: ."));
         assert!(output.contains("command: cmd /C echo root"));
         assert!(output.contains("title: Root"));
@@ -38611,6 +38718,8 @@ mod tests {
         let report = TerminalStartupDescription {
             startup_config_file: PathBuf::from("terminal.json"),
             source: TerminalDoctorConfigSource::File,
+            restore_previous_session: false,
+            restore_terminal_buffer: false,
             working_directory: Some(PathBuf::from(".")),
             command: Some("cmd /C echo root".into()),
             title: Some("Root".into()),
@@ -38639,6 +38748,8 @@ mod tests {
         assert_eq!(json["startup_config_file"], "terminal.json");
         assert_eq!(json["status"], "ok");
         assert_eq!(json["source"], "file");
+        assert_eq!(json["restore_previous_session"], false);
+        assert_eq!(json["restore_terminal_buffer"], false);
         assert_eq!(json["working_directory"], ".");
         assert_eq!(json["command"], "cmd /C echo root");
         assert_eq!(json["title"], "Root");
@@ -39817,6 +39928,8 @@ mod tests {
             .expect("schema should contain root properties");
 
         for property in [
+            "restore_previous_session",
+            "restore_terminal_buffer",
             "working_directory",
             "command",
             "title",
@@ -42798,6 +42911,85 @@ mod tests {
     }
 
     #[test]
+    fn startup_config_controls_session_restore_policy() {
+        let default_cli = Cli::try_parse_from(["zed-terminal"]).expect("default cli should parse");
+        let default_config = TerminalStartupConfig::default();
+        assert_eq!(
+            default_cli.session_restore_policy(&default_config),
+            TerminalSessionRestorePolicy::Automatic
+        );
+
+        let disabled_config = TerminalStartupConfig {
+            restore_previous_session: false,
+            ..TerminalStartupConfig::default()
+        };
+        assert_eq!(
+            default_cli.session_restore_policy(&disabled_config),
+            TerminalSessionRestorePolicy::Disabled
+        );
+
+        let explicit_cli = Cli::try_parse_from(["zed-terminal", "--new-tab-command", "echo hi"])
+            .expect("explicit startup cli should parse");
+        assert_eq!(
+            explicit_cli.session_restore_policy(&default_config),
+            TerminalSessionRestorePolicy::Disabled
+        );
+
+        let forced_cli = Cli::try_parse_from([
+            "zed-terminal",
+            "--restore-session",
+            "--new-tab-command",
+            "echo hi",
+        ])
+        .expect("forced restore cli should parse");
+        assert_eq!(
+            forced_cli.session_restore_policy(&default_config),
+            TerminalSessionRestorePolicy::Forced
+        );
+        assert_eq!(
+            forced_cli.session_restore_policy(&disabled_config),
+            TerminalSessionRestorePolicy::Forced
+        );
+
+        let no_restore_cli = Cli::try_parse_from(["zed-terminal", "--no-restore-session"])
+            .expect("cli should parse");
+        assert_eq!(
+            no_restore_cli.session_restore_policy(&default_config),
+            TerminalSessionRestorePolicy::Disabled
+        );
+
+        let error =
+            Cli::try_parse_from(["zed-terminal", "--restore-session", "--no-restore-session"])
+                .expect_err("restore flags should conflict");
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn startup_config_session_restore_fields_parse_and_validate() {
+        let config: TerminalStartupConfig = settings::parse_json_with_comments(
+            r#"{
+  "restore_previous_session": false,
+  "restore_terminal_buffer": false
+}"#,
+        )
+        .expect("startup config should parse");
+
+        assert!(!config.restore_previous_session);
+        assert!(!config.restore_terminal_buffer);
+        config
+            .validate()
+            .expect("layout-only config should validate");
+
+        let config: TerminalStartupConfig =
+            settings::parse_json_with_comments(r#"{ "restore_terminal_buffer": true }"#)
+                .expect("startup config should parse");
+        let error = config
+            .validate()
+            .expect_err("buffer restore should remain unsupported");
+        assert!(format!("{error:#}").contains("restore_terminal_buffer is not supported yet"));
+    }
+
+    #[test]
     fn rejects_saved_session_with_buffer_contents() {
         let session = TerminalSavedSession {
             format: TERMINAL_SESSION_FORMAT.into(),
@@ -43335,6 +43527,8 @@ mod tests {
         let report = TerminalStartupDescription {
             startup_config_file: PathBuf::from("terminal.json"),
             source: TerminalDoctorConfigSource::File,
+            restore_previous_session: true,
+            restore_terminal_buffer: false,
             working_directory: Some(PathBuf::from(".")),
             command: Some("cmd /C echo root".into()),
             title: Some("Root".into()),
@@ -65154,7 +65348,7 @@ mod tests {
                 shell: None,
                 split: None,
             },
-            allow_session_restore: false,
+            session_restore_policy: TerminalSessionRestorePolicy::Disabled,
         };
 
         assert_eq!(

@@ -690,7 +690,7 @@ function Assert-PackageConfigTemplateSchemas {
         -Label "startup config" `
         -ExpectedTitle "TerminalStartupConfig" `
         -ExpectedType "object" `
-        -RequiredProperties @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
+        -RequiredProperties @("restore_previous_session", "restore_terminal_buffer", "working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
 
     Assert-PackageJsonSchemaFile `
         -Path (Join-Path $ConfigTemplateDir "settings.schema.json") `

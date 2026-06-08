@@ -1310,7 +1310,7 @@ function Assert-PackageConfigTemplateSchemas {
         -Label "package startup config" `
         -ExpectedTitle "TerminalStartupConfig" `
         -ExpectedType "object" `
-        -RequiredProperties @("working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
+        -RequiredProperties @("restore_previous_session", "restore_terminal_buffer", "working_directory", "command", "shell", "env", "tabs", "default_profile", "profiles")
 
     Assert-PackageJsonSchemaFile `
         -Path (Join-Path $ConfigTemplateDir "settings.schema.json") `
@@ -2283,7 +2283,9 @@ function Convert-VisualSmokeOutput {
             [pscustomobject]@{ Name = "01-before-close-new-tab"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 1; PaletteOpen = $false },
             [pscustomobject]@{ Name = "02-before-close-split-right"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 2; PaletteOpen = $false },
             [pscustomobject]@{ Name = "03-before-close-duplicate-split"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false },
-            [pscustomobject]@{ Name = "04-restored"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false }
+            [pscustomobject]@{ Name = "04-restored"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "05-disabled-by-config"; OuterPanes = 1; OuterTabs = 1; InnerPanes = 1; PaletteOpen = $false },
+            [pscustomobject]@{ Name = "06-forced-by-cli"; OuterPanes = 1; OuterTabs = 2; InnerPanes = 3; PaletteOpen = $false }
         )
         foreach ($expectedState in $expectedSessionRestoreStates) {
             $sessionRestoreStates += Read-SessionRestoreState `
@@ -2298,7 +2300,9 @@ function Convert-VisualSmokeOutput {
         foreach ($captureName in @(
                 "session-restore-00-initial",
                 "session-restore-03-before-close",
-                "session-restore-04-restored"
+                "session-restore-04-restored",
+                "session-restore-05-disabled-by-config",
+                "session-restore-06-forced-by-cli"
             )) {
             $pathKey = "session_restore_capture_$captureName"
             $bytesKey = "session_restore_capture_$($captureName)_bytes"

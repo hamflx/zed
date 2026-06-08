@@ -1194,7 +1194,8 @@ while ($true) {
 function Write-ShortcutStartupConfig {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigDir,
-        [Parameter(Mandatory = $true)][string]$EncodedProbeScript
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript,
+        [Parameter()][bool]$RestorePreviousSession = $true
     )
 
     $startupConfigFile = Join-Path $ConfigDir "terminal.json"
@@ -1207,6 +1208,8 @@ function Write-ShortcutStartupConfig {
     ) | ForEach-Object { Quote-ProcessArgument $_ }
     $shortcutCommand = $shortcutCommand -join " "
     $startupConfig = [ordered]@{
+        restore_previous_session = $RestorePreviousSession
+        restore_terminal_buffer = $false
         title = "Shortcut Smoke"
         command = $shortcutCommand
     } | ConvertTo-Json -Depth 6
@@ -1513,6 +1516,8 @@ function Invoke-ZedTerminalSessionRestoreVerification {
         [Parameter(Mandatory = $true)][string]$RunDir,
         [Parameter(Mandatory = $true)][string]$ShortcutSmokeDir,
         [Parameter(Mandatory = $true)][string]$SessionFile,
+        [Parameter(Mandatory = $true)][string]$StartupConfigFile,
+        [Parameter(Mandatory = $true)][string]$EncodedProbeScript,
         [Parameter(Mandatory = $true)][int]$TimeoutSeconds
     )
 
@@ -1568,6 +1573,8 @@ function Invoke-ZedTerminalSessionRestoreVerification {
     ) {
         throw "Saved session metadata did not match expected layout-only counts: $($sessionJson | ConvertTo-Json -Depth 8 -Compress)"
     }
+    $originalSessionFile = Join-Path $RunDir "session-restore-original-session.json"
+    Copy-Item -LiteralPath $SessionFile -Destination $originalSessionFile -Force
 
     Remove-Item -LiteralPath (Join-Path $ShortcutSmokeDir "*.json") -Force -ErrorAction SilentlyContinue
 
@@ -1579,11 +1586,46 @@ function Invoke-ZedTerminalSessionRestoreVerification {
     $restored = Save-ShortcutScreenshot -Window $restoredWindow -Name "session-restore-04-restored" -RunDir $RunDir
     $captures.Add($restored)
 
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($restoredWindow, ([System.UInt16[]]@($VK_MENU)), $VK_F4)
+    Wait-Process -Id $restoredProcess.Id -Timeout 10 -ErrorAction SilentlyContinue
+    if (-not $restoredProcess.HasExited) {
+        Stop-Process -Id $restoredProcess.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $restoredProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+
+    Write-ShortcutStartupConfig -ConfigDir (Split-Path -Parent $StartupConfigFile) -EncodedProbeScript $EncodedProbeScript -RestorePreviousSession $false | Out-Null
+    Remove-Item -LiteralPath (Join-Path $ShortcutSmokeDir "*.json") -Force -ErrorAction SilentlyContinue
+    $disabledProcess = Start-Process -FilePath $Binary -ArgumentList $ArgumentLine -WorkingDirectory $WorkingDirectory -PassThru
+    $disabledWindow = Get-ProcessWindow -Process $disabledProcess -TimeoutSeconds $TimeoutSeconds
+    Wait-ShortcutSmokeReady -Process $disabledProcess -ShortcutSmokeDir $ShortcutSmokeDir -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $disabledProcess -ShortcutSmokeDir $ShortcutSmokeDir -Name "05-disabled-by-config" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 1 -ExpectedInnerPaneCount 1 -ExpectedCommandPaletteOpen $false -Step 505 -TimeoutSeconds $TimeoutSeconds))
+    $disabledWindow = Assert-SingleVisibleProcessWindow -Process $disabledProcess
+    $disabled = Save-ShortcutScreenshot -Window $disabledWindow -Name "session-restore-05-disabled-by-config" -RunDir $RunDir
+    $captures.Add($disabled)
+
+    [ZedTerminalVisualSmokeNative]::SendKeyChord($disabledWindow, ([System.UInt16[]]@($VK_MENU)), $VK_F4)
+    Wait-Process -Id $disabledProcess.Id -Timeout 10 -ErrorAction SilentlyContinue
+    if (-not $disabledProcess.HasExited) {
+        Stop-Process -Id $disabledProcess.Id -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id $disabledProcess.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+
+    Copy-Item -LiteralPath $originalSessionFile -Destination $SessionFile -Force
+    Remove-Item -LiteralPath (Join-Path $ShortcutSmokeDir "*.json") -Force -ErrorAction SilentlyContinue
+    $forcedArgumentLine = "$ArgumentLine --restore-session"
+    $forcedProcess = Start-Process -FilePath $Binary -ArgumentList $forcedArgumentLine -WorkingDirectory $WorkingDirectory -PassThru
+    $forcedWindow = Get-ProcessWindow -Process $forcedProcess -TimeoutSeconds $TimeoutSeconds
+    Wait-ShortcutSmokeReady -Process $forcedProcess -ShortcutSmokeDir $ShortcutSmokeDir -TimeoutSeconds $TimeoutSeconds
+    $states.Add((Wait-ZedTerminalShortcutState -Process $forcedProcess -ShortcutSmokeDir $ShortcutSmokeDir -Name "06-forced-by-cli" -ExpectedOuterPaneCount 1 -ExpectedOuterTabCount 2 -ExpectedInnerPaneCount 3 -ExpectedCommandPaletteOpen $false -Step 506 -TimeoutSeconds $TimeoutSeconds))
+    $forcedWindow = Assert-SingleVisibleProcessWindow -Process $forcedProcess
+    $forced = Save-ShortcutScreenshot -Window $forcedWindow -Name "session-restore-06-forced-by-cli" -RunDir $RunDir
+    $captures.Add($forced)
+
     return [PSCustomObject]@{
         Captures = $captures
         States = $states
-        FinalWindow = $restoredWindow
-        FinalProcess = $restoredProcess
+        FinalWindow = $forcedWindow
+        FinalProcess = $forcedProcess
         InputMode = $inputMode
         SessionFile = $SessionFile
         SavedTabCount = [int]$sessionJson.tab_count
@@ -1867,6 +1909,8 @@ try {
             -RunDir $runDir `
             -ShortcutSmokeDir $shortcutSmokeDir `
             -SessionFile (Join-Path (Join-Path $dataDir "session") "session.json") `
+            -StartupConfigFile $sessionRestoreStartupConfigFile `
+            -EncodedProbeScript $encodedProbeScript `
             -TimeoutSeconds $StartupTimeoutSeconds
         $process = $sessionRestoreVerification.FinalProcess
         $window = $sessionRestoreVerification.FinalWindow

@@ -52,19 +52,19 @@ Default startup behavior:
 
 Suggested controls:
 
-- Setting: `restore_previous_session`
-- Setting: `restore_terminal_buffer`
+- Setting: `restore_previous_session` (implemented for layout restore)
+- Setting: `restore_terminal_buffer` (implemented as an explicit false-only field for now)
 - Setting: `restore_buffer_line_limit`
 - Action: `Restore Previous Session`
 - Action: `Clear Saved Session`
 - Action: `Open Session Restoration Settings`
-- Optional CLI: `--restore-session`
-- Optional CLI: `--no-restore-session`
+- Optional CLI: `--restore-session` (implemented for layout restore)
+- Optional CLI: `--no-restore-session` (implemented for layout restore)
 - Optional CLI: `--clear-restored-session`
 
 Suggested default:
 
-- Enable layout restoration only after the storage and privacy controls are in place.
+- Enable layout restoration by default once storage and privacy controls are in place. The standalone app currently defaults `restore_previous_session` to `true` for layout-only restoration.
 - Consider making buffer restoration opt-in if saved output may contain secrets.
 
 ## What To Restore
@@ -168,9 +168,12 @@ Phase 1: Layout-only restoration
 
 - Current status as of 2026-06-08: the first layout-only slice is implemented for the standalone `zed_terminal` app.
 - Implemented: valid `data/session/session.json` files restore top-level tabs, per-tab pane layout, active tab, active pane, working directory, and custom title metadata on normal launch.
-- Implemented: explicit launch arguments bypass automatic restoration and fall back to the requested startup behavior.
-- Implemented: real-window smoke and release-check coverage verify creating tabs/panes with keyboard shortcuts, saving the session file, relaunching, and restoring the tab-first hierarchy.
-- Not yet implemented in this phase: profile identity, explicit shell identity, command-backed pane identity, user-facing restore settings, and manual `--restore-session` / `--no-restore-session` flags.
+- Implemented: `terminal.json` controls automatic layout restore with `restore_previous_session`; old configs remain compatible because the default is `true`.
+- Implemented: `restore_terminal_buffer` exists in `terminal.json` and the schema, but the only supported value is `false`; `true` is rejected until buffer restoration exists.
+- Implemented: explicit launch arguments bypass automatic restoration and fall back to the requested startup behavior unless `--restore-session` is supplied.
+- Implemented: `--restore-session` forces layout restore for the current launch, and `--no-restore-session` disables layout restore for the current launch.
+- Implemented: real-window smoke and release-check coverage verify creating tabs/panes with keyboard shortcuts, saving the session file, relaunching, restoring the tab-first hierarchy, disabling restore from config, and forcing restore from CLI.
+- Not yet implemented in this phase: profile identity, explicit shell identity, command-backed pane identity, buffer contents, and an in-app Restore Previous Session action/settings UI.
 - Persist windows, tabs, panes, active selection, profile/shell/cwd/title metadata.
 - Restore fresh shells into the previous layout.
 - Add settings and clear command.
